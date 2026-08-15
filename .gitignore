@@ -1,0 +1,30 @@
+# Local third-party material and generated research artifacts
+/reference/local/
+/vendor/local/
+/scratch/
+
+# Firmware build outputs
+/build/
+/out/
+/.pio/
+*.a
+*.bin
+*.d
+*.elf
+*.hex
+*.lst
+*.map
+*.o
+
+# Local development environments
+/.venv/
+__pycache__/
+*.py[cod]
+
+# Editor and operating-system noise
+/.idea/
+/.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+

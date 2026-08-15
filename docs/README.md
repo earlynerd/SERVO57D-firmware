@@ -1,0 +1,9 @@
+# Documentation Index
+
+- [Project plan](../PLAN.md) — go/no-go gates and implementation sequence
+- [Architecture](ARCHITECTURE.md) — proposed firmware layering, timing, and state model
+- [Hardware](HARDWARE.md) — known board architecture, pin map, and unresolved questions
+- [Bring-up](BRINGUP.md) — staged bench procedure and abort conditions
+- [Reference inventory](REFERENCE_INVENTORY.md) — external package versions, hashes, and publication policy
+- [Decision log](../DECISIONS.md) — append-only record of structural decisions
+
