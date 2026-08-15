@@ -1,6 +1,6 @@
-# Proposed Firmware Architecture
+# Firmware Architecture
 
-Status: candidate architecture for feasibility planning. It becomes binding only as individual decisions are validated and logged.
+Status: the passive foundation is implemented; motor-control layers remain candidate architecture until the relevant hardware gates are passed.
 
 ## Design priorities
 
@@ -20,6 +20,33 @@ Status: candidate architecture for feasibility planning. It becomes binding only
 | Control | Electrical angle, current loops, velocity estimation, velocity and position loops |
 | Services | Configuration storage, calibration, fault manager, telemetry, protocol |
 | Application | State machine and command arbitration |
+
+## Implemented foundation
+
+The initial image implements only the parts that can be meaningfully built before hardware arrives:
+
+- Nations CMSIS/device startup with a project-owned split-bank linker layout: 16 KiB SRAM1, an 8 KiB address gap, and 8 KiB SRAM2.
+- A project-owned minimal `SystemInit` that verifies and retains the reset-default 4 MHz MSI.
+- The initial stack and ordinary runtime sections confined to SRAM1; SRAM2 receives a store-only parity initialization and remains unavailable for allocation.
+- Project-owned core-exception and unclaimed-interrupt panic handling with a `.noinit` panic code.
+- A 1 kHz monotonic SysTick timebase.
+- A passive board layer that configures only the provisional PB9 LED.
+- Hardware-independent application-state and fault-latch modules with native tests.
+
+There is deliberately no bridge module yet. Creating one would imply shutdown behavior, polarity, and pin truth that have not been verified on a purchased board.
+
+The clock and memory startup contracts are described in [Clock bring-up](CLOCKS.md) and [Memory map](MEMORY.md). Both remain bench-validation items rather than proven hardware behavior.
+
+## Candidate motor-personality boundary
+
+If power-stage characterization succeeds, motor-specific control should sit above one measured inverter/timing backend:
+
+| Personality | Bridge use | Current observations |
+| --- | --- | --- |
+| Two-phase bipolar stepper | All four half-bridges as two H-bridges | Existing A/B current channels |
+| Three-phase sensored PMSM/BLDC | Three half-bridges; fourth disconnected | Two sensed phase legs, third reconstructed |
+
+The common backend would own TIM3 scheduling, ADC trigger placement, duty constraints, and immediate shutdown. A motor personality may request bounded voltage/current vectors but must not manipulate GPIO or timer registers directly.
 
 The initial bring-up should be bare-metal. An RTOS can be reconsidered only if measured scheduling needs justify its flash, RAM, and fault-surface cost.
 
@@ -65,4 +92,3 @@ No reset cause should transition directly to `ALIGN` or `RUN`.
 ## Third-party reuse
 
 Nations CMSIS and peripheral sources are appropriate for the MCU layer when their license headers are preserved. Motor-control frameworks may contribute algorithms or tests, but their hardware abstractions must not control bridge safety or ADC/PWM timing until those paths are validated natively.
-

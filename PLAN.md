@@ -39,14 +39,18 @@ No-go criterion: all available boards are irreversibly L2-protected, or reliable
 
 Goal: produce a small, auditable project-owned firmware base.
 
-- [ ] Import only the required Nations CMSIS and peripheral-driver files, preserving their license headers.
-- [ ] Add the N32L406CBL7 startup file and a verified 128 KiB/24 KiB linker script.
-- [ ] Start from a conservative internal clock before enabling HSE/PLL operation.
-- [ ] Establish deterministic reset behavior and a fault-catching default handler.
-- [ ] Add a monotonic timebase and watchdog policy.
+- [x] Import only the required Nations CMSIS and device-support files, preserving their license headers.
+- [x] Add the N32L406CBL7 startup file and an exact 128 KiB flash / split 16 KiB SRAM1 + 8 KiB SRAM2 linker layout with link-time guards.
+- [x] Keep the first image on the reset-default 4 MHz MSI; defer HSI, HSE, and PLL operation.
+- [x] Establish deterministic reset behavior and route core faults and unclaimed interrupts to one panic path.
+- [x] Add a monotonic timebase.
+- [ ] Define and implement the watchdog policy.
 - [ ] Blink the onboard LED without changing bridge-control pins from their safe state.
 - [ ] Add a serial or debugger-based diagnostic channel.
-- [ ] Document reproducible build and flash commands.
+- [x] Document reproducible firmware and host-test build commands.
+- [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
+
+Software status: the passive image builds, passes post-link memory/vector checks, and its host-testable state/fault logic passes native tests. Reset behavior, MSI clock assumptions, SRAM2 initialization, LED polarity, bridge safety, and exception handling remain unverified on hardware.
 
 Go criterion: a clean checkout builds, flashes, boots, and reports its version while the bridge remains disabled.
 
@@ -147,4 +151,3 @@ The Nations SDK should supply low-level MCU support. Existing motor-control proj
 | 128 KiB flash / 24 KiB SRAM becomes restrictive | Begin bare-metal and measure resource use continuously |
 | Public protocol compatibility expands scope | Treat compatibility as a later optional layer |
 | Third-party material cannot be redistributed | Publish source URLs/manifests; keep local caches ignored |
-

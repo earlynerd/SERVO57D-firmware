@@ -1,0 +1,66 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "firmware-debug",
+      "displayName": "N32L406 firmware (Debug)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/firmware-debug",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "MKS57D_BUILD_FIRMWARE": "ON",
+        "MKS57D_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "firmware-release",
+      "displayName": "N32L406 firmware (Release)",
+      "inherits": "firmware-debug",
+      "binaryDir": "${sourceDir}/build/firmware-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "host-debug",
+      "displayName": "Host tests (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MKS57D_BUILD_FIRMWARE": "OFF",
+        "MKS57D_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "firmware-debug",
+      "configurePreset": "firmware-debug"
+    },
+    {
+      "name": "firmware-release",
+      "configurePreset": "firmware-release"
+    },
+    {
+      "name": "host-debug",
+      "configurePreset": "host-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host-debug",
+      "configurePreset": "host-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

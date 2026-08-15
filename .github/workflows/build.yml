@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset host-debug
+      - name: Build
+        run: cmake --build --preset host-debug
+      - name: Test
+        run: ctest --preset host-debug
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Arm GNU toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-arm-none-eabi libnewlib-arm-none-eabi ninja-build
+      - name: Configure
+        run: cmake --preset firmware-release
+      - name: Build
+        run: cmake --build --preset firmware-release

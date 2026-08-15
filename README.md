@@ -2,7 +2,7 @@
 
 Feasibility-stage clean-sheet firmware project for the Makerbase MKS SERVO57D RS-485 closed-loop stepper controller.
 
-No replacement firmware exists here yet. The repository currently organizes the hardware research, manufacturer support material, safety constraints, and staged implementation plan needed to decide whether the project is worth pursuing.
+A buildable passive diagnostic image now exists, but it has not been flashed or tested on hardware and cannot drive a motor. The repository also organizes the hardware research, manufacturer support material, safety constraints, and staged implementation plan needed to decide whether the project is worth pursuing.
 
 ## Intended outcome
 
@@ -22,19 +22,20 @@ The project does not redesign the PCB and does not make the controller suitable 
 
 ## What is already known
 
-- MCU: Nations Technologies N32L406CBL7, Cortex-M4F, 128 KiB flash, 24 KiB SRAM.
+- MCU: Nations Technologies N32L406CBL7, Cortex-M4F, 128 KiB flash, with discontiguous 16 KiB SRAM1 and 8 KiB SRAM2 banks.
 - The board exposes SWDIO and SWCLK, but not NRST, on its programming header.
 - The MCU supports read-protection levels L0, L1, and irreversible L2.
 - Manufacturer tools provide an L1-to-L0 unlock operation that mass-erases main flash.
 - Nations supplies GCC startup code, linker support, peripheral drivers, examples, CMSIS-Pack data, J-Link loaders, and flash-algorithm source.
 - The board has two external GS8632 current-sense amplifiers connected to the MCU's PA1 and PA2 ADC inputs.
 - The manufacturer SDK includes timer-synchronous ADC and motor-control-oriented PWM examples that closely match the required peripheral architecture.
+- The passive image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, and leaves every bridge-control pin untouched.
 
 See [hardware notes](docs/HARDWARE.md), [architecture](docs/ARCHITECTURE.md), and the [project plan](PLAN.md) for the details and remaining unknowns.
 
 ## Safety status
 
-The firmware is not ready to drive a motor or energize the bridge. Initial work must be performed with the motor disconnected, a current-limited supply, and the bridge held disabled. See [bring-up procedure](docs/BRINGUP.md).
+The firmware is not ready to drive a motor or energize the bridge. Even the passive image is unverified on hardware. Initial work must be performed with the motor disconnected, a current-limited supply, and the bridge held disabled. See [bring-up procedure](docs/BRINGUP.md).
 
 ## Repository layout
 
@@ -57,4 +58,3 @@ The immediate decision is whether to proceed past feasibility. The first meaning
 ## License
 
 A project license has not been selected. See [LICENSE](LICENSE). Choose an open-source license before publishing project-owned firmware.
-
