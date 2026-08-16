@@ -67,7 +67,7 @@ Every ISR must meet these rules:
 | Object | Normal writer | Readers | Publication method |
 | --- | --- | --- | --- |
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
-| Encoder angle/status/timestamp | Encoder completion ISR | Fast and slow loops | Sequence-numbered snapshot; readers retry if publication changes |
+| Encoder angle/status/timestamp | Foreground bring-up reader; future encoder completion ISR | Diagnostics now; fast and slow loops later | Sequence-numbered snapshot; readers retry if publication changes |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
@@ -92,7 +92,7 @@ Rates are initial hypotheses, not requirements.
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
-The selected rates must be derived from measured ADC settling, current-loop plant response, encoder transaction time and noise, CPU budget, and switching losses.
+The selected rates must be derived from measured ADC settling, current-loop plant response, encoder transaction time and noise, CPU budget, and switching losses. The current non-control MT6816 reader runs at 100 Hz; it does not claim the candidate 5-10 kHz rotor-feedback timing.
 
 ## Control data flow
 
@@ -199,11 +199,11 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or `bridge_emergency_off()`. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-The passive image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [passive boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
+The bridge-safe image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
 
 Before `RUN` exists, the supervisor's health input must aggregate explicit progress evidence from every safety-critical execution owner, including the completed control epoch supervised by the higher-priority deadline guardian. Watchdog reset is too slow to be a safe response to an active bridge fault, missed current sample, invalid duty request, or stale encoder.
 
-The current passive image pauses IWDG when the debugger halts the core because no bridge output can be enabled. That debug exemption is prohibited in a bridge-capable image; debugger halt must then produce and preserve the proven hardware-safe output state.
+The current bridge-safe image pauses IWDG when the debugger halts the core because no bridge output can be enabled. That debug exemption is prohibited in a bridge-capable image; debugger halt must then produce and preserve the proven hardware-safe output state.
 
 ## Fault and shutdown architecture
 

@@ -46,12 +46,22 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Add a monotonic timebase.
 - [x] Define the initial interrupt-priority, execution-ownership, and multi-rate control architecture.
 - [x] Define and implement the foreground-owned independent-watchdog policy.
-- [x] Implement the provisional PB9 LED heartbeat without changing bridge-control pins from their safe state.
+- [x] Implement the schematic-correct PD0 LED heartbeat without changing bridge-control or `nEN` pins from their safe state.
 - [x] Add a versioned debugger-readable RAM diagnostic channel; defer serial transport until pin bring-up.
 - [x] Document reproducible firmware and host-test build commands.
 - [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
 
-Software status: the passive image builds, runs a seven-gate boot self-test, initializes and verifies the documented NVIC grouping and SysTick priority, publishes firmware version and boot/runtime diagnostics through a 64-byte sequence-protected RAM record, passes post-link memory/vector/diagnostic-symbol checks, and its host-testable state, fault, self-test, watchdog-liveness, diagnostic-ABI, and priority-contract checks pass native tests. Reset behavior and cause capture, MSI/LSI clock assumptions, SRAM2 initialization, IWDG timing, LED polarity, physical bridge safety, exception handling, priority register behavior, passive-board register checks, and debugger record visibility remain unverified on hardware.
+Software status: the bridge-safe image builds, runs a seven-gate boot self-test,
+initializes and verifies the documented NVIC grouping and SysTick priority,
+actively samples the MT6816 candidate through bounded foreground SPI, and
+publishes firmware, boot/runtime, and encoder diagnostics through a 92-byte
+schema-2 sequence-protected RAM record. Post-link memory/vector/diagnostic
+checks and host-testable state, fault, self-test, watchdog-liveness,
+diagnostic-ABI, priority, and MT6816 protocol checks pass. Reset behavior,
+clock assumptions, SRAM2 initialization, IWDG timing, LED and SPI electrical
+behavior, physical bridge safety, exception handling, priority registers,
+board invariants, encoder identity, and debugger visibility remain unverified
+on hardware.
 
 Go criterion: a clean checkout builds, flashes, boots, and reports its version while the bridge remains disabled.
 
@@ -64,6 +74,7 @@ Goal: understand every input without commanding motor current.
 - [ ] Bring up the display only if it is useful for diagnostics.
 - [x] Add an inactive, bounded I2C1 transport and host-tested configurable SSD1306-compatible display layer.
 - [x] Add an inactive, bounded PA1/PA2/PA3 ADC transport and host-tested raw-sample contract.
+- [x] Add an active, bounded SPI1 transport and host-tested MT6816 coherent-burst decoder with foreground diagnostics.
 - [ ] Identify and read the magnetic encoder over SPI.
 - [ ] Characterize encoder noise, wraparound, direction, and zero-offset behavior.
 - [ ] Bring up RS-485 receive/transmit and direction control in loopback or with an external adapter.

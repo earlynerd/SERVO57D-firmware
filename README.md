@@ -2,7 +2,12 @@
 
 Feasibility-stage clean-sheet firmware project for the Makerbase MKS SERVO57D RS-485 closed-loop stepper controller.
 
-A buildable passive diagnostic image now exists, but it has not been flashed or tested on hardware and cannot drive a motor. The repository also organizes the hardware research, manufacturer support material, safety constraints, and staged implementation plan needed to decide whether the project is worth pursuing.
+A buildable bridge-safe diagnostic image now exists, but it has not been
+flashed or tested on hardware and cannot drive a motor. It actively samples the
+encoder while leaving every bridge control untouched. The repository also
+organizes the hardware research, manufacturer support material, safety
+constraints, and staged implementation plan needed to decide whether the
+project is worth pursuing.
 
 ## Intended outcome
 
@@ -30,14 +35,24 @@ The project does not redesign the PCB and does not make the controller suitable 
 - The board has two external GS8632 current-sense amplifiers connected to the MCU's PA1 and PA2 ADC inputs.
 - The display bus is provisionally I2C1 on PA4/PA5 with PB2 reset; an inactive, host-tested SSD1306-compatible 72-by-40 candidate layer is compiled but not enabled at boot.
 - An inactive, bounded ADC layer preserves the provisional PA1 `currentB`, PA2 `currentA`, and PA3 `vBus` raw-sample contract without enabling GPIOA or HSI at boot.
+- The published RS-485 V1.1 schematic routes an MT6816 encoder to SPI1 on PB3-PB6 and the blue status LED to PD0; PB9 is the Menu key, not the LED.
+- A bounded mode-3 SPI1 reader now acquires coherent MT6816 register bursts at 100 Hz, validates parity, and reports raw angle and sensor/transport status without making encoder loss boot-fatal.
 - The manufacturer SDK includes timer-synchronous ADC and motor-control-oriented PWM examples that closely match the required peripheral architecture.
-- The passive image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, leaves every bridge-control pin untouched, runs a seven-gate boot self-test and foreground-supervised independent watchdog, and publishes a versioned debugger diagnostic record.
+- The safe bring-up image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, leaves every bridge-control pin untouched, runs a seven-gate boot self-test and foreground-supervised independent watchdog, and publishes a versioned debugger diagnostic record.
 
-See [hardware notes](docs/HARDWARE.md), [peripheral bring-up](docs/PERIPHERALS.md), [passive ADC bring-up](docs/ADC.md), [architecture](docs/ARCHITECTURE.md), [real-time architecture](docs/REALTIME_ARCHITECTURE.md), [watchdog policy](docs/WATCHDOG.md), [boot self-test](docs/BOOT_SELF_TEST.md), [debugger diagnostics](docs/DIAGNOSTICS.md), and the [project plan](PLAN.md) for the details and remaining unknowns.
+See [hardware notes](docs/HARDWARE.md), [peripheral bring-up](docs/PERIPHERALS.md),
+[MT6816 encoder bring-up](docs/ENCODER.md), [passive ADC bring-up](docs/ADC.md),
+[architecture](docs/ARCHITECTURE.md), [real-time architecture](docs/REALTIME_ARCHITECTURE.md),
+[watchdog policy](docs/WATCHDOG.md), [boot self-test](docs/BOOT_SELF_TEST.md),
+[debugger diagnostics](docs/DIAGNOSTICS.md), and the [project plan](PLAN.md) for
+the details and remaining unknowns.
 
 ## Safety status
 
-The firmware is not ready to drive a motor or energize the bridge. Even the passive image is unverified on hardware. Initial work must be performed with the motor disconnected, a current-limited supply, and the bridge held disabled. See [bring-up procedure](docs/BRINGUP.md).
+The firmware is not ready to drive a motor or energize the bridge. The active
+peripheral image is still unverified on hardware. Initial work must be
+performed with the motor disconnected, a current-limited supply, and the
+bridge held disabled. See [bring-up procedure](docs/BRINGUP.md).
 
 ## Repository layout
 

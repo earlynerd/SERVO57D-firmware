@@ -1,41 +1,56 @@
 # Debugger Diagnostic Record
 
-Status: implemented in the passive image and ABI-checked by the host tests. The record has not yet been read from physical hardware.
+Status: implemented in the safe bring-up image and ABI-checked by host and
+post-link tests. The record has not yet been read from physical hardware.
 
 ## Purpose
 
-The first diagnostic channel is a structured RAM record exported as the ELF symbol `g_diagnostics`. It reports enough state to diagnose early bring-up without selecting or configuring a USART, RS-485 direction pin, display, or any additional board signal.
+The first diagnostic channel is a structured RAM record exported as the ELF
+symbol `g_diagnostics`. It reports boot and active encoder state without
+configuring USART, RS-485 direction, or display hardware.
 
 The record is not assigned a fixed SRAM address. A debugger locates it through symbols in the matching `mks57d.elf`. A future transport may serialize the same information, but that transport must not expose the in-memory C layout as an unframed wire protocol.
 
-## Version 1 layout
+## Version 2 layout
 
-All fields are naturally aligned 32-bit unsigned values. Schema version 1 is 64 bytes. The self-test fields were appended without moving the original 52-byte prefix.
+All fields are naturally aligned 32-bit unsigned values. Schema version 2 is
+92 bytes. The original 64-byte schema-1 prefix is unchanged; encoder fields are
+appended.
 
 | Offset | Field | Meaning |
 | ---: | --- | --- |
 | 0 | `magic` | `0x4D4B5335` record identifier |
-| 4 | `schema_version` | Record schema, currently `1` |
-| 8 | `record_size` | Total bytes available, currently `52` |
+| 4 | `schema_version` | Record schema, currently `2` |
+| 8 | `record_size` | Total bytes available, currently `92` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.1.0` |
-| 20 | `capabilities` | Passive-image, status-LED, IWDG, reset-cause, and NVIC-policy capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.2.0` |
+| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, and encoder-SPI capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
-| 32 | `heartbeat_count` | Number of provisional PB9 toggles completed |
+| 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
 | 36 | `watchdog_status` | Numeric `watchdog_status_t` value from the foreground supervisor |
 | 40 | `platform_boot_status` | Numeric `platform_boot_status_t` value |
 | 44 | `reset_flags` | RCC reset flags captured before they were cleared |
 | 48 | `retained_panic` | Valid preceding panic retained across an IWDG reset, or `PANIC_NONE` |
-| 52 | `self_test_required` | Boot gates required by this passive image, currently `0x7F` |
+| 52 | `self_test_required` | Boot gates required by this image, currently `0x7F` |
 | 56 | `self_test_passed` | Gates completed without a latched failure |
 | 60 | `self_test_failed` | Latched gate failures; healthy value is zero |
+| 64 | `encoder_status` | Numeric `mt6816_status_t`; zero means not attempted |
+| 68 | `encoder_transport_status` | Numeric `spi_status_t` from the latest transaction |
+| 72 | `encoder_angle_raw` | Latest parity-valid 14-bit angle, 0-16383 |
+| 76 | `encoder_flags` | Bit 0 no-magnet, bit 1 over-speed |
+| 80 | `encoder_sample_count` | Number of parity-valid bursts accepted |
+| 84 | `encoder_error_count` | Initialization, transport, or parity failures |
+| 88 | `encoder_last_attempt_millis` | Uptime timestamp of the latest attempt |
 
 The format is append-only within a schema: new fields may be appended and `record_size` increased, but existing fields must not be reordered or reinterpreted. An incompatible change increments `schema_version` and receives a separate consumer path.
 
 ## Consistent-read procedure
 
-The cooperative foreground loop is the sole writer. It publishes after every boot gate, immediately after watchdog initialization, after each 250 ms heartbeat, and immediately before entering a watchdog-related panic.
+The cooperative foreground loop is the sole writer. It publishes after every
+boot gate, immediately after watchdog initialization, after each 250 ms
+heartbeat, after each 10 ms encoder attempt, and immediately before entering a
+watchdog-related panic.
 
 A live reader should:
 
@@ -46,7 +61,9 @@ A live reader should:
 5. Accept the snapshot only when both sequence reads match and are even.
 6. Validate `magic`, `schema_version`, and `record_size` before interpreting fields.
 
-The Cortex-M data-memory barriers around publication keep the odd/even sequence contract ordered. A debugger that halts the passive image will normally see an already-stable record.
+The Cortex-M data-memory barriers around publication keep the odd/even sequence
+contract ordered. A debugger that halts the image will normally see an
+already-stable record.
 
 ## Panic retention
 
@@ -56,14 +73,16 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 
 ## Hardware validation
 
-During first passive bring-up:
+During first safe bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.1.0` and the record size is 64;
+- confirm `firmware_version` decodes to `0.2.0`, schema is 2, and record size is 92;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
 - confirm a watchdog-related panic appears as `retained_panic` after reboot;
-- leave PA6, PA7, PB0, and PB1 under oscilloscope observation throughout.
+- rotate the encoder magnet and verify angle, counts, status, and timestamp;
+- remove the magnet and confirm flag bit 0 without a boot panic;
+- leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.
 
 Serial and RS-485 diagnostics remain Phase 3 work because their pin assignments and direction-control behavior require the purchased board.

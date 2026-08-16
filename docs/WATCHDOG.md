@@ -1,10 +1,10 @@
 # Independent Watchdog Policy
 
-Status: implemented in the passive image and host-tested at the policy layer, but not yet verified on an N32L406CBL7 board. This watchdog does not authorize bridge operation and is not the emergency bridge-off mechanism.
+Status: implemented in the bridge-safe image and host-tested at the policy layer, but not yet verified on an N32L406CBL7 board. This watchdog does not authorize bridge operation and is not the emergency bridge-off mechanism.
 
 ## Hardware configuration
 
-The passive image uses the independent watchdog (IWDG), not the window watchdog. IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and remains independent of the 4 MHz MSI system clock.
+The bridge-safe image uses the independent watchdog (IWDG), not the window watchdog. IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and remains independent of the 4 MHz MSI system clock.
 
 | Setting | Value | Nominal result |
 | --- | ---: | ---: |
@@ -30,7 +30,7 @@ Any bounded-wait or verification failure enters the common panic path. If option
 
 There is deliberately no public raw-feed function. The cooperative foreground loop owns the sole supervisor API, and the hardware reload key is private to `watchdog.c`.
 
-For the current passive image, a service is permitted only when:
+For the current bridge-safe image, a service is permitted only when:
 
 - the application remains in `APP_STATE_DIAGNOSTIC`;
 - the foreground loop has returned within 250 ms of its preceding poll; and
@@ -50,7 +50,7 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-The passive image sets `DBG_CTRL.IWDG_STOP`, pausing IWDG while the Cortex-M4 core is halted. This preserves first-board SWD recovery, and it is safe only because PA6, PA7, PB0, and PB1 remain in reset configuration and no bridge-control API exists.
+The bridge-safe image sets `DBG_CTRL.IWDG_STOP`, pausing IWDG while the Cortex-M4 core is halted. This preserves first-board SWD recovery, and it is safe only because PA6, PA7, PB0, PB1, and provisional PB7 `nEN` remain in reset configuration and no bridge-control API exists.
 
 This exception must be removed before any image can energize the bridge. A future bridge-capable build must demonstrate a hardware-safe output state during debugger halt and must not depend on a paused watchdog. `platform_panic()` is a running instruction loop rather than a debug halt, so IWDG continues and resets after a panic.
 

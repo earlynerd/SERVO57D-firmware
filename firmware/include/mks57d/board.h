@@ -4,11 +4,12 @@
 #include <stdbool.h>
 
 /*
- * Passive bring-up only. There is deliberately no bridge-control API in this
- * milestone: PA6, PA7, PB0, and PB1 must remain in their reset state.
+ * Safe board-level outputs only. There is deliberately no bridge-control API:
+ * PA6, PA7, PB0, PB1, and the provisional PB7 nEN remain untouched.
  */
 void board_init_passive(void);
 bool board_passive_invariants_hold(void);
+bool board_bridge_invariants_hold(void);
 void board_status_led_toggle(void);
 
 #endif

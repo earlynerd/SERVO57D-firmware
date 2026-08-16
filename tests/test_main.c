@@ -9,6 +9,7 @@
 #include "mks57d/diagnostics.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
+#include "mks57d/mt6816.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/watchdog_policy.h"
 
@@ -17,7 +18,8 @@ static unsigned int s_failures;
 enum
 {
     MOCK_I2C_MAX_CALLS = 32u,
-    MOCK_I2C_MAX_BYTES = 32u
+    MOCK_I2C_MAX_BYTES = 32u,
+    MOCK_SPI_MAX_BYTES = 8u
 };
 
 typedef struct
@@ -28,6 +30,15 @@ typedef struct
     size_t lengths[MOCK_I2C_MAX_CALLS];
     uint8_t bytes[MOCK_I2C_MAX_CALLS][MOCK_I2C_MAX_BYTES];
 } mock_i2c_t;
+
+typedef struct
+{
+    size_t call_count;
+    size_t length;
+    uint8_t transmit[MOCK_SPI_MAX_BYTES];
+    uint8_t response[MOCK_SPI_MAX_BYTES];
+    spi_status_t status;
+} mock_spi_t;
 
 #define EXPECT_TRUE(expression)                                                     \
     do                                                                              \
@@ -68,6 +79,30 @@ static i2c_status_t mock_i2c_write(void* context,
         return I2C_STATUS_DATA_NACK;
     }
     return I2C_STATUS_OK;
+}
+
+static spi_status_t mock_spi_exchange(void* context,
+                                      const uint8_t* transmit,
+                                      uint8_t* receive,
+                                      size_t length)
+{
+    mock_spi_t* mock = context;
+    size_t index;
+
+    if ((transmit == NULL) || (receive == NULL) ||
+        (length > MOCK_SPI_MAX_BYTES))
+    {
+        return SPI_STATUS_INVALID_ARGUMENT;
+    }
+
+    ++mock->call_count;
+    mock->length = length;
+    for (index = 0u; index < length; ++index)
+    {
+        mock->transmit[index] = transmit[index];
+        receive[index] = mock->response[index];
+    }
+    return mock->status;
 }
 
 static void test_reset_only_enters_diagnostic_after_passive_init(void)
@@ -180,12 +215,104 @@ static void test_diagnostics_record_abi(void)
     volatile size_t record_size = sizeof(diagnostics_record_t);
     volatile size_t sequence_offset = offsetof(diagnostics_record_t, sequence);
     volatile size_t panic_offset = offsetof(diagnostics_record_t, retained_panic);
+    volatile size_t encoder_offset =
+        offsetof(diagnostics_record_t, encoder_status);
 
     EXPECT_TRUE(magic == 0x4D4B5335u);
-    EXPECT_TRUE(schema == 1u);
-    EXPECT_TRUE(record_size == 64u);
+    EXPECT_TRUE(schema == 2u);
+    EXPECT_TRUE(record_size == 92u);
     EXPECT_TRUE(sequence_offset == 12u);
     EXPECT_TRUE(panic_offset == 48u);
+    EXPECT_TRUE(encoder_offset == 64u);
+}
+
+static void test_mt6816_decodes_angle_and_even_parity(void)
+{
+    mt6816_sample_t sample = {0};
+
+    EXPECT_TRUE(mt6816_decode_registers(0xA9u,
+                                        0x55u,
+                                        0x00u,
+                                        &sample) == MT6816_STATUS_OK);
+    EXPECT_TRUE(sample.angle_raw == 0x2A55u);
+    EXPECT_TRUE(sample.flags == 0u);
+    EXPECT_TRUE(sample.register_03 == 0xA9u);
+    EXPECT_TRUE(sample.register_04 == 0x55u);
+    EXPECT_TRUE(sample.register_05 == 0x00u);
+}
+
+static void test_mt6816_reports_sensor_warning_flags(void)
+{
+    mt6816_sample_t sample = {0};
+
+    EXPECT_TRUE(mt6816_decode_registers(0x00u,
+                                        0x03u,
+                                        0x08u,
+                                        &sample) == MT6816_STATUS_OK);
+    EXPECT_TRUE(sample.angle_raw == 0u);
+    EXPECT_TRUE((sample.flags & MT6816_FLAG_NO_MAGNET) != 0u);
+    EXPECT_TRUE((sample.flags & MT6816_FLAG_OVER_SPEED) != 0u);
+}
+
+static void test_mt6816_rejects_bad_parity_without_publishing(void)
+{
+    mt6816_sample_t sample = {
+        .angle_raw = 1234u,
+        .flags = 0x5Au,
+    };
+
+    EXPECT_TRUE(mt6816_decode_registers(0x00u,
+                                        0x01u,
+                                        0x00u,
+                                        &sample) ==
+                MT6816_STATUS_PARITY_ERROR);
+    EXPECT_TRUE(sample.angle_raw == 1234u);
+    EXPECT_TRUE(sample.flags == 0x5Au);
+}
+
+static void test_mt6816_uses_one_coherent_burst(void)
+{
+    mock_spi_t mock = {
+        .response = {0xFFu, 0xA9u, 0x55u, 0x08u},
+        .status = SPI_STATUS_OK,
+    };
+    const spi_bus_t bus = {
+        .exchange = mock_spi_exchange,
+        .context = &mock,
+    };
+    mt6816_sample_t sample = {0};
+    spi_status_t transport_status = SPI_STATUS_NOT_READY;
+
+    EXPECT_TRUE(mt6816_read_angle(&bus,
+                                  &sample,
+                                  &transport_status) == MT6816_STATUS_OK);
+    EXPECT_TRUE(transport_status == SPI_STATUS_OK);
+    EXPECT_TRUE(mock.call_count == 1u);
+    EXPECT_TRUE(mock.length == 4u);
+    EXPECT_TRUE(mock.transmit[0] == 0x83u);
+    EXPECT_TRUE(mock.transmit[1] == 0x00u);
+    EXPECT_TRUE(mock.transmit[2] == 0x00u);
+    EXPECT_TRUE(mock.transmit[3] == 0x00u);
+    EXPECT_TRUE(sample.angle_raw == 0x2A55u);
+    EXPECT_TRUE((sample.flags & MT6816_FLAG_OVER_SPEED) != 0u);
+}
+
+static void test_mt6816_preserves_transport_failure(void)
+{
+    mock_spi_t mock = {.status = SPI_STATUS_RECEIVE_TIMEOUT};
+    const spi_bus_t bus = {
+        .exchange = mock_spi_exchange,
+        .context = &mock,
+    };
+    mt6816_sample_t sample = {.angle_raw = 77u};
+    spi_status_t transport_status = SPI_STATUS_OK;
+
+    EXPECT_TRUE(mt6816_read_angle(&bus,
+                                  &sample,
+                                  &transport_status) ==
+                MT6816_STATUS_TRANSPORT_ERROR);
+    EXPECT_TRUE(transport_status == SPI_STATUS_RECEIVE_TIMEOUT);
+    EXPECT_TRUE(sample.angle_raw == 77u);
 }
 
 static void test_boot_self_test_requires_every_gate(void)
@@ -388,6 +515,11 @@ int main(void)
     test_watchdog_policy_rejects_foreground_deadline_miss();
     test_watchdog_policy_handles_millisecond_wrap();
     test_diagnostics_record_abi();
+    test_mt6816_decodes_angle_and_even_parity();
+    test_mt6816_reports_sensor_warning_flags();
+    test_mt6816_rejects_bad_parity_without_publishing();
+    test_mt6816_uses_one_coherent_burst();
+    test_mt6816_preserves_transport_failure();
     test_boot_self_test_requires_every_gate();
     test_boot_self_test_failure_is_latched();
     test_interrupt_priority_contract();

@@ -8,13 +8,25 @@
 enum
 {
     DIAGNOSTICS_RECORD_MAGIC = 0x4D4B5335u,
-    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 1u,
-    DIAGNOSTICS_CAPABILITY_PASSIVE_IMAGE = 1u << 0,
+    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 2u,
+    DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE = 1u << 0,
     DIAGNOSTICS_CAPABILITY_STATUS_LED = 1u << 1,
     DIAGNOSTICS_CAPABILITY_IWDG = 1u << 2,
     DIAGNOSTICS_CAPABILITY_RESET_CAUSE = 1u << 3,
-    DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY = 1u << 4
+    DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY = 1u << 4,
+    DIAGNOSTICS_CAPABILITY_ENCODER_SPI = 1u << 5
 };
+
+typedef struct
+{
+    uint32_t status;
+    uint32_t transport_status;
+    uint32_t angle_raw;
+    uint32_t flags;
+    uint32_t sample_count;
+    uint32_t error_count;
+    uint32_t last_attempt_millis;
+} diagnostics_encoder_t;
 
 typedef struct
 {
@@ -34,6 +46,13 @@ typedef struct
     uint32_t self_test_required;
     uint32_t self_test_passed;
     uint32_t self_test_failed;
+    uint32_t encoder_status;
+    uint32_t encoder_transport_status;
+    uint32_t encoder_angle_raw;
+    uint32_t encoder_flags;
+    uint32_t encoder_sample_count;
+    uint32_t encoder_error_count;
+    uint32_t encoder_last_attempt_millis;
 } diagnostics_record_t;
 
 extern volatile diagnostics_record_t g_diagnostics;
@@ -48,5 +67,6 @@ void diagnostics_publish(uint32_t app_state,
                          uint32_t heartbeat_count,
                          uint32_t watchdog_status,
                          const boot_self_test_t *self_test);
+void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder);
 
 #endif

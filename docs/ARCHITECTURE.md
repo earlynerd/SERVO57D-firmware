@@ -1,6 +1,8 @@
 # Firmware Architecture
 
-Status: the passive foundation is implemented; motor-control layers remain candidate architecture until the relevant hardware gates are passed.
+Status: the bridge-safe foundation and foreground encoder acquisition are
+implemented; motor-control layers remain candidate architecture until the
+relevant hardware gates are passed.
 
 ## Design priorities
 
@@ -31,14 +33,24 @@ The initial image implements only the parts that can be meaningfully built befor
 - Project-owned core-exception and unclaimed-interrupt panic handling with a `.noinit` panic code.
 - Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
 - A 1 kHz monotonic SysTick timebase.
-- A passive board layer that configures only the provisional PB9 LED.
+- A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
+- A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - Hardware-independent application-state and fault-latch modules with native tests.
 
-There is deliberately no bridge module yet. Creating one would imply shutdown behavior, polarity, and pin truth that have not been verified on a purchased board.
+There is deliberately no bridge module yet. Creating one would imply shutdown
+behavior, polarity, and pin truth that have not been verified on a purchased
+board. Active encoder work does not weaken that boundary.
 
-The clock, memory, watchdog, boot-self-test, and debug-observability contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md), [Independent watchdog policy](WATCHDOG.md), [Passive boot self-test](BOOT_SELF_TEST.md), and [Debugger diagnostic record](DIAGNOSTICS.md). Interrupt priorities, execution ownership, control-loop boundaries, and the unresolved PWM/ADC trigger options are defined in [Real-time and control architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain bench-validation items rather than proven behavior.
+The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
+contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),
+[Independent watchdog policy](WATCHDOG.md), [Boot self-test](BOOT_SELF_TEST.md),
+[MT6816 encoder bring-up](ENCODER.md), and [Debugger diagnostic record](DIAGNOSTICS.md).
+Interrupt priorities, execution ownership, control-loop boundaries, and the
+unresolved PWM/ADC trigger options are defined in [Real-time and control
+architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain
+bench-validation items rather than proven behavior.
 
 ## Candidate motor-personality boundary
 
@@ -76,7 +88,7 @@ flowchart LR
 ## Real-time timing domains
 
 - **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
-- **Encoder acquisition ISR:** publishes a timestamped angle snapshot but does not run the outer control loops.
+- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 100 Hz bring-up reader runs cooperatively in foreground.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
 

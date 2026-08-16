@@ -27,12 +27,13 @@ This table is transcribed from the published schematic, not yet confirmed by con
 | PB0 | `phaseB1` | B bridge control |
 | PB1 | `phaseB2` | B bridge control |
 | PB2 | `lcdRES` | Display reset |
-| PB4 | `SPI_CLK` | Encoder SPI clock |
-| PB5 | `SPI_MISO` | Encoder SPI data from sensor |
-| PB6 | `SPI_MOSI` | Encoder SPI data to sensor or reserved |
-| PB7 | `SPI_CS` | Encoder chip select |
-| PB8 | `nEN` | Bridge/external enable; polarity and fan-out require measurement |
-| PB9 | `LED` | Onboard status LED |
+| PB3 | `SPI_CLK` | Encoder SPI1 clock, AF1 |
+| PB4 | `SPI_MISO` | Encoder SPI1 data from sensor, input AF1 |
+| PB5 | `SPI_MOSI` | Encoder SPI1 data to sensor, AF0 |
+| PB6 | `SPI_CS` | Encoder software-controlled chip select |
+| PB7 | `nEN` | Bridge/external enable; polarity and fan-out require measurement |
+| PB8 | `KEY_ENTER` | Enter button input |
+| PB9 | `KEY_MENU` | Menu button input |
 | PB12 | `M_IN2` | Isolated auxiliary input |
 | PB13 | `M_IN1` | Isolated auxiliary input |
 | PB14 | `M_OUT1` | Isolated auxiliary output |
@@ -42,6 +43,8 @@ This table is transcribed from the published schematic, not yet confirmed by con
 | PA10 | `RX` | RS-485 UART receive |
 | PA13 | `SWDIO` | Debug data |
 | PA14 | `SWCLK` | Debug clock |
+| PA15 | `KEY_NEXT` | Next button input |
+| PD0/BOOT0 | `LED` | Active-high onboard blue status LED |
 
 ## Current sensing and internal op-amps
 
@@ -77,7 +80,9 @@ With a raw Pico CMSIS-DAP probe, power the Pico from USB and the controller from
 ## Critical items to verify on physical hardware
 
 - Exact PCB revision and whether the published schematic matches it.
-- Fitted encoder marking, SPI mode, resolution, and magnet orientation.
+- Fitted encoder marking, four-wire SPI/OTP mode, and magnet orientation.
+- PB3/PB4/PB5 alternate-function selections and PD0 LED behavior on the
+  purchased revision.
 - Alternate-function/timer mapping of PA6, PA7, PB0, and PB1.
 - EG3013 input truth table, propagation delays, dead time, and bootstrap constraints.
 - `nEN` polarity and whether it disables every gate driver independently of PWM pins.

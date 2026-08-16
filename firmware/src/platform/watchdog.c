@@ -79,7 +79,7 @@ watchdog_status_t watchdog_supervisor_start(watchdog_supervisor_t *supervisor,
     }
 
     /*
-     * The passive image has no bridge-control API, so halting the core cannot
+     * The bridge-safe image has no bridge-control API, so halting the core cannot
      * preserve an energized output. This debug exemption must be removed before
      * a bridge-capable image exists.
      */

@@ -1,9 +1,9 @@
 # Peripheral Bring-up Plan
 
-This plan separates passive observation from energy-controlling timing. A
-peripheral being implemented or compiled does not authorize it to be enabled
-in the boot path. All pin assignments remain provisional until checked on the
-purchased RS-485 board.
+This plan separates low-energy peripheral operation from energy-controlling
+bridge timing. Safe peripherals may run during normal diagnostic boot as their
+drivers mature; enabling one never authorizes bridge output. All pin
+assignments remain provisional until checked on the purchased RS-485 board.
 
 ## Evidence summary
 
@@ -12,7 +12,7 @@ purchased RS-485 board.
 | OLED bus | I2C1 AF7 on PA4/PA5 at 100 kHz; PB2 active-low reset; address `0x3C` | High for schematic routing; medium for fitted controller profile | The schematic shows PA4 `SCL`, PA5 `SDA`, external 4.7 kOhm pull-ups, and PB2 `lcdRES`. A ZJY042-7240TSWEG01 module datasheet identifies SSD1306, 72 by 40 pixels, active-low reset, and I2C write address `0x78` (7-bit `0x3C`). An independent open SERVO57D implementation uses the same I2C1 mapping. The fitted module identity still requires a bench check. |
 | Bus voltage | PA3 ADC input | High for published schematic | The schematic routes the `vBus` divider to PA3. Divider values, ADC scaling, loading, and agreement with the purchased revision must be measured. |
 | Winding current | PA1 `currentB`, PA2 `currentA` ADC inputs | High for published schematic | The schematic shows external GS8632 amplifiers feeding the pins. Offset, gain, sign, bandwidth, clipping, and timer-relative settling remain measurements. |
-| Encoder | SPI magnetic encoder; schematic identifies MT6816CT-ACD | High for schematic identity; medium for fitted part and pin AF | The published schematic identifies the device and nets. The fitted marking, exact SPI pin alternate functions, mode, timing, status/parity behavior, direction, and magnet geometry require confirmation. |
+| Encoder | SPI1 on PB3 SCK, PB4 MISO, PB5 MOSI, PB6 software CS; schematic identifies MT6816CT-ACD | High for schematic routing and protocol; medium for fitted part | The schematic, MT6816 datasheet, Nations pin data, and independent board code agree on a four-wire mode-3 burst. The fitted marking, OTP mode, direction, signal integrity, and magnet geometry require confirmation. |
 | Bridge waveform | TIM3 channels 1-4 on PA6, PA7, PB0, PB1 | Medium-high | Schematic routing and public N32 work strongly support the mapping. Alternate functions, EG3013 behavior, ADC trigger placement, and shutdown semantics require register review and oscilloscope proof. |
 | RS-485 | USART1 on PA9/PA10 with PA8 direction control | High for schematic routing | Direction polarity, reset state, turnaround timing, and transceiver behavior require loopback or adapter tests. |
 
@@ -71,11 +71,18 @@ captured as versioned calibration data.
 
 ### 3. Encoder SPI
 
-Start with a slow, polling, read-only transaction while the bridge is disabled.
-Once the fitted MT6816 and frame semantics are confirmed, add a timestamped
-snapshot with status/error fields. DMA and the proposed 5-10 kHz acquisition
-rate come only after basic transactions, wraparound, direction, and noise are
-known.
+The boot path now activates a slow, polling, read-only MT6816 transaction while
+the bridge remains disabled. SPI1 runs at 500 kHz or lower in mode 3 and reads
+registers `0x03` through `0x05` in one four-byte CS window every 10 ms after a
+20 ms power-up delay. The driver rejects odd parity and publishes no-magnet and
+over-speed flags with raw 14-bit angle and status counters in diagnostic schema
+2. Transport and parity failures remain non-fatal and are retried.
+
+GPIOB activation is constrained to PB3-PB6; a post-init invariant checks that
+PB0/PB1, PB7 `nEN`, and PB9 `KEY_MENU` remain input/no-pull. DMA, interrupts,
+angle unwrapping, direction, calibration, and the proposed 5-10 kHz acquisition
+rate come only after basic transactions, wraparound, and noise are measured.
+See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 

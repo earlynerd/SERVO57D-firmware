@@ -19,8 +19,9 @@
 
 enum
 {
-    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 64u,
-    DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u
+    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 92u,
+    DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u,
+    DIAGNOSTICS_EXPECTED_ENCODER_OFFSET = 64u
 };
 
 _Static_assert(sizeof(diagnostics_record_t) == DIAGNOSTICS_EXPECTED_RECORD_SIZE,
@@ -28,6 +29,9 @@ _Static_assert(sizeof(diagnostics_record_t) == DIAGNOSTICS_EXPECTED_RECORD_SIZE,
 _Static_assert(offsetof(diagnostics_record_t, sequence) ==
                    DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET,
                "diagnostics ABI sequence offset changed");
+_Static_assert(offsetof(diagnostics_record_t, encoder_status) ==
+                   DIAGNOSTICS_EXPECTED_ENCODER_OFFSET,
+               "diagnostics ABI schema-1 prefix changed");
 
 volatile diagnostics_record_t g_diagnostics;
 
@@ -63,11 +67,12 @@ void diagnostics_init(uint32_t app_state,
         MKS57D_FIRMWARE_VERSION_MAJOR,
         MKS57D_FIRMWARE_VERSION_MINOR,
         MKS57D_FIRMWARE_VERSION_PATCH);
-    g_diagnostics.capabilities = DIAGNOSTICS_CAPABILITY_PASSIVE_IMAGE |
+    g_diagnostics.capabilities = DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE |
                                  DIAGNOSTICS_CAPABILITY_STATUS_LED |
                                  DIAGNOSTICS_CAPABILITY_IWDG |
                                  DIAGNOSTICS_CAPABILITY_RESET_CAUSE |
-                                 DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY;
+                                 DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY |
+                                 DIAGNOSTICS_CAPABILITY_ENCODER_SPI;
     g_diagnostics.app_state = app_state;
     g_diagnostics.uptime_millis = uptime_millis;
     g_diagnostics.heartbeat_count = heartbeat_count;
@@ -79,6 +84,13 @@ void diagnostics_init(uint32_t app_state,
     g_diagnostics.self_test_required = self_test->required;
     g_diagnostics.self_test_passed = self_test->passed;
     g_diagnostics.self_test_failed = self_test->failed;
+    g_diagnostics.encoder_status = 0u;
+    g_diagnostics.encoder_transport_status = 0u;
+    g_diagnostics.encoder_angle_raw = 0u;
+    g_diagnostics.encoder_flags = 0u;
+    g_diagnostics.encoder_sample_count = 0u;
+    g_diagnostics.encoder_error_count = 0u;
+    g_diagnostics.encoder_last_attempt_millis = 0u;
 
     diagnostics_end_update(odd_sequence);
 
@@ -105,5 +117,26 @@ void diagnostics_publish(uint32_t app_state,
     g_diagnostics.self_test_passed = self_test->passed;
     g_diagnostics.self_test_failed = self_test->failed;
 
+    diagnostics_end_update(odd_sequence);
+}
+
+void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder)
+{
+    uint32_t odd_sequence;
+
+    if (encoder == NULL)
+    {
+        return;
+    }
+
+    odd_sequence = diagnostics_begin_update();
+    g_diagnostics.encoder_status = encoder->status;
+    g_diagnostics.encoder_transport_status = encoder->transport_status;
+    g_diagnostics.encoder_angle_raw = encoder->angle_raw;
+    g_diagnostics.encoder_flags = encoder->flags;
+    g_diagnostics.encoder_sample_count = encoder->sample_count;
+    g_diagnostics.encoder_error_count = encoder->error_count;
+    g_diagnostics.encoder_last_attempt_millis =
+        encoder->last_attempt_millis;
     diagnostics_end_update(odd_sequence);
 }

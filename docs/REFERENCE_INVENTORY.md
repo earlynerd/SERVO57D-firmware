@@ -70,14 +70,19 @@ Currently includes:
 - Inspected revision: `5d400b01bc8afee0f2c17f4039408f82b5164584`
 - Repository license: GNU GPL v3
 - Use in this project: secondary factual evidence for the N32 I2C and ADC pin
-  mappings, 100 kHz I2C bus, and provisional current/bus ADC sampling-time
-  split. Its local `ZJY042-7240TSWEG01` module datasheet supplies the candidate
-  SSD1306 identity, active-low reset, 72-by-40 geometry, `0x3C` 7-bit address,
-  and initialization values. No source, fonts, or binary assets are imported.
+  mappings, 100 kHz I2C bus, provisional current/bus ADC sampling-time split,
+  and exact-board MT6816 SPI pin/alternate-function and four-byte burst shape.
+  Its local `ZJY042-7240TSWEG01` module datasheet supplies the candidate SSD1306
+  identity, active-low reset, 72-by-40 geometry, `0x3C` 7-bit address, and
+  initialization values. Its ignored `magntek_mt6816ctstdr_apr22_xonlink.pdf`
+  is the MagnTek MT6816 Rev. 1.9 (2021-12) datasheet used for mode-3 timing,
+  parity, register, warning, and power-up behavior. No source, fonts, binary
+  assets, or external PDFs are imported.
 
-The project-owned I2C transport, display protocol layer, and passive ADC layer
-are clean-sheet implementations. The candidate display profile and ADC timing
-remain provisional until confirmed on the purchased RS-485 board.
+The project-owned I2C transport, display protocol layer, passive ADC layer, SPI
+transport, and MT6816 decoder are clean-sheet implementations. The candidate
+display profile, ADC timing, and encoder electrical behavior remain provisional
+until confirmed on the purchased RS-485 board.
 
 ## Publication checklist
 
