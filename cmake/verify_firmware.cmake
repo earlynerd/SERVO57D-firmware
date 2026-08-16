@@ -40,6 +40,29 @@ require_symbol(__sram2_start__ 20006000)
 require_symbol(__sram2_end__ 20008000)
 
 execute_process(
+    COMMAND "${NM}" -S --defined-only "${ELF}"
+    RESULT_VARIABLE nm_sizes_result
+    OUTPUT_VARIABLE nm_sizes_output
+    ERROR_VARIABLE nm_sizes_error
+)
+if(NOT nm_sizes_result EQUAL 0)
+    message(FATAL_ERROR "arm-none-eabi-nm size query failed: ${nm_sizes_error}")
+endif()
+
+string(REGEX MATCH
+       "(^|\n)[0-9A-Fa-f]+[ \t]+([0-9A-Fa-f]+)[ \t]+[^ \t\r\n]+[ \t]+g_diagnostics([\r\n]|$)"
+       diagnostics_symbol_match "${nm_sizes_output}")
+if(NOT diagnostics_symbol_match)
+    message(FATAL_ERROR "Required firmware symbol is missing: g_diagnostics")
+endif()
+string(TOLOWER "${CMAKE_MATCH_2}" diagnostics_size)
+if(NOT diagnostics_size STREQUAL "00000034" AND
+   NOT diagnostics_size STREQUAL "34")
+    message(FATAL_ERROR
+        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0x34")
+endif()
+
+execute_process(
     COMMAND "${OBJDUMP}" -s -j .isr_vector "${ELF}"
     RESULT_VARIABLE objdump_result
     OUTPUT_VARIABLE vector_output
@@ -54,4 +77,4 @@ if(NOT vector_output MATCHES "00400020")
     message(FATAL_ERROR "Vector table does not contain the SRAM1 stack top")
 endif()
 
-message(STATUS "Verified split SRAM map and initial vector stack pointer")
+message(STATUS "Verified split SRAM map, initial vector stack pointer, and diagnostic ABI symbol")

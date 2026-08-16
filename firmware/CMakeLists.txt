@@ -3,12 +3,16 @@ set(FIRMWARE_TARGET mks57d)
 set(PROJECT_SOURCES
     src/main.c
     src/app/app_state.c
+    src/app/diagnostics.c
     src/board/board.c
+    src/platform/interrupt_priority.c
     src/platform/panic.c
     src/platform/runtime.c
     src/platform/system.c
     src/platform/timebase.c
+    src/platform/watchdog.c
     src/safety/fault_latch.c
+    src/safety/watchdog_policy.c
 )
 
 set(NATIONS_SOURCES
@@ -28,6 +32,9 @@ target_include_directories(${FIRMWARE_TARGET} PRIVATE
 # the first image on reset-default 4 MHz MSI and does not configure HSI/HSE/PLL.
 target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     N32L40X
+    MKS57D_FIRMWARE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    MKS57D_FIRMWARE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)

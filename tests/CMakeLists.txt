@@ -2,6 +2,7 @@ add_executable(host_unit_tests
     test_main.c
     ../firmware/src/app/app_state.c
     ../firmware/src/safety/fault_latch.c
+    ../firmware/src/safety/watchdog_policy.c
 )
 
 target_include_directories(host_unit_tests PRIVATE ../firmware/include)

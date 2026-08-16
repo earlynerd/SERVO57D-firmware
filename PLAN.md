@@ -44,13 +44,14 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Keep the first image on the reset-default 4 MHz MSI; defer HSI, HSE, and PLL operation.
 - [x] Establish deterministic reset behavior and route core faults and unclaimed interrupts to one panic path.
 - [x] Add a monotonic timebase.
-- [ ] Define and implement the watchdog policy.
-- [ ] Blink the onboard LED without changing bridge-control pins from their safe state.
-- [ ] Add a serial or debugger-based diagnostic channel.
+- [x] Define the initial interrupt-priority, execution-ownership, and multi-rate control architecture.
+- [x] Define and implement the foreground-owned independent-watchdog policy.
+- [x] Implement the provisional PB9 LED heartbeat without changing bridge-control pins from their safe state.
+- [x] Add a versioned debugger-readable RAM diagnostic channel; defer serial transport until pin bring-up.
 - [x] Document reproducible firmware and host-test build commands.
 - [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
 
-Software status: the passive image builds, passes post-link memory/vector checks, and its host-testable state/fault logic passes native tests. Reset behavior, MSI clock assumptions, SRAM2 initialization, LED polarity, bridge safety, and exception handling remain unverified on hardware.
+Software status: the passive image builds, initializes and verifies the documented NVIC grouping and SysTick priority, publishes firmware version and boot/runtime diagnostics through a sequence-protected RAM record, passes post-link memory/vector/diagnostic-symbol checks, and its host-testable state, fault, watchdog-liveness, diagnostic-ABI, and priority-contract checks pass native tests. Reset behavior and cause capture, MSI/LSI clock assumptions, SRAM2 initialization, IWDG timing, LED polarity, bridge safety, exception handling, priority register behavior, and debugger record visibility remain unverified on hardware.
 
 Go criterion: a clean checkout builds, flashes, boots, and reports its version while the bridge remains disabled.
 
@@ -145,7 +146,7 @@ The Nations SDK should supply low-level MCU support. Existing motor-control proj
 | Retail MCU is RDP L2 | Determine protection before investing in firmware architecture |
 | No NRST on the programming header | Add a temporary reset lead and design firmware to preserve SWD recovery |
 | Schematic differs from purchased revision | Photograph, trace, and continuity-check actual hardware |
-| Four bridge signals do not share one advanced timer | Characterize alternate functions and use synchronized timers if safe |
+| TIM3 mapping or its ADC-trigger timing cannot provide deterministic sampling | Verify alternate functions and evaluate edge-aligned, dual-sample, or synchronized auxiliary-timer strategies |
 | Current measurement is too noisy or poorly timed | Timer-synchronous sampling, offset calibration, scope measurements |
 | Gate-driver behavior is incompletely documented | Bench validation before motor connection |
 | 128 KiB flash / 24 KiB SRAM becomes restrictive | Begin bare-metal and measure resource use continuously |

@@ -29,13 +29,15 @@ The initial image implements only the parts that can be meaningfully built befor
 - A project-owned minimal `SystemInit` that verifies and retains the reset-default 4 MHz MSI.
 - The initial stack and ordinary runtime sections confined to SRAM1; SRAM2 receives a store-only parity initialization and remains unavailable for allocation.
 - Project-owned core-exception and unclaimed-interrupt panic handling with a `.noinit` panic code.
+- Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
 - A 1 kHz monotonic SysTick timebase.
 - A passive board layer that configures only the provisional PB9 LED.
+- A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - Hardware-independent application-state and fault-latch modules with native tests.
 
 There is deliberately no bridge module yet. Creating one would imply shutdown behavior, polarity, and pin truth that have not been verified on a purchased board.
 
-The clock and memory startup contracts are described in [Clock bring-up](CLOCKS.md) and [Memory map](MEMORY.md). Both remain bench-validation items rather than proven hardware behavior.
+The clock, memory, watchdog, and debug-observability contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md), [Independent watchdog policy](WATCHDOG.md), and [Debugger diagnostic record](DIAGNOSTICS.md). Interrupt priorities, execution ownership, control-loop boundaries, and the unresolved PWM/ADC trigger options are defined in [Real-time and control architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain bench-validation items rather than proven behavior.
 
 ## Candidate motor-personality boundary
 
@@ -54,27 +56,30 @@ The initial bring-up should be bare-metal. An RTOS can be reconsidered only if m
 
 ```mermaid
 flowchart LR
-    CMD["RS-485 or step/direction command"] --> MOTION["Motion limits and position/velocity control"]
-    ENC["SPI magnetic encoder"] --> EST["Angle unwrap and velocity estimate"]
+    CMD["RS-485 or step/direction command"] --> MOTION["Trajectory, position, and velocity limits"]
+    ENC["SPI magnetic encoder"] --> EST["Angle unwrap, velocity, and electrical angle"]
     EST --> MOTION
-    MOTION --> IQ["Bounded A/B current references"]
-    ADC["Timer-synchronous PA1/PA2 ADC samples"] --> CURRENT["Two winding-current controllers"]
+    EST --> CURRENT
+    MOTION --> IQ["Bounded Id/Iq references"]
+    ADC["Timer-synchronous current samples"] --> ADAPT["Motor-specific current adapter"]
+    ADAPT --> CURRENT["Common d/q current controller"]
     IQ --> CURRENT
-    CURRENT --> PWM["Synchronized PWM compare update"]
+    CURRENT --> MOD["Motor-specific modulation"]
+    MOD --> PWM["Validated PWM preload update"]
     PWM --> BRIDGE["Two full H-bridges"]
     SAFE["Fault manager and hard limits"] --> PWM
     ADC --> SAFE
     EST --> SAFE
 ```
 
-## Candidate timing domains
+## Real-time timing domains
 
-- **PWM/current ISR:** initiated by a deterministic timer/ADC event; reads current samples, applies current-loop limits, and prepares the next PWM compare values.
-- **Encoder/velocity loop:** lower rate than the current loop; unwraps position and estimates velocity.
-- **Position/motion loop:** generates bounded current or torque demand.
+- **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
+- **Encoder acquisition ISR:** publishes a timestamped angle snapshot but does not run the outer control loops.
+- **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
 
-Exact rates must be selected from measurements rather than copied from another controller. The Nations example demonstrates 20 kHz center-aligned PWM but does not establish that 20 kHz is optimal for this board.
+Exact rates and PWM/ADC triggering must be selected from measurements rather than copied from another controller. The Nations example demonstrates 20 kHz center-aligned PWM, but TIM3 update behavior and the use of all four compare channels make the board's sampling topology a separate validation problem. See [Real-time and control architecture](REALTIME_ARCHITECTURE.md).
 
 ## Candidate application states
 

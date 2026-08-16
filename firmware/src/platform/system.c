@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mks57d/panic.h"
 #include "n32l40x.h"
 
 enum
@@ -38,6 +39,11 @@ static const uint8_t s_ahb_shift[16] = {
     0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
     1u, 2u, 3u, 4u, 6u, 7u, 8u, 9u,
 };
+
+static const uint32_t s_reset_flag_mask =
+    RCC_CTRLSTS_RAMRSTF | RCC_CTRLSTS_MMURSTF | RCC_CTRLSTS_PINRSTF |
+    RCC_CTRLSTS_PORRSTF | RCC_CTRLSTS_SFTRSTF | RCC_CTRLSTS_IWDGRSTF |
+    RCC_CTRLSTS_WWDGRSTF | RCC_CTRLSTS_LPWRRSTF;
 
 static void initialize_sram2(void)
 {
@@ -106,7 +112,20 @@ void SystemInit(void)
     g_platform_boot_diagnostics.initial_rcc_ctrl = RCC->CTRL;
     g_platform_boot_diagnostics.initial_rcc_cfg = RCC->CFG;
     g_platform_boot_diagnostics.initial_rcc_ctrlsts = RCC->CTRLSTS;
+    g_platform_boot_diagnostics.reset_flags =
+        g_platform_boot_diagnostics.initial_rcc_ctrlsts & s_reset_flag_mask;
     g_platform_boot_diagnostics.initial_sram_ctrlsts = RCC->SRAM_CTRLSTS;
+
+    if (((g_platform_boot_diagnostics.reset_flags &
+          RCC_CTRLSTS_IWDGRSTF) == 0u) ||
+        ((uint32_t)g_last_panic >= (uint32_t)PANIC_CODE_COUNT))
+    {
+        g_last_panic = PANIC_NONE;
+    }
+
+    /* Snapshot first, then clear the sticky flags for an unambiguous next boot. */
+    RCC->CTRLSTS |= RCC_CTRLSTS_RMRSTF;
+    __DSB();
 
     SCB->VTOR = FLASH_BASE;
     __DSB();

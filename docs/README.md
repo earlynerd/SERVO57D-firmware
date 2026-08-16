@@ -3,6 +3,9 @@
 - [Project plan](../PLAN.md) — go/no-go gates and implementation sequence
 - [Building](BUILDING.md) — reproducible firmware and host-test commands
 - [Architecture](ARCHITECTURE.md) — proposed firmware layering, timing, and state model
+- [Real-time architecture](REALTIME_ARCHITECTURE.md) — interrupt priorities, loop ownership, control data flow, and timing questions
+- [Watchdog policy](WATCHDOG.md) — IWDG timing, foreground ownership, reset diagnostics, and debugger behavior
+- [Debugger diagnostics](DIAGNOSTICS.md) — versioned RAM record, consistent-read procedure, and field definitions
 - [Clock bring-up](CLOCKS.md) — current 4 MHz policy and deferred 64 MHz PLL plan
 - [Memory map](MEMORY.md) — split SRAM layout and SRAM2 parity-initialization contract
 - [Hardware](HARDWARE.md) — known board architecture, pin map, and unresolved questions

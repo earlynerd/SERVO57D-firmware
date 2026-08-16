@@ -73,11 +73,15 @@ ctest --preset host-debug
 This is a passive diagnostic image, not motor-driving firmware. It:
 
 1. Verifies and retains the reset-default 4 MHz MSI clock with bounded readiness/source checks.
-2. Initializes the full SRAM2 bank with stores, clears its parity-error status, and does not allocate from it.
-3. Leaves PA6, PA7, PB0, and PB1 in their reset configuration.
-4. Configures only the provisional PB9 status LED output.
-5. Starts a 1 kHz SysTick timebase.
-6. Enters `APP_STATE_DIAGNOSTIC` and toggles the LED every 250 ms.
-7. Latches a panic code in `.noinit` RAM and halts on core exceptions or unclaimed interrupts.
+2. Initializes and verifies four NVIC preemption bits with no subpriorities.
+3. Initializes the full SRAM2 bank with stores, clears its parity-error status, and does not allocate from it.
+4. Leaves PA6, PA7, PB0, and PB1 in their reset configuration.
+5. Configures only the provisional PB9 status LED output.
+6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15.
+7. Enters `APP_STATE_DIAGNOSTIC` and toggles the LED every 250 ms.
+8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
+9. Publishes firmware `0.1.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, and implemented priority policy through the versioned `g_diagnostics` RAM record.
+10. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor.
+11. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Do not flash even this image until the purchased board revision and PB9 assignment have been checked. There is intentionally no flash command yet; the pyOCD target and destructive-unlock procedure must be proven on the actual board first.

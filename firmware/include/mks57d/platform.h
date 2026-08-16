@@ -21,6 +21,7 @@ typedef struct
     uint32_t initial_rcc_ctrl;
     uint32_t initial_rcc_cfg;
     uint32_t initial_rcc_ctrlsts;
+    uint32_t reset_flags;
     uint32_t initial_sram_ctrlsts;
     uint32_t final_rcc_ctrl;
     uint32_t final_rcc_cfg;

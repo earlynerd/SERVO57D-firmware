@@ -48,6 +48,10 @@ This procedure intentionally delays motor connection. Each stage should produce 
 3. Exercise reset, power-cycle, watchdog, and debugger halt.
 4. Confirm SWD remains recoverable after every case.
 5. Verify flash contents through both the vendor utility and the development programmer path.
+6. Confirm an unserviced running image resets near the measured IWDG interval and exposes `RCC_CTRLSTS_IWDGRSTF` in `g_platform_boot_diagnostics.reset_flags` after reboot.
+7. Confirm a debugger halt pauses IWDG only in this passive image and that all bridge-control pins remain at their safe reset levels throughout halt and resume.
+8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `1`, size `52`, firmware version `0.1.0`, and an even stable sequence.
+9. Compare the diagnostic reset and retained-panic fields across power-on, NRST, software panic, and IWDG reset cases.
 
 ## Stage 4 — Passive inputs
 
@@ -93,4 +97,3 @@ For each session record:
 - Instrument models and probe points.
 - Expected result, observed result, and captured waveforms.
 - Decision to proceed, repeat, or stop.
-
