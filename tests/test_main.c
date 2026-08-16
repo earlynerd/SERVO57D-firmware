@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "mks57d/adc1.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
 #include "mks57d/diagnostics.h"
@@ -240,6 +241,59 @@ static void test_interrupt_priority_contract(void)
     EXPECT_TRUE(timekeeping == 15u);
 }
 
+static void test_adc_channel_and_sample_order_contract(void)
+{
+    adc_sample_t sample;
+    volatile unsigned int current_b_channel = ADC1_CURRENT_B_CHANNEL;
+    volatile unsigned int current_a_channel = ADC1_CURRENT_A_CHANNEL;
+    volatile unsigned int vbus_channel = ADC1_VBUS_CHANNEL;
+    volatile unsigned int max_clock_hz = ADC1_PASSIVE_MAX_CLOCK_HZ;
+
+    EXPECT_TRUE(current_b_channel == 2u);
+    EXPECT_TRUE(current_a_channel == 3u);
+    EXPECT_TRUE(vbus_channel == 4u);
+    EXPECT_TRUE(max_clock_hz == 2000000u);
+
+    EXPECT_TRUE(adc_sample_build(&sample,
+                                 101u,
+                                 202u,
+                                 303u,
+                                 17u));
+    EXPECT_TRUE(sample.current_b_raw == 101u);
+    EXPECT_TRUE(sample.current_a_raw == 202u);
+    EXPECT_TRUE(sample.vbus_raw == 303u);
+    EXPECT_TRUE(sample.capture_index == 17u);
+    EXPECT_TRUE(adc_sample_is_valid(&sample));
+}
+
+static void test_adc_sample_rejects_values_outside_12_bits(void)
+{
+    adc_sample_t sample = {
+        .current_b_raw = 11u,
+        .current_a_raw = 22u,
+        .vbus_raw = 33u,
+        .capture_index = 44u,
+    };
+
+    EXPECT_TRUE(adc_sample_build(&sample,
+                                 ADC_SAMPLE_RAW_MAX,
+                                 ADC_SAMPLE_RAW_MAX,
+                                 ADC_SAMPLE_RAW_MAX,
+                                 UINT32_MAX));
+    EXPECT_TRUE(adc_sample_is_valid(&sample));
+
+    EXPECT_TRUE(!adc_sample_build(&sample, 4096u, 2u, 3u, 5u));
+    EXPECT_TRUE(sample.current_b_raw == ADC_SAMPLE_RAW_MAX);
+    EXPECT_TRUE(sample.current_a_raw == ADC_SAMPLE_RAW_MAX);
+    EXPECT_TRUE(sample.vbus_raw == ADC_SAMPLE_RAW_MAX);
+    EXPECT_TRUE(sample.capture_index == UINT32_MAX);
+
+    sample.vbus_raw = 4096u;
+    EXPECT_TRUE(!adc_sample_is_valid(&sample));
+    EXPECT_TRUE(!adc_sample_is_valid(NULL));
+    EXPECT_TRUE(!adc_sample_build(NULL, 1u, 2u, 3u, 4u));
+}
+
 static void test_servo57d_oled_candidate_profile_is_valid(void)
 {
     const ssd1306_panel_config_t* config =
@@ -337,6 +391,8 @@ int main(void)
     test_boot_self_test_requires_every_gate();
     test_boot_self_test_failure_is_latched();
     test_interrupt_priority_contract();
+    test_adc_channel_and_sample_order_contract();
+    test_adc_sample_rejects_values_outside_12_bits();
     test_servo57d_oled_candidate_profile_is_valid();
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();

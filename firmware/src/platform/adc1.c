@@ -1,0 +1,286 @@
+#include "mks57d/adc1.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "n32l40x.h"
+
+enum
+{
+    ADC_GPIO_MODE_MASK = (3u << (1u * 2u)) |
+                         (3u << (2u * 2u)) |
+                         (3u << (3u * 2u)),
+    ADC_GPIO_MODE_ANALOG = ADC_GPIO_MODE_MASK,
+    ADC_SAMPLE_TIME_28CYCLES5 = 3u,
+    ADC_SAMPLE_TIME_55CYCLES5 = 5u,
+    ADC_CTRL3_RESOLUTION_12BIT = 3u,
+    ADC_CTRL3_READY = 1u << 5u,
+    ADC_STATUS_WRITABLE_MASK = 0x7Fu,
+    ADC_SOFTWARE_TRIGGER_SELECT = ADC_CTRL2_EXTRSEL,
+    ADC_SOFTWARE_START = ADC_CTRL2_EXTRTRIG | ADC_CTRL2_SWSTRRCH,
+    ADC_POLL_BUDGET = 20000u,
+    ADC_LDO_CONTROL_OFFSET = 0x60u,
+    ADC_LDO_ENABLE_VALUE = 0x28u
+};
+
+typedef struct
+{
+    uint8_t divisor;
+    uint8_t register_value;
+} adc_clock_divider_t;
+
+static const adc_clock_divider_t ADC_CLOCK_DIVIDERS[] = {
+    {1u, 0u},
+    {2u, 1u},
+    {4u, 2u},
+    {6u, 3u},
+    {8u, 4u},
+    {10u, 5u},
+    {12u, 6u},
+    {16u, 7u},
+    {32u, 8u},
+};
+
+static bool s_adc1_initialized;
+static uint32_t s_capture_index;
+
+static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
+{
+    size_t index;
+
+    if ((register_value == NULL) ||
+        (hclk_hz < 1000000u) ||
+        (hclk_hz > (ADC1_PASSIVE_MAX_CLOCK_HZ * 32u)))
+    {
+        return false;
+    }
+
+    for (index = 0u;
+         index < (sizeof(ADC_CLOCK_DIVIDERS) /
+                  sizeof(ADC_CLOCK_DIVIDERS[0]));
+         ++index)
+    {
+        if (hclk_hz <= (ADC1_PASSIVE_MAX_CLOCK_HZ *
+                        ADC_CLOCK_DIVIDERS[index].divisor))
+        {
+            *register_value = ADC_CLOCK_DIVIDERS[index].register_value;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool wait_for_mask(volatile uint32_t* register_address,
+                          uint32_t mask,
+                          bool expected_set)
+{
+    uint32_t remaining = ADC_POLL_BUDGET;
+
+    while (remaining != 0u)
+    {
+        const bool is_set = ((*register_address & mask) == mask);
+        if (is_set == expected_set)
+        {
+            return true;
+        }
+        --remaining;
+    }
+
+    return false;
+}
+
+static void rollback_adc_init(bool hsi_was_enabled)
+{
+    ADC->CTRL2 &= ~ADC_CTRL2_ON;
+    RCC->AHBPRST |= RCC_AHBRST_ADCRST;
+    RCC->AHBPRST &= ~RCC_AHBRST_ADCRST;
+    RCC->AHBPCLKEN &= ~RCC_AHBPCLKEN_ADCEN;
+
+    if (!hsi_was_enabled)
+    {
+        RCC->CTRL &= ~RCC_CTRL_HSIEN;
+    }
+}
+
+static adc1_status_t convert_channel(uint8_t channel, uint16_t* output)
+{
+    uint32_t remaining = ADC_POLL_BUDGET;
+    uint32_t raw;
+
+    if (output == NULL)
+    {
+        return ADC1_STATUS_INVALID_ARGUMENT;
+    }
+    if ((ADC->STS & ADC_STS_STR) != 0u)
+    {
+        return ADC1_STATUS_BUSY;
+    }
+
+    ADC->RSEQ3 = (ADC->RSEQ3 & ~ADC_RSEQ3_SEQ1) |
+                 ((uint32_t)channel & ADC_RSEQ3_SEQ1);
+    ADC->STS = (~((uint32_t)ADC_STS_AWDG |
+                  ADC_STS_ENDC |
+                  ADC_STS_STR |
+                  ADC_STS_ENDCA)) &
+               ADC_STATUS_WRITABLE_MASK;
+    ADC->CTRL2 |= ADC_SOFTWARE_START;
+
+    while (remaining != 0u)
+    {
+        const uint32_t status = ADC->STS;
+
+        if ((status & ADC_STS_AWDG) != 0u)
+        {
+            return ADC1_STATUS_DATA_OUT_OF_RANGE;
+        }
+        if ((status & ADC_STS_ENDC) != 0u)
+        {
+            raw = ADC->DAT & ADC_DAT_DAT;
+            ADC->STS = (~((uint32_t)ADC_STS_ENDC |
+                          ADC_STS_STR |
+                          ADC_STS_ENDCA)) &
+                       ADC_STATUS_WRITABLE_MASK;
+            if (raw > ADC_SAMPLE_RAW_MAX)
+            {
+                return ADC1_STATUS_DATA_OUT_OF_RANGE;
+            }
+            *output = (uint16_t)raw;
+            return ADC1_STATUS_OK;
+        }
+        --remaining;
+    }
+
+    return ADC1_STATUS_CONVERSION_TIMEOUT;
+}
+
+adc1_status_t adc1_init_passive(uint32_t hclk_hz)
+{
+    uint32_t adc_clock_setting;
+    uint32_t clock_configuration;
+    volatile uint32_t* const adc_ldo_control =
+        (volatile uint32_t*)(uintptr_t)(ADC_BASE + ADC_LDO_CONTROL_OFFSET);
+    const bool hsi_was_enabled =
+        (RCC->CTRL & RCC_CTRL_HSIEN) != 0u;
+
+    if (!select_adc_clock(hclk_hz, &adc_clock_setting))
+    {
+        return ADC1_STATUS_UNSUPPORTED_CLOCK;
+    }
+
+    s_adc1_initialized = false;
+    s_capture_index = 0u;
+
+    RCC->CTRL |= RCC_CTRL_HSIEN;
+    if (!wait_for_mask(&RCC->CTRL, RCC_CTRL_HSIRDF, true))
+    {
+        if (!hsi_was_enabled)
+        {
+            RCC->CTRL &= ~RCC_CTRL_HSIEN;
+        }
+        return ADC1_STATUS_CLOCK_TIMEOUT;
+    }
+
+    clock_configuration = RCC->CFG2;
+    clock_configuration &= ~(RCC_CFG2_ADCHPRES |
+                             RCC_CFG2_ADCPLLPRES |
+                             RCC_CFG2_ADC1MPRES |
+                             RCC_CFG2_ADC1MSEL);
+    clock_configuration |= adc_clock_setting |
+                           RCC_CFG2_ADC1MPRES_DIV16 |
+                           RCC_CFG2_ADC1MSEL_HSI;
+    RCC->CFG2 = clock_configuration;
+
+    RCC->APB2PCLKEN |= RCC_APB2PCLKEN_IOPAEN;
+    RCC->AHBPCLKEN |= RCC_AHBPCLKEN_ADCEN;
+    __DSB();
+
+    RCC->AHBPRST |= RCC_AHBRST_ADCRST;
+    RCC->AHBPRST &= ~RCC_AHBRST_ADCRST;
+
+    GPIOA->PUPD &= ~((uint32_t)ADC_GPIO_MODE_MASK);
+    GPIOA->PMODE = (GPIOA->PMODE & ~((uint32_t)ADC_GPIO_MODE_MASK)) |
+                   (uint32_t)ADC_GPIO_MODE_ANALOG;
+
+    /* Required by Nations' V1.2.2 ADC driver but not named in the TRM. */
+    *adc_ldo_control |= ADC_LDO_ENABLE_VALUE;
+
+    ADC->CTRL1 = 0u;
+    ADC->CTRL2 = ADC_SOFTWARE_TRIGGER_SELECT;
+    ADC->CTRL3 = ADC_CTRL3_RESOLUTION_12BIT;
+    ADC->RSEQ1 &= ~ADC_RSEQ1_LEN;
+    ADC->RSEQ3 = ADC1_CURRENT_B_CHANNEL;
+    ADC->SAMPT2 = (ADC->SAMPT2 &
+                   ~(ADC_SAMPT2_SAMP2 |
+                     ADC_SAMPT2_SAMP3 |
+                     ADC_SAMPT2_SAMP4)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (2u * 3u)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (3u * 3u)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_55CYCLES5 << (4u * 3u));
+    ADC->STS = 0u;
+
+    ADC->CTRL2 |= ADC_CTRL2_ON;
+    if (!wait_for_mask(&ADC->CTRL3, ADC_CTRL3_READY, true))
+    {
+        rollback_adc_init(hsi_was_enabled);
+        return ADC1_STATUS_POWER_TIMEOUT;
+    }
+
+    ADC->CTRL2 |= ADC_CTRL2_ENCAL;
+    if (!wait_for_mask(&ADC->CTRL2, ADC_CTRL2_ENCAL, false))
+    {
+        rollback_adc_init(hsi_was_enabled);
+        return ADC1_STATUS_CALIBRATION_TIMEOUT;
+    }
+
+    s_adc1_initialized = true;
+    return ADC1_STATUS_OK;
+}
+
+adc1_status_t adc1_read_passive(adc_sample_t* output)
+{
+    adc1_status_t result;
+    uint16_t current_b_raw;
+    uint16_t current_a_raw;
+    uint16_t vbus_raw;
+    uint32_t capture_index;
+
+    if (output == NULL)
+    {
+        return ADC1_STATUS_INVALID_ARGUMENT;
+    }
+    if (!s_adc1_initialized)
+    {
+        return ADC1_STATUS_NOT_READY;
+    }
+
+    result = convert_channel(ADC1_CURRENT_B_CHANNEL, &current_b_raw);
+    if (result != ADC1_STATUS_OK)
+    {
+        return result;
+    }
+    result = convert_channel(ADC1_CURRENT_A_CHANNEL, &current_a_raw);
+    if (result != ADC1_STATUS_OK)
+    {
+        return result;
+    }
+    result = convert_channel(ADC1_VBUS_CHANNEL, &vbus_raw);
+    if (result != ADC1_STATUS_OK)
+    {
+        return result;
+    }
+
+    capture_index = s_capture_index + 1u;
+    if (!adc_sample_build(output,
+                          current_b_raw,
+                          current_a_raw,
+                          vbus_raw,
+                          capture_index))
+    {
+        return ADC1_STATUS_DATA_OUT_OF_RANGE;
+    }
+
+    s_capture_index = capture_index;
+    return ADC1_STATUS_OK;
+}

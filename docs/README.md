@@ -11,6 +11,7 @@
 - [Memory map](MEMORY.md) — split SRAM layout and SRAM2 parity-initialization contract
 - [Hardware](HARDWARE.md) — known board architecture, pin map, and unresolved questions
 - [Peripheral bring-up](PERIPHERALS.md) — evidence-ranked I2C, OLED, ADC, SPI, RS-485, and PWM sequence
+- [Passive ADC bring-up](ADC.md) — raw channel contract, bounded polling design, and hardware activation gate
 - [Bring-up](BRINGUP.md) — staged bench procedure and abort conditions
 - [Reference inventory](REFERENCE_INVENTORY.md) — external package versions, hashes, and publication policy
 - [Decision log](../DECISIONS.md) — append-only record of structural decisions

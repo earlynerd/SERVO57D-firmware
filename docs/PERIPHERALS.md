@@ -43,11 +43,24 @@ SysTick, a control ISR, or any safety path.
 
 ### 2. Passive ADC acquisition
 
-ADC work is split into two milestones:
+The project now compiles an inactive ADC layer for the schematic's PA1
+`currentB`, PA2 `currentA`, and PA3 `vBus` inputs. It performs bounded,
+software-triggered, single-channel conversions in that order and publishes a
+host-tested all-or-nothing raw 12-bit sample. The layer is not called at boot,
+so HSI, ADC, and GPIOA remain in their existing reset/clock-gated state.
+
+Passive initialization uses HSI divided to the ADC's required 1 MHz timing
+clock and a synchronous HCLK-derived sampling clock no faster than 2 MHz.
+Scan, DMA, interrupts, internal channels, scaling, and timer triggers remain
+disabled. The detailed register contract, timing assumptions, evidence
+confidence, and activation checklist are in [Passive ADC bring-up](ADC.md).
+
+ADC work remains split into two hardware milestones:
 
 - **Passive acquisition:** with the bridge disabled, software-trigger a bounded
-  sequence for PA1, PA2, and PA3; publish raw samples, ADC status, and timestamps;
-  then measure zero offsets, noise, divider scaling, and reference behavior.
+  sequence for PA1, PA2, and PA3; publish raw samples, ADC status, and
+  timestamps; then measure zero offsets, noise, divider scaling, and reference
+  behavior.
 - **Synchronous current acquisition:** only after PWM timing exists, trigger
   PA1/PA2 at a measured quiet point, use DMA or a bounded completion ISR, and
   reject missing, duplicate, clipped, or late sequences.

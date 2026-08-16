@@ -19,6 +19,13 @@ Retrieved/verified: 2026-08-15. The official page identifies the N32L40x SDK as 
 
 The Nations driver and flash-algorithm source inspected so far uses permissive redistribution terms requiring preservation of the copyright notice, conditions, and disclaimer. Binary libraries and bundled third-party middleware require separate review.
 
+The passive ADC scaffold was checked against the N32L40x User Manual V2.6.0
+and the SDK's V1.2.2 ADC driver. No ADC driver source was imported. The
+project-owned register layer records one SDK-only requirement: value `0x28` is
+set in the otherwise unnamed ADC analog-LDO control register at ADC offset
+`0x60`. That detail remains hardware-gated because the user manual does not
+document the register.
+
 ## CMSIS device pack
 
 Local file: `reference/local/NSING.N32L40x_DFP.1.0.2.pack`
@@ -62,15 +69,15 @@ Currently includes:
 - Public source: <https://github.com/Delsian/servo57d>
 - Inspected revision: `5d400b01bc8afee0f2c17f4039408f82b5164584`
 - Repository license: GNU GPL v3
-- Use in this project: secondary factual evidence for the N32 alternate-function
-  selection and 100 kHz I2C bus. Its local `ZJY042-7240TSWEG01` module
-  datasheet supplies the candidate SSD1306 identity, active-low reset, 72-by-40
-  geometry, `0x3C` 7-bit address, and initialization values. No source, fonts,
-  or binary assets are imported.
+- Use in this project: secondary factual evidence for the N32 I2C and ADC pin
+  mappings, 100 kHz I2C bus, and provisional current/bus ADC sampling-time
+  split. Its local `ZJY042-7240TSWEG01` module datasheet supplies the candidate
+  SSD1306 identity, active-low reset, 72-by-40 geometry, `0x3C` 7-bit address,
+  and initialization values. No source, fonts, or binary assets are imported.
 
-The project-owned I2C transport and display protocol layer are clean-sheet
-implementations. The candidate profile remains provisional until confirmed on
-the purchased RS-485 board.
+The project-owned I2C transport, display protocol layer, and passive ADC layer
+are clean-sheet implementations. The candidate display profile and ADC timing
+remain provisional until confirmed on the purchased RS-485 board.
 
 ## Publication checklist
 

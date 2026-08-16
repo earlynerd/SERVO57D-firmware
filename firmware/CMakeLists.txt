@@ -5,7 +5,9 @@ set(PROJECT_SOURCES
     src/app/app_state.c
     src/app/diagnostics.c
     src/board/board.c
+    src/drivers/adc_sample.c
     src/drivers/ssd1306.c
+    src/platform/adc1.c
     src/platform/i2c1.c
     src/platform/interrupt_priority.c
     src/platform/panic.c

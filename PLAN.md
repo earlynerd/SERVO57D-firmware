@@ -63,6 +63,7 @@ Goal: understand every input without commanding motor current.
 - [ ] Read buttons and isolated step/direction/enable inputs.
 - [ ] Bring up the display only if it is useful for diagnostics.
 - [x] Add an inactive, bounded I2C1 transport and host-tested configurable SSD1306-compatible display layer.
+- [x] Add an inactive, bounded PA1/PA2/PA3 ADC transport and host-tested raw-sample contract.
 - [ ] Identify and read the magnetic encoder over SPI.
 - [ ] Characterize encoder noise, wraparound, direction, and zero-offset behavior.
 - [ ] Bring up RS-485 receive/transmit and direction control in loopback or with an external adapter.
