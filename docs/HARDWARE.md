@@ -38,9 +38,9 @@ This table is transcribed from the published schematic, not yet confirmed by con
 | PB13 | `M_IN1` | Isolated auxiliary input |
 | PB14 | `M_OUT1` | Isolated auxiliary output |
 | PB15 | `M_OUT2` | Isolated auxiliary output |
-| PA8 | `nDIR` | RS-485 direction control |
-| PA9 | `TX` | RS-485 UART transmit |
-| PA10 | `RX` | RS-485 UART receive |
+| PA8 | `nDIR` / `RE1` | RS-485 direction: low receive, high transmit |
+| PA9 | `TX` | USART1 transmit, AF4 |
+| PA10 | `RX` | USART1 receive, AF4 |
 | PA13 | `SWDIO` | Debug data |
 | PA14 | `SWCLK` | Debug clock |
 | PA15 | `KEY_NEXT` | Next button input |
@@ -71,6 +71,19 @@ This is strong secondary evidence, not proof of the fitted controller. The
 project keeps the panel geometry and less-universal init settings configurable
 until the purchased module is inspected and tested.
 
+## RS-485 transceiver
+
+U17 is labeled `SP485E` and is powered from 5 V. Its active-low `/RE` and
+active-high `DE` pins share the `RE1`/PA8 control net, so one GPIO selects
+receive-low or transmit-high. TXD and RXD pass through 470 ohm series
+resistors, and the schematic shows 10 kohm pull-ups on TXD, RXD, and the shared
+direction net.
+
+The direction pull-up appears to enable the transmitter during MCU reset while
+the TXD pull-up requests the idle state. That inference must be checked on the
+purchased board because firmware can drive PA8 low only after reset execution
+begins. See [USART1 / RS-485 bring-up](RS485.md).
+
 ## Programming interface
 
 J4 exposes target 3.3 V, GND, SWCLK, and SWDIO. It does not expose NRST. A temporary lead to MCU NRST should be considered for reliable connect-under-reset recovery.
@@ -88,5 +101,5 @@ With a raw Pico CMSIS-DAP probe, power the Pico from USB and the controller from
 - `nEN` polarity and whether it disables every gate driver independently of PWM pins.
 - Current-amplifier gain, bandwidth, output bias, clipping limits, and ADC scaling.
 - Bus-voltage divider scaling, tolerance, loading, and safe ADC range on PA3.
-- Reset behavior of the RS-485 direction signal and all isolated outputs.
+- Reset duration and bus state caused by the RS-485 direction pull-up.
 - Availability of a convenient NRST test point.

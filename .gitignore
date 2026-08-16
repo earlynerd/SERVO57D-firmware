@@ -1,5 +1,6 @@
 # Local third-party material and generated research artifacts
 /reference/local/
+/reference/cache/
 /vendor/local/
 /scratch/
 
@@ -27,4 +28,3 @@ __pycache__/
 *.swp
 .DS_Store
 Thumbs.db
-

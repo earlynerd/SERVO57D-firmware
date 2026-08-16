@@ -7,6 +7,7 @@
 - [Watchdog policy](WATCHDOG.md) — IWDG timing, foreground ownership, reset diagnostics, and debugger behavior
 - [Debugger diagnostics](DIAGNOSTICS.md) — versioned RAM record, consistent-read procedure, and field definitions
 - [MT6816 encoder](ENCODER.md) — active bounded SPI acquisition, frame validation, diagnostics, and bench proof
+- [USART1 / RS-485](RS485.md) — DMA transport, direction turnaround, diagnostics, and bench proof
 - [Passive boot self-test](BOOT_SELF_TEST.md) — startup gates, latched failure ledger, and board invariant checks
 - [Clock bring-up](CLOCKS.md) — current 4 MHz policy and deferred 64 MHz PLL plan
 - [Memory map](MEMORY.md) — split SRAM layout and SRAM2 parity-initialization contract

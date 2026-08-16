@@ -75,8 +75,85 @@ Every ISR must meet these rules:
 | Fault state | Safety subsystem | All layers | Monotonic atomic latch or per-source slots; never cleared from an ISR |
 | Configuration | Foreground configuration service | Control initialization | Immutable while running; changes require a safe-state transaction |
 | Debugger diagnostic record | Foreground diagnostics service | Debugger and future telemetry service | Versioned sequence-numbered snapshot; readers accept matching even sequences |
+| RS-485 RX circular bytes | DMA channel 4 | Foreground transport consumer | Monotonic produced/consumed counts; cursor laps discard and account the oldest bytes |
+| RS-485 TX staging frame | Foreground transport API | DMA channel 5, then USART1 shifter | Fixed buffer is immutable while busy; USART TXC releases PA8 and ownership |
 
 Volatile qualification alone is not a synchronization mechanism. Multiword structures use a sequence counter or buffer handoff, and monotonic fault bits use an actually atomic operation or separate writer-owned slots.
+
+## DMA and hardware-offload policy
+
+The N32L406 provides one DMA controller with eight independently configured
+logical channels. Each channel selects one of the peripheral request sources and
+supports byte, half-word, or word transfers, four software priority levels,
+circular operation, and transfer-complete, half-transfer, and error events. The
+controller can move data between memory and peripherals without instruction
+execution, but it is not a control coprocessor: transforms, estimation, limits,
+PI control, validation, and state transitions remain CPU work.
+
+DMA and the Cortex-M4F share the AHB fabric. They may access different slaves in
+parallel, but access to the same SRAM or peripheral is arbitrated. The expected
+motor-control traffic is small enough that bandwidth should not be limiting;
+the architectural benefit is bounded latency and freedom from polling or
+per-byte interrupts. DMA is therefore assigned by deterministic value rather
+than used automatically for every transferable object.
+
+### Provisional `RUN` channel budget
+
+The request selector makes the physical channel choice flexible. Lower channel
+numbers win ties between equal programmed priorities, so the final assignment
+should place the synchronous sample path first:
+
+| Provisional channel | Request/role | DMA priority | Policy |
+| ---: | --- | --- | --- |
+| 1 | ADC current-sample capture | Very high | Circular capture of one complete A/B sample set; interrupt only when the accepted set is complete |
+| 2 | Encoder SPI receive | High | Publish one timestamped frame at completion; never wait for SPI in the current ISR |
+| 3 | Encoder SPI transmit/start | High | Reserve only if measurements show that DMA is preferable to one bounded CPU write |
+| 4 | USART1 receive | Medium | Move bytes into a bounded circular or block buffer; parse only in foreground |
+| 5 | USART1 transmit | Medium | Transmit a validated frame; RS-485 direction changes only after USART transmission-complete, not merely DMA completion |
+| 6 | Optional TIM3 burst update | High | Reserved for measurement; not used by the initial PWM backend |
+| 7-8 | Spare or safe-state-only service | Low | No new `RUN` consumer without a channel-budget and latency review |
+
+The table is a capacity and priority plan, not authorization to enable a
+peripheral. SPI1 is the documented encoder instance; its future DMA request
+mapping and every final channel assignment remain bench-verification items.
+
+### Use by subsystem
+
+- **Synchronous ADC:** prefer a continuously configured circular transfer that
+  publishes only a complete, ordered current-sample set. The N32L40x errata
+  warns that disabling and re-enabling ADC DMA can transfer a retained old ADC
+  value first. Any design that rearms the channel must implement and test the
+  documented extra-sample workaround. A missing, duplicate, late, clipped, or
+  transfer-error sample is a fast-loop fault rather than permission to reuse an
+  earlier duty request.
+- **Encoder SPI:** DMA is valuable when it removes a busy wait and publishes a
+  precisely completed transaction. Because an encoder frame is small, DMA
+  setup can cost more cycles than a bounded register operation; foreground
+  polling is used for initial bring-up, and DMA is adopted only after both paths
+  are measured.
+- **USART1/RS-485:** RX and TX DMA eliminate per-byte interrupt work. DMA owns
+  byte movement only; framing, CRC, address checks, command validation, timeout
+  policy, and PA8 direction turnaround remain explicit software behavior.
+- **TIM3 PWM:** the timer can accept a DMA burst into consecutive compare
+  registers, but the initial backend writes four validated preload registers
+  directly. Four stores are inexpensive, make buffer ownership obvious, and
+  avoid an autonomous circular transfer replaying stale active duties. A DMA
+  burst may replace them only if cycle and safety measurements show a material
+  benefit and the deadline guardian can prove that no stale set becomes active.
+- **I2C1/display:** do not use I2C DMA in `RUN`. N32L40x Errata Sheet V2.1.0
+  states that I2C communication can become abnormal when another peripheral is
+  using the single DMA controller; its workaround disables other DMA traffic.
+  Display traffic remains bounded polling or interrupt work in foreground and
+  may be deferred while the bridge is active.
+- **Memory copies:** do not use memory-to-memory DMA for small control or
+  publication objects. Ownership handoff is preferable to copying, and DMA
+  setup plus SRAM contention can exceed the cost of a few CPU loads and stores.
+
+DMA transfer errors are handled according to the channel's safety role. A
+current-sample or future PWM-transfer error invokes the common bridge-off path.
+A communications or display error invalidates that transaction and is reported
+without retrying in an unbounded ISR. No ISR silently clears, rearms, and
+continues a safety-critical channel after an unexplained transfer error.
 
 ## Time domains
 
@@ -93,6 +170,45 @@ Rates are initial hypotheses, not requirements.
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
 The selected rates must be derived from measured ADC settling, current-loop plant response, encoder transaction time and noise, CPU budget, and switching losses. The current non-control MT6816 reader runs at 100 Hz; it does not claim the candidate 5-10 kHz rotor-feedback timing.
+
+## Processor and cycle budget
+
+Motor-control timing is budgeted in core cycles, not average foreground load.
+The current bridge-safe image remains at 4 MHz; the examples below apply only after
+64 MHz clock operation has passed its hardware gate:
+
+| Candidate event rate | Core cycles between events at 64 MHz |
+| ---: | ---: |
+| 20 kHz | 3,200 |
+| 40 kHz | 1,600 |
+| 10 kHz | 6,400 |
+| 1 kHz | 64,000 |
+
+For an initial 20 kHz, one-sample-per-carrier design, an engineering target of
+approximately 1,000-1,200 worst-case cycles for the complete fast ISR would
+consume about 31-38% of the core and preserve preemption and foreground margin.
+This is a planning target rather than a release limit. The actual acceptance
+limit is set from DWT measurements of the selected numerical implementation,
+all validation branches, interrupt entry/exit, DMA completion handling, and
+the longest permitted higher-priority nesting. A 40 kHz or dual-sample design
+is not accepted merely because its average execution time fits within 1,600
+cycles.
+
+Cycle-conservation rules for the hard-real-time path are:
+
+- Let timers generate PWM edges, ADC triggers, step counts, and scheduling
+  events; do not reproduce peripheral timing in software.
+- Generate one interrupt for a complete useful transaction or sample set, not
+  for every byte or ADC rank.
+- Do not call general-purpose transcendental, formatting, allocation, protocol,
+  or Flash-service routines from the fast ISR.
+- Keep constant lookup tables in Flash. Compare measured Cortex-M4F
+  single-precision and explicitly saturated fixed-point implementations before
+  selecting the fast-loop numerical policy.
+- Prefer hardware CRC, timer input capture, comparator shutdown, and USART/SPI
+  shift engines where their documented behavior satisfies the safety contract.
+- Record maximum observed cycles per ISR and fault on a missed control epoch;
+  never average away a worst-case deadline violation.
 
 ## Control data flow
 

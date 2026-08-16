@@ -62,6 +62,11 @@ Currently includes:
 - N32L40x Series User Manual V2.6.0.
 - Component datasheet material and extracted schematic images.
 
+The RS-485 direction truth table and enable/disable timing use MaxLinear's
+official `SP481E / SP485E` Rev. 1.0.6 datasheet (2022-03-17):
+<https://www.maxlinear.com/ds/sp481e_sp485e.pdf>. No copy is added to the
+repository.
+
 ## Independent open firmware references
 
 ### Delsian `servo57d`

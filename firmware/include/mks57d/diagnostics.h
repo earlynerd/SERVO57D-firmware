@@ -8,13 +8,14 @@
 enum
 {
     DIAGNOSTICS_RECORD_MAGIC = 0x4D4B5335u,
-    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 2u,
+    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 3u,
     DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE = 1u << 0,
     DIAGNOSTICS_CAPABILITY_STATUS_LED = 1u << 1,
     DIAGNOSTICS_CAPABILITY_IWDG = 1u << 2,
     DIAGNOSTICS_CAPABILITY_RESET_CAUSE = 1u << 3,
     DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY = 1u << 4,
-    DIAGNOSTICS_CAPABILITY_ENCODER_SPI = 1u << 5
+    DIAGNOSTICS_CAPABILITY_ENCODER_SPI = 1u << 5,
+    DIAGNOSTICS_CAPABILITY_RS485_DMA = 1u << 6
 };
 
 typedef struct
@@ -27,6 +28,21 @@ typedef struct
     uint32_t error_count;
     uint32_t last_attempt_millis;
 } diagnostics_encoder_t;
+
+typedef struct
+{
+    uint32_t status;
+    uint32_t rx_bytes;
+    uint32_t rx_idle_events;
+    uint32_t rx_error_count;
+    uint32_t rx_overrun_count;
+    uint32_t rx_dropped_bytes;
+    uint32_t last_rx_byte;
+    uint32_t tx_bytes;
+    uint32_t tx_frame_count;
+    uint32_t tx_error_count;
+    uint32_t tx_busy;
+} diagnostics_rs485_t;
 
 typedef struct
 {
@@ -53,6 +69,17 @@ typedef struct
     uint32_t encoder_sample_count;
     uint32_t encoder_error_count;
     uint32_t encoder_last_attempt_millis;
+    uint32_t rs485_status;
+    uint32_t rs485_rx_bytes;
+    uint32_t rs485_rx_idle_events;
+    uint32_t rs485_rx_error_count;
+    uint32_t rs485_rx_overrun_count;
+    uint32_t rs485_rx_dropped_bytes;
+    uint32_t rs485_last_rx_byte;
+    uint32_t rs485_tx_bytes;
+    uint32_t rs485_tx_frame_count;
+    uint32_t rs485_tx_error_count;
+    uint32_t rs485_tx_busy;
 } diagnostics_record_t;
 
 extern volatile diagnostics_record_t g_diagnostics;
@@ -68,5 +95,6 @@ void diagnostics_publish(uint32_t app_state,
                          uint32_t watchdog_status,
                          const boot_self_test_t *self_test);
 void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder);
+void diagnostics_publish_rs485(const diagnostics_rs485_t* rs485);
 
 #endif

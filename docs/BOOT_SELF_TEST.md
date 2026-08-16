@@ -19,7 +19,7 @@ A failed check is removed from `passed`, added to `failed`, and cannot be restor
 | 0 | Early memory | SRAM2 parity initialization completed and the early platform state is ready |
 | 1 | Clock | Reset-default 4 MHz MSI and bus/flash settings passed bounded verification |
 | 2 | Interrupt policy | PRIGROUP read back as four preemption bits/no subpriorities |
-| 3 | Safe board I/O | GPIOA/GPIOB remain clock-gated; active-high PD0 is the only configured output |
+| 3 | Safe board I/O | Before peripheral initialization, GPIOA/GPIOB remain clock-gated; active-high PD0 is the only configured output |
 | 4 | Timebase | 1 kHz SysTick configured with priority 15 under the expected grouping |
 | 5 | Application state | The reset-safe state accepted only the passive-initialization transition into diagnostics |
 | 6 | Watchdog | LSI and IWDG setup synchronized, verified, and started successfully |
@@ -30,15 +30,16 @@ Early-memory failure cannot safely initialize the diagnostic record because SRAM
 
 `board_passive_invariants_hold()` performs read-only checks after `board_init_passive()`:
 
-- GPIOA is disabled, so PA6/PA7 could not have been configured;
+- GPIOA is disabled at this early gate, so PA6/PA7 could not yet have been configured;
 - GPIOB is disabled before SPI activation, so PB0/PB1/PB7 remain untouched;
 - GPIOD is enabled and PD0 reads back as an output.
 
-After non-fatal SPI1 initialization, `board_bridge_invariants_hold()` checks
-the safety boundary again. GPIOA must still be disabled, while PB0/PB1 bridge
-controls, PB7 `nEN`, and PB9 `KEY_MENU` must all read as input/no-pull even
-though GPIOB is enabled for encoder pins PB3-PB6. A failure latches the same
-board gate and enters the common panic path.
+After non-fatal SPI1 and RS-485 initialization,
+`board_bridge_invariants_hold()` checks the safety boundary again. PA6/PA7,
+PB0/PB1 bridge controls, PB7 `nEN`, and PB9 `KEY_MENU` must all read as
+input/no-pull even though GPIOA is active for PA8-PA10 and GPIOB is active for
+PB3-PB6. A failure latches the same board gate and enters the common panic
+path.
 
 This is a construction check against accidental firmware edits, not proof that the purchased board uses those pins or that the external gate-driver state is safe. Oscilloscope observation and continuity checks remain mandatory.
 

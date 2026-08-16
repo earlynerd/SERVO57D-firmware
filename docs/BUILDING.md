@@ -75,18 +75,20 @@ This is a bridge-safe diagnostic image, not motor-driving firmware. It:
 1. Verifies and retains the reset-default 4 MHz MSI clock with bounded readiness/source checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
 3. Initializes the full SRAM2 bank with stores, clears its parity-error status, and does not allocate from it.
-4. Leaves PA6, PA7, PB0, PB1, and provisional PB7 `nEN` in their reset configuration.
+4. Keeps PA6, PA7, PB0, PB1, and provisional PB7 `nEN` input/no-pull while low-energy peripheral pins are configured.
 5. Configures the active-high PD0 status LED output.
 6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15.
 7. Enters `APP_STATE_DIAGNOSTIC` and toggles the LED every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
-9. Runs and publishes a seven-gate boot self-test, then rechecks bridge pins after GPIOB is enabled for SPI1.
+9. Runs and publishes a seven-gate boot self-test, then rechecks bridge pins after GPIOA/GPIOB are enabled for communications and SPI1.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and performs bounded foreground MT6816 burst reads every 10 ms after a 20 ms power-up delay.
-11. Publishes firmware `0.2.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, and encoder state through the 92-byte schema-2 `g_diagnostics` RAM record.
-12. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.
-13. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PA8 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
+12. Publishes firmware `0.3.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, and RS-485 transport state through the 136-byte schema-3 `g_diagnostics` RAM record.
+13. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.
+14. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
-Do not flash even this image until the purchased board revision and PD0/PB3-PB7
-assignments have been checked. There is intentionally no flash command yet;
+Do not flash even this image until the purchased board revision and
+PD0/PB3-PB7/PA8-PA10 assignments have been checked. There is intentionally no
+flash command yet;
 the pyOCD target and destructive-unlock procedure must be proven on the actual
 board first.

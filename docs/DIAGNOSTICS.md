@@ -6,25 +6,25 @@ post-link tests. The record has not yet been read from physical hardware.
 ## Purpose
 
 The first diagnostic channel is a structured RAM record exported as the ELF
-symbol `g_diagnostics`. It reports boot and active encoder state without
-configuring USART, RS-485 direction, or display hardware.
+symbol `g_diagnostics`. It reports boot, active encoder, and DMA-backed RS-485
+transport state without emitting unsolicited serial traffic.
 
 The record is not assigned a fixed SRAM address. A debugger locates it through symbols in the matching `mks57d.elf`. A future transport may serialize the same information, but that transport must not expose the in-memory C layout as an unframed wire protocol.
 
-## Version 2 layout
+## Version 3 layout
 
-All fields are naturally aligned 32-bit unsigned values. Schema version 2 is
-92 bytes. The original 64-byte schema-1 prefix is unchanged; encoder fields are
-appended.
+All fields are naturally aligned 32-bit unsigned values. Schema version 3 is
+136 bytes. The original 64-byte schema-1 prefix and 92-byte schema-2 prefix are
+unchanged; RS-485 fields are appended.
 
 | Offset | Field | Meaning |
 | ---: | --- | --- |
 | 0 | `magic` | `0x4D4B5335` record identifier |
-| 4 | `schema_version` | Record schema, currently `2` |
-| 8 | `record_size` | Total bytes available, currently `92` |
+| 4 | `schema_version` | Record schema, currently `3` |
+| 8 | `record_size` | Total bytes available, currently `136` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.2.0` |
-| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, and encoder-SPI capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.3.0` |
+| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, and RS-485-DMA capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -42,6 +42,17 @@ appended.
 | 80 | `encoder_sample_count` | Number of parity-valid bursts accepted |
 | 84 | `encoder_error_count` | Initialization, transport, or parity failures |
 | 88 | `encoder_last_attempt_millis` | Uptime timestamp of the latest attempt |
+| 92 | `rs485_status` | Numeric `rs485_status_t`; zero is ready |
+| 96 | `rs485_rx_bytes` | Total bytes completed into the circular DMA buffer |
+| 100 | `rs485_rx_idle_events` | USART IDLE-line events acknowledged |
+| 104 | `rs485_rx_error_count` | USART receive and RX-DMA errors |
+| 108 | `rs485_rx_overrun_count` | Foreground cursor-lap events |
+| 112 | `rs485_rx_dropped_bytes` | Exact oldest-byte count discarded after cursor laps |
+| 116 | `rs485_last_rx_byte` | Last byte drained by foreground; meaningful after `rs485_rx_bytes` becomes nonzero |
+| 120 | `rs485_tx_bytes` | Bytes whose final stop bits completed |
+| 124 | `rs485_tx_frame_count` | Frames completed and returned to receive mode |
+| 128 | `rs485_tx_error_count` | TX DMA transfer errors |
+| 132 | `rs485_tx_busy` | One while a DMA/USART line transmission owns PA8 |
 
 The format is append-only within a schema: new fields may be appended and `record_size` increased, but existing fields must not be reordered or reinterpreted. An incompatible change increments `schema_version` and receives a separate consumer path.
 
@@ -49,8 +60,8 @@ The format is append-only within a schema: new fields may be appended and `recor
 
 The cooperative foreground loop is the sole writer. It publishes after every
 boot gate, immediately after watchdog initialization, after each 250 ms
-heartbeat, after each 10 ms encoder attempt, and immediately before entering a
-watchdog-related panic.
+heartbeat, after each 10 ms encoder attempt, after RS-485 initialization or a
+transport failure, and immediately before entering a watchdog-related panic.
 
 A live reader should:
 
@@ -76,13 +87,18 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 During first safe bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.2.0`, schema is 2, and record size is 92;
+- confirm `firmware_version` decodes to `0.3.0`, schema is 3, and record size is 136;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
 - confirm a watchdog-related panic appears as `retained_panic` after reboot;
 - rotate the encoder magnet and verify angle, counts, status, and timestamp;
 - remove the magnet and confirm flag bit 0 without a boot panic;
+- send known bytes from an external RS-485 adapter and verify RX byte, IDLE,
+  last-byte, and error fields without unsolicited board transmission;
+- trigger one bounded TX call and confirm byte/frame completion and busy state
+  agree with scoped PA8 and final-stop-bit timing;
 - leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.
 
-Serial and RS-485 diagnostics remain Phase 3 work because their pin assignments and direction-control behavior require the purchased board.
+The RS-485 fields are software evidence only until the direction and bus
+waveforms are observed on the purchased board.

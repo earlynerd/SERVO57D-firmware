@@ -2,8 +2,9 @@
 
 Status: an inactive, bounded polling driver and a host-tested raw-sample
 contract are compiled into the project. Neither is called by the boot image.
-No ADC, HSI, or GPIOA register is changed at reset, and no sampled value is
-yet treated as a physical voltage or current.
+No ADC or HSI register is changed and PA1/PA2/PA3 remain input/no-pull; GPIOA
+is enabled later only for the separate PA8-PA10 RS-485 transport. No sampled
+value is yet treated as a physical voltage or current.
 
 ## Provisional signal contract
 
@@ -68,9 +69,8 @@ of the following:
 1. Confirm PA1, PA2, and PA3 against the purchased PCB revision.
 2. Keep the motor disconnected, use a current-limited supply, and independently
    hold the bridge disabled.
-3. Revise the passive-board self-test: enabling GPIOA invalidates the present
-   proof that PA6/PA7 could not have been configured, so those bridge pins must
-   be inspected directly instead.
+3. Recheck the existing post-peripheral invariant that directly inspects
+   PA6/PA7 after GPIOA configuration.
 4. Check HSI ready, ADC ready, calibration completion, and bounded timeout
    behavior on silicon before accepting samples.
 5. Capture repeated raw samples with the bridge disabled and measure current

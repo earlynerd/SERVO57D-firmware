@@ -7,6 +7,8 @@
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
 #include "mks57d/diagnostics.h"
+#include "mks57d/dma_channels.h"
+#include "mks57d/dma_ring.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
@@ -217,13 +219,95 @@ static void test_diagnostics_record_abi(void)
     volatile size_t panic_offset = offsetof(diagnostics_record_t, retained_panic);
     volatile size_t encoder_offset =
         offsetof(diagnostics_record_t, encoder_status);
+    volatile size_t rs485_offset =
+        offsetof(diagnostics_record_t, rs485_status);
 
     EXPECT_TRUE(magic == 0x4D4B5335u);
-    EXPECT_TRUE(schema == 2u);
-    EXPECT_TRUE(record_size == 92u);
+    EXPECT_TRUE(schema == 3u);
+    EXPECT_TRUE(record_size == 136u);
     EXPECT_TRUE(sequence_offset == 12u);
     EXPECT_TRUE(panic_offset == 48u);
     EXPECT_TRUE(encoder_offset == 64u);
+    EXPECT_TRUE(rs485_offset == 92u);
+}
+
+static void test_dma_channel_budget_contract(void)
+{
+    volatile unsigned int adc = DMA_CHANNEL_ADC_CURRENT;
+    volatile unsigned int encoder_rx = DMA_CHANNEL_ENCODER_RX;
+    volatile unsigned int encoder_tx = DMA_CHANNEL_ENCODER_TX;
+    volatile unsigned int usart_rx = DMA_CHANNEL_USART1_RX;
+    volatile unsigned int usart_tx = DMA_CHANNEL_USART1_TX;
+    volatile unsigned int pwm = DMA_CHANNEL_TIM3_BURST;
+
+    EXPECT_TRUE(adc == 1u);
+    EXPECT_TRUE(encoder_rx == 2u);
+    EXPECT_TRUE(encoder_tx == 3u);
+    EXPECT_TRUE(usart_rx == 4u);
+    EXPECT_TRUE(usart_tx == 5u);
+    EXPECT_TRUE(pwm == 6u);
+}
+
+static void test_dma_ring_copies_across_wrap(void)
+{
+    const uint8_t ring[8] = {8u, 9u, 2u, 3u, 4u, 5u, 6u, 7u};
+    uint8_t received[4] = {0u};
+    dma_ring_cursor_t cursor;
+
+    dma_ring_cursor_init(&cursor, 6u);
+    EXPECT_TRUE(dma_ring_copy(&cursor,
+                              ring,
+                              sizeof(ring),
+                              10u,
+                              received,
+                              sizeof(received)) == 4u);
+    EXPECT_TRUE(received[0] == 6u);
+    EXPECT_TRUE(received[1] == 7u);
+    EXPECT_TRUE(received[2] == 8u);
+    EXPECT_TRUE(received[3] == 9u);
+    EXPECT_TRUE(cursor.consumed_total == 10u);
+    EXPECT_TRUE(cursor.overrun_count == 0u);
+    EXPECT_TRUE(cursor.dropped_bytes == 0u);
+}
+
+static void test_dma_ring_accounts_overwrite(void)
+{
+    const uint8_t ring[8] = {8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u};
+    uint8_t received[8] = {0u};
+    dma_ring_cursor_t cursor;
+
+    dma_ring_cursor_init(&cursor, 0u);
+    EXPECT_TRUE(dma_ring_copy(&cursor,
+                              ring,
+                              sizeof(ring),
+                              16u,
+                              received,
+                              sizeof(received)) == 8u);
+    EXPECT_TRUE(received[0] == 8u);
+    EXPECT_TRUE(received[7] == 15u);
+    EXPECT_TRUE(cursor.consumed_total == 16u);
+    EXPECT_TRUE(cursor.overrun_count == 1u);
+    EXPECT_TRUE(cursor.dropped_bytes == 8u);
+}
+
+static void test_dma_ring_handles_counter_wrap(void)
+{
+    const uint8_t ring[8] = {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u};
+    uint8_t received[4] = {0u};
+    dma_ring_cursor_t cursor;
+
+    dma_ring_cursor_init(&cursor, UINT32_MAX - 1u);
+    EXPECT_TRUE(dma_ring_copy(&cursor,
+                              ring,
+                              sizeof(ring),
+                              2u,
+                              received,
+                              sizeof(received)) == 4u);
+    EXPECT_TRUE(received[0] == 6u);
+    EXPECT_TRUE(received[1] == 7u);
+    EXPECT_TRUE(received[2] == 0u);
+    EXPECT_TRUE(received[3] == 1u);
+    EXPECT_TRUE(cursor.consumed_total == 2u);
 }
 
 static void test_mt6816_decodes_angle_and_even_parity(void)
@@ -515,6 +599,10 @@ int main(void)
     test_watchdog_policy_rejects_foreground_deadline_miss();
     test_watchdog_policy_handles_millisecond_wrap();
     test_diagnostics_record_abi();
+    test_dma_channel_budget_contract();
+    test_dma_ring_copies_across_wrap();
+    test_dma_ring_accounts_overwrite();
+    test_dma_ring_handles_counter_wrap();
     test_mt6816_decodes_angle_and_even_parity();
     test_mt6816_reports_sensor_warning_flags();
     test_mt6816_rejects_bad_parity_without_publishing();

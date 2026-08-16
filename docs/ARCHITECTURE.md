@@ -1,7 +1,7 @@
 # Firmware Architecture
 
-Status: the bridge-safe foundation and foreground encoder acquisition are
-implemented; motor-control layers remain candidate architecture until the
+Status: the bridge-safe foundation, foreground encoder acquisition, and DMA
+RS-485 transport are implemented; motor-control layers remain candidate architecture until the
 relevant hardware gates are passed.
 
 ## Design priorities
@@ -35,6 +35,8 @@ The initial image implements only the parts that can be meaningfully built befor
 - A 1 kHz monotonic SysTick timebase.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
+- A receive-first USART1 transport with circular RX DMA, bounded foreground
+  draining, DMA TX, and line-complete PA8 turnaround.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - Hardware-independent application-state and fault-latch modules with native tests.
@@ -46,7 +48,8 @@ board. Active encoder work does not weaken that boundary.
 The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
 contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),
 [Independent watchdog policy](WATCHDOG.md), [Boot self-test](BOOT_SELF_TEST.md),
-[MT6816 encoder bring-up](ENCODER.md), and [Debugger diagnostic record](DIAGNOSTICS.md).
+[MT6816 encoder bring-up](ENCODER.md), [USART1 / RS-485 bring-up](RS485.md), and
+[Debugger diagnostic record](DIAGNOSTICS.md).
 Interrupt priorities, execution ownership, control-loop boundaries, and the
 unresolved PWM/ADC trigger options are defined in [Real-time and control
 architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain

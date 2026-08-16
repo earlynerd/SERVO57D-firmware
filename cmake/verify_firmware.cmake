@@ -33,11 +33,24 @@ function(require_symbol symbol expected)
     endif()
 endfunction()
 
+function(require_defined_symbol symbol)
+    string(REGEX MATCH
+           "(^|\n)[0-9A-Fa-f]+[ \t]+[^ \t\r\n]+[ \t]+${symbol}([\r\n]|$)"
+           defined_symbol_match "${nm_output}")
+    if(NOT defined_symbol_match)
+        message(FATAL_ERROR "Required firmware symbol is missing: ${symbol}")
+    endif()
+endfunction()
+
 require_symbol(_estack 20004000)
 require_symbol(__StackTop 20004000)
 require_symbol(__StackLimit 20003800)
 require_symbol(__sram2_start__ 20006000)
 require_symbol(__sram2_end__ 20008000)
+require_defined_symbol(rs485_write)
+require_defined_symbol(DMA_Channel4_IRQHandler)
+require_defined_symbol(DMA_Channel5_IRQHandler)
+require_defined_symbol(USART1_IRQHandler)
 
 execute_process(
     COMMAND "${NM}" -S --defined-only "${ELF}"
@@ -56,10 +69,10 @@ if(NOT diagnostics_symbol_match)
     message(FATAL_ERROR "Required firmware symbol is missing: g_diagnostics")
 endif()
 string(TOLOWER "${CMAKE_MATCH_2}" diagnostics_size)
-if(NOT diagnostics_size STREQUAL "0000005c" AND
-   NOT diagnostics_size STREQUAL "5c")
+if(NOT diagnostics_size STREQUAL "00000088" AND
+   NOT diagnostics_size STREQUAL "88")
     message(FATAL_ERROR
-        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0x5c")
+        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0x88")
 endif()
 
 execute_process(

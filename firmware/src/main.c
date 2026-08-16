@@ -9,17 +9,36 @@
 #include "mks57d/mt6816.h"
 #include "mks57d/panic.h"
 #include "mks57d/platform.h"
+#include "mks57d/rs485.h"
 #include "mks57d/spi1.h"
 #include "mks57d/timebase.h"
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
+
+static void update_rs485_diagnostics(diagnostics_rs485_t* diagnostics)
+{
+    rs485_stats_t stats;
+
+    rs485_get_stats(&stats);
+    diagnostics->status = stats.status;
+    diagnostics->rx_bytes = stats.rx_bytes;
+    diagnostics->rx_idle_events = stats.rx_idle_events;
+    diagnostics->rx_error_count = stats.rx_error_count;
+    diagnostics->rx_overrun_count = stats.rx_overrun_count;
+    diagnostics->rx_dropped_bytes = stats.rx_dropped_bytes;
+    diagnostics->tx_bytes = stats.tx_bytes;
+    diagnostics->tx_frame_count = stats.tx_frame_count;
+    diagnostics->tx_error_count = stats.tx_error_count;
+    diagnostics->tx_busy = stats.tx_busy;
+}
 
 int main(void)
 {
     enum
     {
         ENCODER_POWER_UP_DELAY_MS = 20u,
-        ENCODER_SAMPLE_PERIOD_MS = 10u
+        ENCODER_SAMPLE_PERIOD_MS = 10u,
+        RS485_FOREGROUND_DRAIN_BYTES = 64u
     };
     app_state_t state = APP_STATE_RESET_SAFE;
     boot_self_test_t self_test;
@@ -27,8 +46,13 @@ int main(void)
         .status = MT6816_STATUS_NOT_ATTEMPTED,
         .transport_status = SPI_STATUS_NOT_READY,
     };
+    diagnostics_rs485_t rs485_diagnostics = {
+        .status = RS485_STATUS_NOT_READY,
+    };
+    uint8_t rs485_receive_buffer[RS485_FOREGROUND_DRAIN_BYTES];
     spi_bus_t encoder_bus = {0};
     bool encoder_spi_ready = false;
+    bool rs485_ready = false;
     uint32_t heartbeat_count = 0u;
     uint32_t next_heartbeat;
     uint32_t next_encoder_sample;
@@ -133,6 +157,19 @@ int main(void)
     }
     diagnostics_publish_encoder(&encoder_diagnostics);
 
+    rs485_diagnostics.status = (uint32_t)rs485_init(SystemCoreClock);
+    rs485_ready =
+        rs485_diagnostics.status == (uint32_t)RS485_STATUS_OK;
+    if (rs485_ready)
+    {
+        update_rs485_diagnostics(&rs485_diagnostics);
+    }
+    else
+    {
+        rs485_diagnostics.rx_error_count = 1u;
+    }
+    diagnostics_publish_rs485(&rs485_diagnostics);
+
     if (!board_bridge_invariants_hold())
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
@@ -192,6 +229,25 @@ int main(void)
         bool diagnostics_due = false;
         const uint32_t now = timebase_millis();
 
+        if (rs485_ready)
+        {
+            const size_t received = rs485_read(
+                rs485_receive_buffer,
+                sizeof(rs485_receive_buffer));
+
+            if (received != 0u)
+            {
+                rs485_diagnostics.last_rx_byte =
+                    rs485_receive_buffer[received - 1u];
+            }
+            update_rs485_diagnostics(&rs485_diagnostics);
+            if (rs485_diagnostics.status != (uint32_t)RS485_STATUS_OK)
+            {
+                rs485_ready = false;
+                diagnostics_due = true;
+            }
+        }
+
         if (encoder_spi_ready &&
             ((int32_t)(now - next_encoder_sample) >= 0))
         {
@@ -245,6 +301,7 @@ int main(void)
 
         if (diagnostics_due)
         {
+            diagnostics_publish_rs485(&rs485_diagnostics);
             diagnostics_publish((uint32_t)state,
                                 now,
                                 heartbeat_count,

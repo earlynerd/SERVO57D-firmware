@@ -9,3 +9,13 @@ Manufacturer executables and archives belong under ignored `vendor/local/`, not 
 ```powershell
 pwsh -File tools/build.ps1 -Target all
 ```
+
+`reference_cache.py` verifies cataloged local PDFs, extracts searchable
+page-level text, and creates provenance-tracked page renders on demand. Its
+generated cache is ignored. See [the reference-cache workflow](../docs/REFERENCE_CACHE.md).
+
+```powershell
+python tools/reference_cache.py status
+python tools/reference_cache.py build n32l40x-um-v2.6
+python tools/reference_cache.py search "SRAM2 parity"
+```

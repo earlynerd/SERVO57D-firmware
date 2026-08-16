@@ -50,7 +50,7 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-The bridge-safe image sets `DBG_CTRL.IWDG_STOP`, pausing IWDG while the Cortex-M4 core is halted. This preserves first-board SWD recovery, and it is safe only because PA6, PA7, PB0, PB1, and provisional PB7 `nEN` remain in reset configuration and no bridge-control API exists.
+The bridge-safe image sets `DBG_CTRL.IWDG_STOP`, pausing IWDG while the Cortex-M4 core is halted. This preserves first-board SWD recovery, and it is safe only because PA6, PA7, PB0, PB1, and provisional PB7 `nEN` remain input/no-pull and no bridge-control API exists.
 
 This exception must be removed before any image can energize the bridge. A future bridge-capable build must demonstrate a hardware-safe output state during debugger halt and must not depend on a paused watchdog. `platform_panic()` is a running instruction loop rather than a debug halt, so IWDG continues and resets after a panic.
 

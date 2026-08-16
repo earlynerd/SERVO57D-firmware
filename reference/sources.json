@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "cache_directory": "reference/cache",
+  "sources": [
+    {
+      "id": "n32l40x-um-v2.6",
+      "title": "N32L40x Series User Manual",
+      "version": "2.6.0",
+      "kind": "mcu-reference-manual",
+      "path": "reference/local/N32L40x Series User Manual V2.6.0.pdf",
+      "sha256": "BBD831C96E30D313791601AA4B96444809AB9D5625113F1A3522F2D6DD7B0F01",
+      "pages": 676,
+      "render_pages": [46, 48, 76, 89, 134, 141]
+    },
+    {
+      "id": "servo57d-rs485-sch-v1.1",
+      "title": "MKS SERVO57D RS-485 Schematic",
+      "version": "1.1",
+      "kind": "schematic",
+      "path": "reference/local/MKS-SERVO42D-57D/Hardware/MKS SERVO57D_485 V1.1_001 Schematic.pdf",
+      "sha256": "613F82C287AD9DB745D4C5ECC0146D0C8F3BB5570C39EC853611E2C2748CCC67",
+      "pages": 1,
+      "render_pages": [1]
+    },
+    {
+      "id": "servo57d-rs485-manual-v1.0.9",
+      "title": "MKS SERVO42D/57D RS-485 User Manual",
+      "version": "1.0.9",
+      "kind": "user-manual",
+      "path": "reference/local/MKS-SERVO42D-57D/User Manual/V1.0.9/MKS SERVO42&57D_RS485 User Manual V1.0.9.pdf",
+      "sha256": "11ED701C9FDC8C450C62D8A25649EA94033C93E993192BCD81C236CAA00BF9F0",
+      "pages": 107,
+      "render_pages": []
+    },
+    {
+      "id": "servo57d-modbus-manual-v1.0.9",
+      "title": "MKS SERVO42D/57D Modbus RTU User Manual",
+      "version": "1.0.9",
+      "kind": "protocol-manual",
+      "path": "reference/local/MKS-SERVO42D-57D/User Manual/V1.0.9/MKS SERVO42&57D_Modbus RTU User Manual V1.0.9.pdf",
+      "sha256": "951E1D3E3B0DC24781FA8E94B54052B6943619419170DFF2B598CA15B2EC1FD1",
+      "pages": 68,
+      "render_pages": []
+    }
+  ]
+}

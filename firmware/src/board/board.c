@@ -12,6 +12,8 @@ enum
     STATUS_LED_MODE_MASK = 3u << STATUS_LED_MODE_SHIFT,
     STATUS_LED_OUTPUT_MODE = 1u << STATUS_LED_MODE_SHIFT,
     STATUS_LED_4MA_DRIVE = 2u << STATUS_LED_MODE_SHIFT,
+    BRIDGE_PA_MODE_MASK = (3u << (6u * 2u)) |
+                          (3u << (7u * 2u)),
     BRIDGE_PB_MODE_MASK = (3u << (0u * 2u)) |
                           (3u << (1u * 2u)) |
                           (3u << (7u * 2u)) |
@@ -55,7 +57,9 @@ bool board_bridge_invariants_hold(void)
 {
     const uint32_t port_clocks = RCC->APB2PCLKEN;
 
-    if ((port_clocks & RCC_APB2PCLKEN_IOPAEN) != 0u)
+    if (((port_clocks & RCC_APB2PCLKEN_IOPAEN) != 0u) &&
+        (((GPIOA->PMODE & BRIDGE_PA_MODE_MASK) != 0u) ||
+         ((GPIOA->PUPD & BRIDGE_PA_MODE_MASK) != 0u)))
     {
         return false;
     }

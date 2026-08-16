@@ -6,6 +6,7 @@ set(PROJECT_SOURCES
     src/app/diagnostics.c
     src/board/board.c
     src/drivers/adc_sample.c
+    src/drivers/dma_ring.c
     src/drivers/mt6816.c
     src/drivers/ssd1306.c
     src/platform/adc1.c
@@ -16,6 +17,7 @@ set(PROJECT_SOURCES
     src/platform/runtime.c
     src/platform/system.c
     src/platform/timebase.c
+    src/platform/usart1_rs485.c
     src/platform/watchdog.c
     src/safety/boot_self_test.c
     src/safety/fault_latch.c
@@ -71,6 +73,9 @@ target_link_options(${FIRMWARE_TARGET} PRIVATE
     --specs=nosys.specs
     -T${LINKER_SCRIPT}
     -Wl,--gc-sections
+    # Keep the silent-on-boot TX entry point available for debugger/adapter
+    # bring-up before a foreground protocol parser owns it.
+    -Wl,--undefined=rs485_write
     -Wl,--cref
     -Wl,-Map=$<TARGET_FILE_DIR:${FIRMWARE_TARGET}>/${FIRMWARE_TARGET}.map
     -Wl,--print-memory-usage

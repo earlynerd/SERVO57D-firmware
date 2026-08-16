@@ -63,12 +63,14 @@ decoded raw word; consumers must not treat a flagged angle as control-valid.
 
 SPI initialization enables GPIOB only for PB3-PB6. A post-initialization board
 invariant verifies that PB0/PB1 bridge controls, provisional PB7 `nEN`, and
-PB9 `KEY_MENU` remain input/no-pull. GPIOA remains clock-gated, so PA6/PA7
-bridge controls remain untouched. There is still no bridge-control API.
+PB9 `KEY_MENU` remain input/no-pull. The active RS-485 transport now enables
+GPIOA, so the post-peripheral board invariant directly verifies that PA6/PA7
+remain input/no-pull. There is still no bridge-control API.
 
 ## Diagnostic fields
 
-Diagnostic schema 2 appends the current MT6816 status, underlying SPI status,
+The schema-2 encoder prefix, retained unchanged in current schema 3, contains
+the current MT6816 status, underlying SPI status,
 last accepted raw angle, sensor flags, accepted-sample count, error count, and
 last-attempt timestamp. Status values are defined in `mks57d/mt6816.h`; SPI
 transport values are defined in `mks57d/spi_bus.h`.

@@ -14,7 +14,7 @@ assignments remain provisional until checked on the purchased RS-485 board.
 | Winding current | PA1 `currentB`, PA2 `currentA` ADC inputs | High for published schematic | The schematic shows external GS8632 amplifiers feeding the pins. Offset, gain, sign, bandwidth, clipping, and timer-relative settling remain measurements. |
 | Encoder | SPI1 on PB3 SCK, PB4 MISO, PB5 MOSI, PB6 software CS; schematic identifies MT6816CT-ACD | High for schematic routing and protocol; medium for fitted part | The schematic, MT6816 datasheet, Nations pin data, and independent board code agree on a four-wire mode-3 burst. The fitted marking, OTP mode, direction, signal integrity, and magnet geometry require confirmation. |
 | Bridge waveform | TIM3 channels 1-4 on PA6, PA7, PB0, PB1 | Medium-high | Schematic routing and public N32 work strongly support the mapping. Alternate functions, EG3013 behavior, ADC trigger placement, and shutdown semantics require register review and oscilloscope proof. |
-| RS-485 | USART1 on PA9/PA10 with PA8 direction control | High for schematic routing | Direction polarity, reset state, turnaround timing, and transceiver behavior require loopback or adapter tests. |
+| RS-485 | USART1 AF4 on PA9/PA10 with PA8 direction control; DMA channels 4/5 | High for schematic and MCU routing; medium for reset behavior | SP485E `/RE` and `DE` are tied, proving low receive/high transmit. Active firmware and turnaround remain unverified; the direction pull-up appears to select transmit during reset. |
 
 ## Implementation order
 
@@ -27,16 +27,15 @@ and active-window settings: 72 by 40 visible pixels at columns 28-99 and pages
 0-4. These settings remain configuration rather than being embedded in drawing
 code.
 
-This code is deliberately not called by the passive boot image yet. Therefore
-GPIOA remains clock-gated and the existing boot self-test continues to prove
-that PA6 and PA7 could not have been configured by the image. Activation will
-be a separate hardware-gated change that:
+This code is deliberately not called by the diagnostic boot image yet. GPIOA
+is now enabled later for RS-485, so the post-peripheral board invariant checks
+PA6 and PA7 directly for input/no-pull state. OLED activation remains a
+separate hardware-gated change that:
 
 1. verifies the purchased board and OLED flex/module;
 2. scopes reset, SCL, and SDA during one bounded address/init transaction;
 3. records ACK/NACK and timeout status in diagnostics;
-4. revises the passive-board invariant to inspect PA6/PA7 directly before
-   GPIOA is intentionally enabled.
+4. rechecks the PA6/PA7 invariant after display initialization.
 
 Display refresh belongs in foreground housekeeping. It must not run from
 SysTick, a control ISR, or any safety path.
@@ -47,7 +46,7 @@ The project now compiles an inactive ADC layer for the schematic's PA1
 `currentB`, PA2 `currentA`, and PA3 `vBus` inputs. It performs bounded,
 software-triggered, single-channel conversions in that order and publishes a
 host-tested all-or-nothing raw 12-bit sample. The layer is not called at boot,
-so HSI, ADC, and GPIOA remain in their existing reset/clock-gated state.
+so HSI and ADC remain clock-gated and PA1/PA2/PA3 remain input/no-pull.
 
 Passive initialization uses HSI divided to the ADC's required 1 MHz timing
 clock and a synchronous HCLK-derived sampling clock no faster than 2 MHz.
@@ -86,10 +85,17 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Bring up buttons and isolated inputs as debounced observations. Bring up
-USART1 receive first, then transmit with explicit PA8 direction timing and an
-external adapter. Protocol parsing stays in foreground and may never command a
-timer compare or bridge-enable register directly.
+Bring up buttons and isolated inputs as debounced observations. The diagnostic
+image now actively configures USART1 for 115200 8N1, preloads PA8 low for
+receive, and runs continuous circular RX DMA on channel 4. Foreground drains a
+bounded number of bytes without parsing or echoing them. TX uses channel 5 and
+keeps PA8 high until USART transmission-complete, not merely DMA completion.
+
+The transport is silent unless `rs485_write()` is called. Framing, CRC,
+addressing, and command validation remain foreground protocol work and may
+never command a timer compare or bridge-enable register directly. Adapter and
+oscilloscope proof, including the reset-time direction pull-up, is specified in
+[USART1 / RS-485 bring-up](RS485.md).
 
 ### 5. PWM and synchronous ADC
 

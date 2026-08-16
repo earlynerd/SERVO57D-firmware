@@ -19,9 +19,10 @@
 
 enum
 {
-    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 92u,
+    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 136u,
     DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u,
-    DIAGNOSTICS_EXPECTED_ENCODER_OFFSET = 64u
+    DIAGNOSTICS_EXPECTED_ENCODER_OFFSET = 64u,
+    DIAGNOSTICS_EXPECTED_RS485_OFFSET = 92u
 };
 
 _Static_assert(sizeof(diagnostics_record_t) == DIAGNOSTICS_EXPECTED_RECORD_SIZE,
@@ -32,6 +33,9 @@ _Static_assert(offsetof(diagnostics_record_t, sequence) ==
 _Static_assert(offsetof(diagnostics_record_t, encoder_status) ==
                    DIAGNOSTICS_EXPECTED_ENCODER_OFFSET,
                "diagnostics ABI schema-1 prefix changed");
+_Static_assert(offsetof(diagnostics_record_t, rs485_status) ==
+                   DIAGNOSTICS_EXPECTED_RS485_OFFSET,
+               "diagnostics ABI schema-2 prefix changed");
 
 volatile diagnostics_record_t g_diagnostics;
 
@@ -72,7 +76,8 @@ void diagnostics_init(uint32_t app_state,
                                  DIAGNOSTICS_CAPABILITY_IWDG |
                                  DIAGNOSTICS_CAPABILITY_RESET_CAUSE |
                                  DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY |
-                                 DIAGNOSTICS_CAPABILITY_ENCODER_SPI;
+                                 DIAGNOSTICS_CAPABILITY_ENCODER_SPI |
+                                 DIAGNOSTICS_CAPABILITY_RS485_DMA;
     g_diagnostics.app_state = app_state;
     g_diagnostics.uptime_millis = uptime_millis;
     g_diagnostics.heartbeat_count = heartbeat_count;
@@ -91,6 +96,17 @@ void diagnostics_init(uint32_t app_state,
     g_diagnostics.encoder_sample_count = 0u;
     g_diagnostics.encoder_error_count = 0u;
     g_diagnostics.encoder_last_attempt_millis = 0u;
+    g_diagnostics.rs485_status = 0u;
+    g_diagnostics.rs485_rx_bytes = 0u;
+    g_diagnostics.rs485_rx_idle_events = 0u;
+    g_diagnostics.rs485_rx_error_count = 0u;
+    g_diagnostics.rs485_rx_overrun_count = 0u;
+    g_diagnostics.rs485_rx_dropped_bytes = 0u;
+    g_diagnostics.rs485_last_rx_byte = 0u;
+    g_diagnostics.rs485_tx_bytes = 0u;
+    g_diagnostics.rs485_tx_frame_count = 0u;
+    g_diagnostics.rs485_tx_error_count = 0u;
+    g_diagnostics.rs485_tx_busy = 0u;
 
     diagnostics_end_update(odd_sequence);
 
@@ -138,5 +154,29 @@ void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder)
     g_diagnostics.encoder_error_count = encoder->error_count;
     g_diagnostics.encoder_last_attempt_millis =
         encoder->last_attempt_millis;
+    diagnostics_end_update(odd_sequence);
+}
+
+void diagnostics_publish_rs485(const diagnostics_rs485_t* rs485)
+{
+    uint32_t odd_sequence;
+
+    if (rs485 == NULL)
+    {
+        return;
+    }
+
+    odd_sequence = diagnostics_begin_update();
+    g_diagnostics.rs485_status = rs485->status;
+    g_diagnostics.rs485_rx_bytes = rs485->rx_bytes;
+    g_diagnostics.rs485_rx_idle_events = rs485->rx_idle_events;
+    g_diagnostics.rs485_rx_error_count = rs485->rx_error_count;
+    g_diagnostics.rs485_rx_overrun_count = rs485->rx_overrun_count;
+    g_diagnostics.rs485_rx_dropped_bytes = rs485->rx_dropped_bytes;
+    g_diagnostics.rs485_last_rx_byte = rs485->last_rx_byte;
+    g_diagnostics.rs485_tx_bytes = rs485->tx_bytes;
+    g_diagnostics.rs485_tx_frame_count = rs485->tx_frame_count;
+    g_diagnostics.rs485_tx_error_count = rs485->tx_error_count;
+    g_diagnostics.rs485_tx_busy = rs485->tx_busy;
     diagnostics_end_update(odd_sequence);
 }
