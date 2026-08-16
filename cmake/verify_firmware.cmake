@@ -56,10 +56,10 @@ if(NOT diagnostics_symbol_match)
     message(FATAL_ERROR "Required firmware symbol is missing: g_diagnostics")
 endif()
 string(TOLOWER "${CMAKE_MATCH_2}" diagnostics_size)
-if(NOT diagnostics_size STREQUAL "00000034" AND
-   NOT diagnostics_size STREQUAL "34")
+if(NOT diagnostics_size STREQUAL "00000040" AND
+   NOT diagnostics_size STREQUAL "40")
     message(FATAL_ERROR
-        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0x34")
+        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0x40")
 endif()
 
 execute_process(

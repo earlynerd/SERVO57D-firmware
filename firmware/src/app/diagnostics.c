@@ -19,7 +19,7 @@
 
 enum
 {
-    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 52u,
+    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 64u,
     DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u
 };
 
@@ -50,7 +50,8 @@ static void diagnostics_end_update(uint32_t odd_sequence)
 void diagnostics_init(uint32_t app_state,
                       uint32_t uptime_millis,
                       uint32_t heartbeat_count,
-                      uint32_t watchdog_status)
+                      uint32_t watchdog_status,
+                      const boot_self_test_t *self_test)
 {
     const panic_code_t retained_panic = g_last_panic;
     const uint32_t odd_sequence = diagnostics_begin_update();
@@ -75,6 +76,9 @@ void diagnostics_init(uint32_t app_state,
         (uint32_t)g_platform_boot_diagnostics.status;
     g_diagnostics.reset_flags = g_platform_boot_diagnostics.reset_flags;
     g_diagnostics.retained_panic = (uint32_t)retained_panic;
+    g_diagnostics.self_test_required = self_test->required;
+    g_diagnostics.self_test_passed = self_test->passed;
+    g_diagnostics.self_test_failed = self_test->failed;
 
     diagnostics_end_update(odd_sequence);
 
@@ -86,7 +90,8 @@ void diagnostics_init(uint32_t app_state,
 void diagnostics_publish(uint32_t app_state,
                          uint32_t uptime_millis,
                          uint32_t heartbeat_count,
-                         uint32_t watchdog_status)
+                         uint32_t watchdog_status,
+                         const boot_self_test_t *self_test)
 {
     const uint32_t odd_sequence = diagnostics_begin_update();
 
@@ -94,6 +99,11 @@ void diagnostics_publish(uint32_t app_state,
     g_diagnostics.uptime_millis = uptime_millis;
     g_diagnostics.heartbeat_count = heartbeat_count;
     g_diagnostics.watchdog_status = watchdog_status;
+    g_diagnostics.platform_boot_status =
+        (uint32_t)g_platform_boot_diagnostics.status;
+    g_diagnostics.self_test_required = self_test->required;
+    g_diagnostics.self_test_passed = self_test->passed;
+    g_diagnostics.self_test_failed = self_test->failed;
 
     diagnostics_end_update(odd_sequence);
 }

@@ -11,7 +11,8 @@ enum
     STATUS_LED_MODE_SHIFT = STATUS_LED_PIN * 2u,
     STATUS_LED_MODE_MASK = 3u << STATUS_LED_MODE_SHIFT,
     STATUS_LED_OUTPUT_MODE = 1u << STATUS_LED_MODE_SHIFT,
-    STATUS_LED_4MA_DRIVE = 2u << STATUS_LED_MODE_SHIFT
+    STATUS_LED_4MA_DRIVE = 2u << STATUS_LED_MODE_SHIFT,
+    BRIDGE_PB_MODE_MASK = (3u << (0u * 2u)) | (3u << (1u * 2u))
 };
 
 void board_init_passive(void)
@@ -33,6 +34,23 @@ void board_init_passive(void)
 
     GPIOB->PMODE = (GPIOB->PMODE & ~((uint32_t)STATUS_LED_MODE_MASK)) |
                    (uint32_t)STATUS_LED_OUTPUT_MODE;
+}
+
+bool board_passive_invariants_hold(void)
+{
+    const uint32_t port_clocks = RCC->APB2PCLKEN;
+
+    /*
+     * PA6/PA7 cannot have been configured by this image while GPIOA remains
+     * clock-gated. PB0/PB1 share the enabled GPIOB port with the status LED,
+     * so verify their reset-mode input and no-pull fields directly.
+     */
+    return ((port_clocks & RCC_APB2PCLKEN_IOPAEN) == 0u) &&
+           ((port_clocks & RCC_APB2PCLKEN_IOPBEN) != 0u) &&
+           ((GPIOB->PMODE & BRIDGE_PB_MODE_MASK) == 0u) &&
+           ((GPIOB->PUPD & BRIDGE_PB_MODE_MASK) == 0u) &&
+           ((GPIOB->PMODE & STATUS_LED_MODE_MASK) ==
+            STATUS_LED_OUTPUT_MODE);
 }
 
 void board_status_led_toggle(void)

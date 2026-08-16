@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "mks57d/boot_self_test.h"
+
 enum
 {
     DIAGNOSTICS_RECORD_MAGIC = 0x4D4B5335u,
@@ -29,6 +31,9 @@ typedef struct
     uint32_t platform_boot_status;
     uint32_t reset_flags;
     uint32_t retained_panic;
+    uint32_t self_test_required;
+    uint32_t self_test_passed;
+    uint32_t self_test_failed;
 } diagnostics_record_t;
 
 extern volatile diagnostics_record_t g_diagnostics;
@@ -36,10 +41,12 @@ extern volatile diagnostics_record_t g_diagnostics;
 void diagnostics_init(uint32_t app_state,
                       uint32_t uptime_millis,
                       uint32_t heartbeat_count,
-                      uint32_t watchdog_status);
+                      uint32_t watchdog_status,
+                      const boot_self_test_t *self_test);
 void diagnostics_publish(uint32_t app_state,
                          uint32_t uptime_millis,
                          uint32_t heartbeat_count,
-                         uint32_t watchdog_status);
+                         uint32_t watchdog_status,
+                         const boot_self_test_t *self_test);
 
 #endif

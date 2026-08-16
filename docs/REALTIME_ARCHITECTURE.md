@@ -199,7 +199,7 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or `bridge_emergency_off()`. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-The passive image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms or a failed application-health check permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
+The passive image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [passive boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
 
 Before `RUN` exists, the supervisor's health input must aggregate explicit progress evidence from every safety-critical execution owner, including the completed control epoch supervised by the higher-priority deadline guardian. Watchdog reset is too slow to be a safe response to an active bridge fault, missed current sample, invalid duty request, or stale encoder.
 

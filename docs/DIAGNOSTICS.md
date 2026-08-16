@@ -10,7 +10,7 @@ The record is not assigned a fixed SRAM address. A debugger locates it through s
 
 ## Version 1 layout
 
-All fields are naturally aligned 32-bit unsigned values. Schema version 1 is 52 bytes.
+All fields are naturally aligned 32-bit unsigned values. Schema version 1 is 64 bytes. The self-test fields were appended without moving the original 52-byte prefix.
 
 | Offset | Field | Meaning |
 | ---: | --- | --- |
@@ -27,12 +27,15 @@ All fields are naturally aligned 32-bit unsigned values. Schema version 1 is 52 
 | 40 | `platform_boot_status` | Numeric `platform_boot_status_t` value |
 | 44 | `reset_flags` | RCC reset flags captured before they were cleared |
 | 48 | `retained_panic` | Valid preceding panic retained across an IWDG reset, or `PANIC_NONE` |
+| 52 | `self_test_required` | Boot gates required by this passive image, currently `0x7F` |
+| 56 | `self_test_passed` | Gates completed without a latched failure |
+| 60 | `self_test_failed` | Latched gate failures; healthy value is zero |
 
 The format is append-only within a schema: new fields may be appended and `record_size` increased, but existing fields must not be reordered or reinterpreted. An incompatible change increments `schema_version` and receives a separate consumer path.
 
 ## Consistent-read procedure
 
-The cooperative foreground loop is the sole writer. It publishes immediately after watchdog initialization, after each 250 ms heartbeat, and immediately before entering a watchdog-related panic.
+The cooperative foreground loop is the sole writer. It publishes after every boot gate, immediately after watchdog initialization, after each 250 ms heartbeat, and immediately before entering a watchdog-related panic.
 
 A live reader should:
 
@@ -56,8 +59,9 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 During first passive bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.1.0` and the record size is 52;
+- confirm `firmware_version` decodes to `0.1.0` and the record size is 64;
 - confirm `sequence` is even when the core is halted;
+- confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
 - confirm a watchdog-related panic appears as `retained_panic` after reboot;
 - leave PA6, PA7, PB0, and PB1 under oscilloscope observation throughout.

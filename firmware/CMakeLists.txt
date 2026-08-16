@@ -5,12 +5,15 @@ set(PROJECT_SOURCES
     src/app/app_state.c
     src/app/diagnostics.c
     src/board/board.c
+    src/drivers/ssd1306.c
+    src/platform/i2c1.c
     src/platform/interrupt_priority.c
     src/platform/panic.c
     src/platform/runtime.c
     src/platform/system.c
     src/platform/timebase.c
     src/platform/watchdog.c
+    src/safety/boot_self_test.c
     src/safety/fault_latch.c
     src/safety/watchdog_policy.c
 )

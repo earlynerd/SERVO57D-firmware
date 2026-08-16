@@ -55,6 +55,23 @@ Currently includes:
 - N32L40x Series User Manual V2.6.0.
 - Component datasheet material and extracted schematic images.
 
+## Independent open firmware references
+
+### Delsian `servo57d`
+
+- Public source: <https://github.com/Delsian/servo57d>
+- Inspected revision: `5d400b01bc8afee0f2c17f4039408f82b5164584`
+- Repository license: GNU GPL v3
+- Use in this project: secondary factual evidence for the N32 alternate-function
+  selection and 100 kHz I2C bus. Its local `ZJY042-7240TSWEG01` module
+  datasheet supplies the candidate SSD1306 identity, active-low reset, 72-by-40
+  geometry, `0x3C` 7-bit address, and initialization values. No source, fonts,
+  or binary assets are imported.
+
+The project-owned I2C transport and display protocol layer are clean-sheet
+implementations. The candidate profile remains provisional until confirmed on
+the purchased RS-485 board.
+
 ## Publication checklist
 
 - [x] Record the official product/download page and published versions for the Nations SDK and GCC package.

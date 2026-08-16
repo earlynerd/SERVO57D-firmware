@@ -33,11 +33,12 @@ The initial image implements only the parts that can be meaningfully built befor
 - A 1 kHz monotonic SysTick timebase.
 - A passive board layer that configures only the provisional PB9 LED.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
+- A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - Hardware-independent application-state and fault-latch modules with native tests.
 
 There is deliberately no bridge module yet. Creating one would imply shutdown behavior, polarity, and pin truth that have not been verified on a purchased board.
 
-The clock, memory, watchdog, and debug-observability contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md), [Independent watchdog policy](WATCHDOG.md), and [Debugger diagnostic record](DIAGNOSTICS.md). Interrupt priorities, execution ownership, control-loop boundaries, and the unresolved PWM/ADC trigger options are defined in [Real-time and control architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain bench-validation items rather than proven behavior.
+The clock, memory, watchdog, boot-self-test, and debug-observability contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md), [Independent watchdog policy](WATCHDOG.md), [Passive boot self-test](BOOT_SELF_TEST.md), and [Debugger diagnostic record](DIAGNOSTICS.md). Interrupt priorities, execution ownership, control-loop boundaries, and the unresolved PWM/ADC trigger options are defined in [Real-time and control architecture](REALTIME_ARCHITECTURE.md). Hardware-dependent portions remain bench-validation items rather than proven behavior.
 
 ## Candidate motor-personality boundary
 

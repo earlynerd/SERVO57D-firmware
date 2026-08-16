@@ -4,12 +4,29 @@
 #include <stdio.h>
 
 #include "mks57d/app_state.h"
+#include "mks57d/boot_self_test.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
+#include "mks57d/ssd1306.h"
 #include "mks57d/watchdog_policy.h"
 
 static unsigned int s_failures;
+
+enum
+{
+    MOCK_I2C_MAX_CALLS = 32u,
+    MOCK_I2C_MAX_BYTES = 32u
+};
+
+typedef struct
+{
+    size_t call_count;
+    size_t fail_on_call;
+    uint8_t addresses[MOCK_I2C_MAX_CALLS];
+    size_t lengths[MOCK_I2C_MAX_CALLS];
+    uint8_t bytes[MOCK_I2C_MAX_CALLS][MOCK_I2C_MAX_BYTES];
+} mock_i2c_t;
 
 #define EXPECT_TRUE(expression)                                                     \
     do                                                                              \
@@ -20,6 +37,37 @@ static unsigned int s_failures;
             ++s_failures;                                                           \
         }                                                                           \
     } while (false)
+
+static i2c_status_t mock_i2c_write(void* context,
+                                   uint8_t address_7bit,
+                                   const uint8_t* bytes,
+                                   size_t length)
+{
+    mock_i2c_t* mock = context;
+    const size_t call = mock->call_count;
+    size_t index;
+
+    if ((call >= MOCK_I2C_MAX_CALLS) ||
+        (length > MOCK_I2C_MAX_BYTES))
+    {
+        return I2C_STATUS_INVALID_ARGUMENT;
+    }
+
+    mock->addresses[call] = address_7bit;
+    mock->lengths[call] = length;
+    for (index = 0u; index < length; ++index)
+    {
+        mock->bytes[call][index] = bytes[index];
+    }
+    ++mock->call_count;
+
+    if ((mock->fail_on_call != 0u) &&
+        (mock->call_count == mock->fail_on_call))
+    {
+        return I2C_STATUS_DATA_NACK;
+    }
+    return I2C_STATUS_OK;
+}
 
 static void test_reset_only_enters_diagnostic_after_passive_init(void)
 {
@@ -134,9 +182,42 @@ static void test_diagnostics_record_abi(void)
 
     EXPECT_TRUE(magic == 0x4D4B5335u);
     EXPECT_TRUE(schema == 1u);
-    EXPECT_TRUE(record_size == 52u);
+    EXPECT_TRUE(record_size == 64u);
     EXPECT_TRUE(sequence_offset == 12u);
     EXPECT_TRUE(panic_offset == 48u);
+}
+
+static void test_boot_self_test_requires_every_gate(void)
+{
+    boot_self_test_t self_test;
+
+    boot_self_test_init(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
+    EXPECT_TRUE(!boot_self_test_ready(&self_test));
+
+    boot_self_test_pass(&self_test,
+                        BOOT_SELF_TEST_REQUIRED_PASSIVE &
+                            ~BOOT_SELF_TEST_WATCHDOG);
+    EXPECT_TRUE(!boot_self_test_ready(&self_test));
+
+    boot_self_test_pass(&self_test, BOOT_SELF_TEST_WATCHDOG);
+    EXPECT_TRUE(boot_self_test_ready(&self_test));
+}
+
+static void test_boot_self_test_failure_is_latched(void)
+{
+    boot_self_test_t self_test;
+
+    boot_self_test_init(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
+    boot_self_test_pass(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
+    boot_self_test_fail(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
+
+    EXPECT_TRUE(!boot_self_test_ready(&self_test));
+    EXPECT_TRUE((self_test.failed & BOOT_SELF_TEST_PASSIVE_BOARD) != 0u);
+    EXPECT_TRUE((self_test.passed & BOOT_SELF_TEST_PASSIVE_BOARD) == 0u);
+
+    boot_self_test_pass(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
+    EXPECT_TRUE(!boot_self_test_ready(&self_test));
+    EXPECT_TRUE((self_test.passed & BOOT_SELF_TEST_PASSIVE_BOARD) == 0u);
 }
 
 static void test_interrupt_priority_contract(void)
@@ -159,6 +240,89 @@ static void test_interrupt_priority_contract(void)
     EXPECT_TRUE(timekeeping == 15u);
 }
 
+static void test_servo57d_oled_candidate_profile_is_valid(void)
+{
+    const ssd1306_panel_config_t* config =
+        &SSD1306_PANEL_SERVO57D_CANDIDATE;
+
+    EXPECT_TRUE(ssd1306_config_is_valid(config));
+    EXPECT_TRUE(config->address_7bit == 0x3Cu);
+    EXPECT_TRUE(config->width == 72u);
+    EXPECT_TRUE(config->height == 40u);
+    EXPECT_TRUE(config->column_offset == 28u);
+    EXPECT_TRUE(config->multiplex_ratio == 0x27u);
+    EXPECT_TRUE(config->start_line == 0u);
+}
+
+static void test_ssd1306_init_uses_one_bounded_command_transaction(void)
+{
+    mock_i2c_t mock = {0};
+    const i2c_bus_t bus = {
+        .write = mock_i2c_write,
+        .context = &mock,
+    };
+
+    EXPECT_TRUE(ssd1306_initialize(
+                    &bus,
+                    &SSD1306_PANEL_SERVO57D_CANDIDATE) == I2C_STATUS_OK);
+    EXPECT_TRUE(mock.call_count == 1u);
+    EXPECT_TRUE(mock.addresses[0] == 0x3Cu);
+    EXPECT_TRUE(mock.lengths[0] <= MOCK_I2C_MAX_BYTES);
+    EXPECT_TRUE(mock.bytes[0][0] == 0x00u);
+    EXPECT_TRUE(mock.bytes[0][1] == 0xAEu);
+    EXPECT_TRUE(mock.bytes[0][mock.lengths[0] - 1u] == 0xAFu);
+}
+
+static void test_ssd1306_frame_uses_configured_visible_window(void)
+{
+    uint8_t pixels[72u * 5u];
+    mock_i2c_t mock = {0};
+    const i2c_bus_t bus = {
+        .write = mock_i2c_write,
+        .context = &mock,
+    };
+    size_t index;
+
+    for (index = 0u; index < sizeof(pixels); ++index)
+    {
+        pixels[index] = (uint8_t)index;
+    }
+
+    EXPECT_TRUE(ssd1306_write_frame(
+                    &bus,
+                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    pixels,
+                    sizeof(pixels)) == I2C_STATUS_OK);
+    EXPECT_TRUE(mock.call_count == 24u);
+    EXPECT_TRUE(mock.lengths[0] == 7u);
+    EXPECT_TRUE(mock.bytes[0][0] == 0x00u);
+    EXPECT_TRUE(mock.bytes[0][1] == 0x21u);
+    EXPECT_TRUE(mock.bytes[0][2] == 28u);
+    EXPECT_TRUE(mock.bytes[0][3] == 99u);
+    EXPECT_TRUE(mock.bytes[0][4] == 0x22u);
+    EXPECT_TRUE(mock.bytes[0][5] == 0u);
+    EXPECT_TRUE(mock.bytes[0][6] == 4u);
+    EXPECT_TRUE(mock.bytes[1][0] == 0x40u);
+    EXPECT_TRUE(mock.lengths[23] == 9u);
+}
+
+static void test_ssd1306_stops_after_transport_failure(void)
+{
+    uint8_t pixels[72u * 5u] = {0};
+    mock_i2c_t mock = {.fail_on_call = 2u};
+    const i2c_bus_t bus = {
+        .write = mock_i2c_write,
+        .context = &mock,
+    };
+
+    EXPECT_TRUE(ssd1306_write_frame(
+                    &bus,
+                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    pixels,
+                    sizeof(pixels)) == I2C_STATUS_DATA_NACK);
+    EXPECT_TRUE(mock.call_count == 2u);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -170,7 +334,13 @@ int main(void)
     test_watchdog_policy_rejects_foreground_deadline_miss();
     test_watchdog_policy_handles_millisecond_wrap();
     test_diagnostics_record_abi();
+    test_boot_self_test_requires_every_gate();
+    test_boot_self_test_failure_is_latched();
     test_interrupt_priority_contract();
+    test_servo57d_oled_candidate_profile_is_valid();
+    test_ssd1306_init_uses_one_bounded_command_transaction();
+    test_ssd1306_frame_uses_configured_visible_window();
+    test_ssd1306_stops_after_transport_failure();
 
     if (s_failures != 0u)
     {

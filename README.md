@@ -28,10 +28,11 @@ The project does not redesign the PCB and does not make the controller suitable 
 - Manufacturer tools provide an L1-to-L0 unlock operation that mass-erases main flash.
 - Nations supplies GCC startup code, linker support, peripheral drivers, examples, CMSIS-Pack data, J-Link loaders, and flash-algorithm source.
 - The board has two external GS8632 current-sense amplifiers connected to the MCU's PA1 and PA2 ADC inputs.
+- The display bus is provisionally I2C1 on PA4/PA5 with PB2 reset; an inactive, host-tested SSD1306-compatible 72-by-40 candidate layer is compiled but not enabled at boot.
 - The manufacturer SDK includes timer-synchronous ADC and motor-control-oriented PWM examples that closely match the required peripheral architecture.
-- The passive image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, leaves every bridge-control pin untouched, runs a foreground-supervised independent watchdog, and publishes a versioned debugger diagnostic record.
+- The passive image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, leaves every bridge-control pin untouched, runs a seven-gate boot self-test and foreground-supervised independent watchdog, and publishes a versioned debugger diagnostic record.
 
-See [hardware notes](docs/HARDWARE.md), [architecture](docs/ARCHITECTURE.md), [real-time architecture](docs/REALTIME_ARCHITECTURE.md), [watchdog policy](docs/WATCHDOG.md), [debugger diagnostics](docs/DIAGNOSTICS.md), and the [project plan](PLAN.md) for the details and remaining unknowns.
+See [hardware notes](docs/HARDWARE.md), [peripheral bring-up](docs/PERIPHERALS.md), [architecture](docs/ARCHITECTURE.md), [real-time architecture](docs/REALTIME_ARCHITECTURE.md), [watchdog policy](docs/WATCHDOG.md), [boot self-test](docs/BOOT_SELF_TEST.md), [debugger diagnostics](docs/DIAGNOSTICS.md), and the [project plan](PLAN.md) for the details and remaining unknowns.
 
 ## Safety status
 

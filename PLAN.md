@@ -51,7 +51,7 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
 
-Software status: the passive image builds, initializes and verifies the documented NVIC grouping and SysTick priority, publishes firmware version and boot/runtime diagnostics through a sequence-protected RAM record, passes post-link memory/vector/diagnostic-symbol checks, and its host-testable state, fault, watchdog-liveness, diagnostic-ABI, and priority-contract checks pass native tests. Reset behavior and cause capture, MSI/LSI clock assumptions, SRAM2 initialization, IWDG timing, LED polarity, bridge safety, exception handling, priority register behavior, and debugger record visibility remain unverified on hardware.
+Software status: the passive image builds, runs a seven-gate boot self-test, initializes and verifies the documented NVIC grouping and SysTick priority, publishes firmware version and boot/runtime diagnostics through a 64-byte sequence-protected RAM record, passes post-link memory/vector/diagnostic-symbol checks, and its host-testable state, fault, self-test, watchdog-liveness, diagnostic-ABI, and priority-contract checks pass native tests. Reset behavior and cause capture, MSI/LSI clock assumptions, SRAM2 initialization, IWDG timing, LED polarity, physical bridge safety, exception handling, priority register behavior, passive-board register checks, and debugger record visibility remain unverified on hardware.
 
 Go criterion: a clean checkout builds, flashes, boots, and reports its version while the bridge remains disabled.
 
@@ -62,6 +62,7 @@ Goal: understand every input without commanding motor current.
 - [ ] Verify all pin assignments against continuity measurements on the actual board.
 - [ ] Read buttons and isolated step/direction/enable inputs.
 - [ ] Bring up the display only if it is useful for diagnostics.
+- [x] Add an inactive, bounded I2C1 transport and host-tested configurable SSD1306-compatible display layer.
 - [ ] Identify and read the magnetic encoder over SPI.
 - [ ] Characterize encoder noise, wraparound, direction, and zero-offset behavior.
 - [ ] Bring up RS-485 receive/transmit and direction control in loopback or with an external adapter.
