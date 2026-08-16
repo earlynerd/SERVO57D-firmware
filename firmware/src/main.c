@@ -4,9 +4,11 @@
 #include "mks57d/app_state.h"
 #include "mks57d/board.h"
 #include "mks57d/boot_self_test.h"
+#include "mks57d/command_service.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
+#include "mks57d/native_protocol.h"
 #include "mks57d/panic.h"
 #include "mks57d/platform.h"
 #include "mks57d/rs485.h"
@@ -14,6 +16,10 @@
 #include "mks57d/timebase.h"
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
+
+_Static_assert((unsigned int)NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE <=
+                   (unsigned int)RS485_TX_MAX_FRAME_SIZE,
+               "native frames must fit the bounded RS-485 TX staging buffer");
 
 static void update_rs485_diagnostics(diagnostics_rs485_t* diagnostics)
 {
@@ -30,6 +36,35 @@ static void update_rs485_diagnostics(diagnostics_rs485_t* diagnostics)
     diagnostics->tx_frame_count = stats.tx_frame_count;
     diagnostics->tx_error_count = stats.tx_error_count;
     diagnostics->tx_busy = stats.tx_busy;
+}
+
+static bool native_protocol_transmit(void* context,
+                                     const uint8_t* bytes,
+                                     size_t length)
+{
+    (void)context;
+    return rs485_write(bytes, length) == RS485_STATUS_OK;
+}
+
+static void update_protocol_diagnostics(
+    const native_protocol_server_t* server,
+    diagnostics_protocol_t* diagnostics)
+{
+    native_protocol_stats_t stats;
+
+    native_protocol_server_get_stats(server, &stats);
+    diagnostics->bytes_consumed = stats.bytes_consumed;
+    diagnostics->valid_frames = stats.valid_frames;
+    diagnostics->responses_sent = stats.responses_sent;
+    diagnostics->cobs_errors = stats.cobs_errors;
+    diagnostics->length_errors = stats.length_errors;
+    diagnostics->crc_errors = stats.crc_errors;
+    diagnostics->version_errors = stats.version_errors;
+    diagnostics->ignored_addresses = stats.ignored_addresses;
+    diagnostics->broadcasts_dropped = stats.broadcasts_dropped;
+    diagnostics->unexpected_message_types =
+        stats.unexpected_message_types;
+    diagnostics->transmit_rejections = stats.transmit_rejections;
 }
 
 int main(void)
@@ -49,6 +84,17 @@ int main(void)
     diagnostics_rs485_t rs485_diagnostics = {
         .status = RS485_STATUS_NOT_READY,
     };
+    diagnostics_protocol_t protocol_diagnostics = {0};
+    const command_service_context_t command_context = {
+        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
+        .firmware_major = MKS57D_FIRMWARE_VERSION_MAJOR,
+        .firmware_minor = MKS57D_FIRMWARE_VERSION_MINOR,
+        .firmware_patch = MKS57D_FIRMWARE_VERSION_PATCH,
+        .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
+        .capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT,
+    };
+    native_protocol_server_t protocol_server;
     uint8_t rs485_receive_buffer[RS485_FOREGROUND_DRAIN_BYTES];
     spi_bus_t encoder_bus = {0};
     bool encoder_spi_ready = false;
@@ -170,6 +216,19 @@ int main(void)
     }
     diagnostics_publish_rs485(&rs485_diagnostics);
 
+    if (!native_protocol_server_init(
+            &protocol_server,
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            &command_context,
+            native_protocol_transmit,
+            NULL))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
+    protocol_diagnostics.ready = 1u;
+    update_protocol_diagnostics(&protocol_server, &protocol_diagnostics);
+    diagnostics_publish_protocol(&protocol_diagnostics);
+
     if (!board_bridge_invariants_hold())
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
@@ -239,6 +298,12 @@ int main(void)
             {
                 rs485_diagnostics.last_rx_byte =
                     rs485_receive_buffer[received - 1u];
+                native_protocol_server_consume(&protocol_server,
+                                               rs485_receive_buffer,
+                                               received);
+                update_protocol_diagnostics(&protocol_server,
+                                            &protocol_diagnostics);
+                diagnostics_due = true;
             }
             update_rs485_diagnostics(&rs485_diagnostics);
             if (rs485_diagnostics.status != (uint32_t)RS485_STATUS_OK)
@@ -302,6 +367,7 @@ int main(void)
         if (diagnostics_due)
         {
             diagnostics_publish_rs485(&rs485_diagnostics);
+            diagnostics_publish_protocol(&protocol_diagnostics);
             diagnostics_publish((uint32_t)state,
                                 now,
                                 heartbeat_count,

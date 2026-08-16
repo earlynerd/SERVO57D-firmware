@@ -50,7 +50,7 @@ This procedure intentionally delays motor connection. Each stage should produce 
 5. Verify flash contents through both the vendor utility and the development programmer path.
 6. Confirm an unserviced running image resets near the measured IWDG interval and exposes `RCC_CTRLSTS_IWDGRSTF` in `g_platform_boot_diagnostics.reset_flags` after reboot.
 7. Confirm a debugger halt pauses IWDG only in this bridge-incapable image and that PA6/PA7/PB0/PB1/PB7 remain at their safe reset levels throughout halt and resume.
-8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `3`, size `136`, firmware version `0.3.0`, and an even stable sequence.
+8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `4`, size `184`, firmware version `0.4.0`, and an even stable sequence.
 9. Scope PD0 and confirm the active-high heartbeat without button contention on PB9.
 10. Scope PB3-PB6 and confirm the bounded MT6816 mode-3 burst described in [encoder bring-up](ENCODER.md), including non-fatal no-magnet behavior.
 11. Compare the diagnostic reset and retained-panic fields across power-on, NRST, software panic, and IWDG reset cases.

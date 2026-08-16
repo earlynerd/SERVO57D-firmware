@@ -3,6 +3,7 @@ set(FIRMWARE_TARGET mks57d)
 set(PROJECT_SOURCES
     src/main.c
     src/app/app_state.c
+    src/app/command_service.c
     src/app/diagnostics.c
     src/board/board.c
     src/drivers/adc_sample.c
@@ -19,6 +20,7 @@ set(PROJECT_SOURCES
     src/platform/timebase.c
     src/platform/usart1_rs485.c
     src/platform/watchdog.c
+    src/protocol/native_protocol.c
     src/safety/boot_self_test.c
     src/safety/fault_latch.c
     src/safety/watchdog_policy.c

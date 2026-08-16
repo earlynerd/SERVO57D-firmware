@@ -8,14 +8,24 @@
 enum
 {
     DIAGNOSTICS_RECORD_MAGIC = 0x4D4B5335u,
-    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 3u,
+    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 4u,
     DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE = 1u << 0,
     DIAGNOSTICS_CAPABILITY_STATUS_LED = 1u << 1,
     DIAGNOSTICS_CAPABILITY_IWDG = 1u << 2,
     DIAGNOSTICS_CAPABILITY_RESET_CAUSE = 1u << 3,
     DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY = 1u << 4,
     DIAGNOSTICS_CAPABILITY_ENCODER_SPI = 1u << 5,
-    DIAGNOSTICS_CAPABILITY_RS485_DMA = 1u << 6
+    DIAGNOSTICS_CAPABILITY_RS485_DMA = 1u << 6,
+    DIAGNOSTICS_CAPABILITY_NATIVE_PROTOCOL = 1u << 7,
+    DIAGNOSTICS_CAPABILITIES_CURRENT =
+        DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE |
+        DIAGNOSTICS_CAPABILITY_STATUS_LED |
+        DIAGNOSTICS_CAPABILITY_IWDG |
+        DIAGNOSTICS_CAPABILITY_RESET_CAUSE |
+        DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY |
+        DIAGNOSTICS_CAPABILITY_ENCODER_SPI |
+        DIAGNOSTICS_CAPABILITY_RS485_DMA |
+        DIAGNOSTICS_CAPABILITY_NATIVE_PROTOCOL
 };
 
 typedef struct
@@ -43,6 +53,22 @@ typedef struct
     uint32_t tx_error_count;
     uint32_t tx_busy;
 } diagnostics_rs485_t;
+
+typedef struct
+{
+    uint32_t ready;
+    uint32_t bytes_consumed;
+    uint32_t valid_frames;
+    uint32_t responses_sent;
+    uint32_t cobs_errors;
+    uint32_t length_errors;
+    uint32_t crc_errors;
+    uint32_t version_errors;
+    uint32_t ignored_addresses;
+    uint32_t broadcasts_dropped;
+    uint32_t unexpected_message_types;
+    uint32_t transmit_rejections;
+} diagnostics_protocol_t;
 
 typedef struct
 {
@@ -80,6 +106,18 @@ typedef struct
     uint32_t rs485_tx_frame_count;
     uint32_t rs485_tx_error_count;
     uint32_t rs485_tx_busy;
+    uint32_t native_protocol_ready;
+    uint32_t native_protocol_bytes_consumed;
+    uint32_t native_protocol_valid_frames;
+    uint32_t native_protocol_responses_sent;
+    uint32_t native_protocol_cobs_errors;
+    uint32_t native_protocol_length_errors;
+    uint32_t native_protocol_crc_errors;
+    uint32_t native_protocol_version_errors;
+    uint32_t native_protocol_ignored_addresses;
+    uint32_t native_protocol_broadcasts_dropped;
+    uint32_t native_protocol_unexpected_message_types;
+    uint32_t native_protocol_transmit_rejections;
 } diagnostics_record_t;
 
 extern volatile diagnostics_record_t g_diagnostics;
@@ -96,5 +134,6 @@ void diagnostics_publish(uint32_t app_state,
                          const boot_self_test_t *self_test);
 void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder);
 void diagnostics_publish_rs485(const diagnostics_rs485_t* rs485);
+void diagnostics_publish_protocol(const diagnostics_protocol_t* protocol);
 
 #endif

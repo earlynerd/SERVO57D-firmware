@@ -6,25 +6,28 @@ post-link tests. The record has not yet been read from physical hardware.
 ## Purpose
 
 The first diagnostic channel is a structured RAM record exported as the ELF
-symbol `g_diagnostics`. It reports boot, active encoder, and DMA-backed RS-485
-transport state without emitting unsolicited serial traffic.
+symbol `g_diagnostics`. It reports boot, active encoder, DMA-backed RS-485, and
+native-protocol state without emitting unsolicited serial traffic.
 
-The record is not assigned a fixed SRAM address. A debugger locates it through symbols in the matching `mks57d.elf`. A future transport may serialize the same information, but that transport must not expose the in-memory C layout as an unframed wire protocol.
+The record is not assigned a fixed SRAM address. A debugger locates it through
+symbols in the matching `mks57d.elf`. Native commands may later expose selected
+diagnostic semantics, but no transport may expose the in-memory C layout as a
+wire payload.
 
-## Version 3 layout
+## Version 4 layout
 
-All fields are naturally aligned 32-bit unsigned values. Schema version 3 is
-136 bytes. The original 64-byte schema-1 prefix and 92-byte schema-2 prefix are
-unchanged; RS-485 fields are appended.
+All fields are naturally aligned 32-bit unsigned values. Schema version 4 is
+184 bytes. The original 64-byte schema-1, 92-byte schema-2, and 136-byte
+schema-3 prefixes are unchanged; native-protocol fields are appended.
 
 | Offset | Field | Meaning |
 | ---: | --- | --- |
 | 0 | `magic` | `0x4D4B5335` record identifier |
-| 4 | `schema_version` | Record schema, currently `3` |
-| 8 | `record_size` | Total bytes available, currently `136` |
+| 4 | `schema_version` | Record schema, currently `4` |
+| 8 | `record_size` | Total bytes available, currently `184` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.3.0` |
-| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, and RS-485-DMA capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.4.0` |
+| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, and native-protocol capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -53,6 +56,18 @@ unchanged; RS-485 fields are appended.
 | 124 | `rs485_tx_frame_count` | Frames completed and returned to receive mode |
 | 128 | `rs485_tx_error_count` | TX DMA transfer errors |
 | 132 | `rs485_tx_busy` | One while a DMA/USART line transmission owns PA8 |
+| 136 | `native_protocol_ready` | One after the foreground native server is initialized |
+| 140 | `native_protocol_bytes_consumed` | Bytes passed from the RX drain into the streaming parser |
+| 144 | `native_protocol_valid_frames` | Version-1 frames accepted after COBS, length, and CRC validation, including filtered addresses/types |
+| 148 | `native_protocol_responses_sent` | Replies accepted by the RS-485 TX API |
+| 152 | `native_protocol_cobs_errors` | Invalid COBS frames discarded |
+| 156 | `native_protocol_length_errors` | Short, inconsistent, or oversized frames discarded |
+| 160 | `native_protocol_crc_errors` | Frames discarded for CRC-16 mismatch |
+| 164 | `native_protocol_version_errors` | CRC-valid frames using an unsupported protocol version |
+| 168 | `native_protocol_ignored_addresses` | Valid frames addressed to another device |
+| 172 | `native_protocol_broadcasts_dropped` | Valid broadcasts dropped because the first commands are not broadcast-safe |
+| 176 | `native_protocol_unexpected_message_types` | Responses or events observed by the request server and ignored |
+| 180 | `native_protocol_transmit_rejections` | Replies rejected because encoding or the bounded TX path was unavailable |
 
 The format is append-only within a schema: new fields may be appended and `record_size` increased, but existing fields must not be reordered or reinterpreted. An incompatible change increments `schema_version` and receives a separate consumer path.
 
@@ -61,7 +76,8 @@ The format is append-only within a schema: new fields may be appended and `recor
 The cooperative foreground loop is the sole writer. It publishes after every
 boot gate, immediately after watchdog initialization, after each 250 ms
 heartbeat, after each 10 ms encoder attempt, after RS-485 initialization or a
-transport failure, and immediately before entering a watchdog-related panic.
+transport failure, after each non-empty RS-485 foreground drain, and
+immediately before entering a watchdog-related panic.
 
 A live reader should:
 
@@ -87,7 +103,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 During first safe bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.3.0`, schema is 3, and record size is 136;
+- confirm `firmware_version` decodes to `0.4.0`, schema is 4, and record size is 184;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
@@ -98,7 +114,9 @@ During first safe bring-up:
   last-byte, and error fields without unsolicited board transmission;
 - trigger one bounded TX call and confirm byte/frame completion and busy state
   agree with scoped PA8 and final-stop-bit timing;
+- send valid and deliberately malformed native frames and confirm response,
+  COBS, length, CRC, address, broadcast, type, and TX-rejection counters;
 - leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.
 
-The RS-485 fields are software evidence only until the direction and bus
-waveforms are observed on the purchased board.
+The RS-485 and native-protocol fields are software evidence only until the
+direction and bus waveforms are observed on the purchased board.

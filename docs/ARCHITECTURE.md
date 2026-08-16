@@ -1,8 +1,9 @@
 # Firmware Architecture
 
-Status: the bridge-safe foundation, foreground encoder acquisition, and DMA
-RS-485 transport are implemented; motor-control layers remain candidate architecture until the
-relevant hardware gates are passed.
+Status: the bridge-safe foundation, foreground encoder acquisition, DMA
+RS-485 transport, and first read-only native protocol slice are implemented;
+motor-control layers remain candidate architecture until the relevant hardware
+gates are passed.
 
 ## Design priorities
 
@@ -37,6 +38,8 @@ The initial image implements only the parts that can be meaningfully built befor
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
   draining, DMA TX, and line-complete PA8 turnaround.
+- A host-tested transport-independent command service and native v1 COBS/CRC
+  adapter serving only ping, identity, and capabilities from foreground.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - Hardware-independent application-state and fault-latch modules with native tests.

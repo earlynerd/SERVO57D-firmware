@@ -1,10 +1,12 @@
 add_executable(host_unit_tests
     test_main.c
     ../firmware/src/app/app_state.c
+    ../firmware/src/app/command_service.c
     ../firmware/src/drivers/adc_sample.c
     ../firmware/src/drivers/dma_ring.c
     ../firmware/src/drivers/mt6816.c
     ../firmware/src/drivers/ssd1306.c
+    ../firmware/src/protocol/native_protocol.c
     ../firmware/src/safety/boot_self_test.c
     ../firmware/src/safety/fault_latch.c
     ../firmware/src/safety/watchdog_policy.c

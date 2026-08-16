@@ -55,8 +55,8 @@ Goal: produce a small, auditable project-owned firmware base.
 Software status: the bridge-safe image builds, runs a seven-gate boot self-test,
 initializes and verifies the documented NVIC grouping and SysTick priority,
 actively samples the MT6816 candidate through bounded foreground SPI, and
-publishes firmware, boot/runtime, encoder, and RS-485 diagnostics through a
-136-byte schema-3 sequence-protected RAM record. Post-link memory/vector/diagnostic
+publishes firmware, boot/runtime, encoder, RS-485, and native-protocol
+diagnostics through a 184-byte schema-4 sequence-protected RAM record. Post-link memory/vector/diagnostic
 checks and host-testable state, fault, self-test, watchdog-liveness,
 diagnostic-ABI, priority, and MT6816 protocol checks pass. Reset behavior,
 clock assumptions, SRAM2 initialization, IWDG timing, LED and SPI electrical
@@ -132,13 +132,18 @@ Go criterion: controlled moves and disturbances remain stable, faults shut down 
 
 ## Phase 7 — User interfaces and protocol
 
-- [ ] Define a documented RS-485 framing and addressing model.
-- [ ] Decide whether Modbus RTU compatibility is valuable.
+- [x] Choose and document a transport-independent command architecture with native, Modbus RTU, and Makerbase compatibility roles.
+- [x] Specify and freeze the native RS-485 v1 base frame, default address, CRC, read-only command IDs, and initial error contract.
+- [ ] Define address provisioning, duplicate-request handling, retries, control leases, and motion completion semantics.
+- [x] Retain Modbus RTU as an optional standards-oriented integration profile.
 - [ ] Implement step/direction behavior and edge-rate limits.
 - [ ] Define configuration, status, telemetry, and fault registers or messages.
 - [ ] Add protocol fuzz and malformed-frame tests.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
-- [ ] Decide whether any publicly documented Makerbase commands merit compatibility aliases.
+- [x] Treat useful publicly documented Makerbase commands as optional compatibility aliases rather than the canonical API.
+
+See [protocol architecture](docs/PROTOCOL.md) for the adopted boundaries,
+safety rules, staged implementation order, and remaining wire-format decisions.
 
 ## Phase 8 — Hardening and release
 
@@ -165,5 +170,5 @@ The Nations SDK should supply low-level MCU support. Existing motor-control proj
 | Current measurement is too noisy or poorly timed | Timer-synchronous sampling, offset calibration, scope measurements |
 | Gate-driver behavior is incompletely documented | Bench validation before motor connection |
 | 128 KiB flash / 24 KiB SRAM becomes restrictive | Begin bare-metal and measure resource use continuously |
-| Public protocol compatibility expands scope | Treat compatibility as a later optional layer |
+| Public protocol compatibility expands scope | Isolate Modbus RTU and Makerbase compatibility behind optional adapters to one command service |
 | Third-party material cannot be redistributed | Publish source URLs/manifests; keep local caches ignored |

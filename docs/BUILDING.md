@@ -83,9 +83,10 @@ This is a bridge-safe diagnostic image, not motor-driving firmware. It:
 9. Runs and publishes a seven-gate boot self-test, then rechecks bridge pins after GPIOA/GPIOB are enabled for communications and SPI1.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and performs bounded foreground MT6816 burst reads every 10 ms after a 20 ms power-up delay.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PA8 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Publishes firmware `0.3.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, and RS-485 transport state through the 136-byte schema-3 `g_diagnostics` RAM record.
-13. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.
-14. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+12. Parses native v1 COBS/CRC frames in foreground and replies only to valid address-1 ping, identity, and capability requests.
+13. Publishes firmware `0.4.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, and native-protocol counters through the 184-byte schema-4 `g_diagnostics` RAM record.
+14. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.
+15. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Do not flash even this image until the purchased board revision and
 PD0/PB3-PB7/PA8-PA10 assignments have been checked. There is intentionally no

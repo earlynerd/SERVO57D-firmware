@@ -6,12 +6,14 @@
 #include "mks57d/adc1.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
+#include "mks57d/command_service.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
+#include "mks57d/native_protocol.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/watchdog_policy.h"
 
@@ -21,7 +23,8 @@ enum
 {
     MOCK_I2C_MAX_CALLS = 32u,
     MOCK_I2C_MAX_BYTES = 32u,
-    MOCK_SPI_MAX_BYTES = 8u
+    MOCK_SPI_MAX_BYTES = 8u,
+    MOCK_PROTOCOL_CAPABILITIES = 0xA55Au
 };
 
 typedef struct
@@ -41,6 +44,14 @@ typedef struct
     uint8_t response[MOCK_SPI_MAX_BYTES];
     spi_status_t status;
 } mock_spi_t;
+
+typedef struct
+{
+    bool accept;
+    size_t call_count;
+    size_t length;
+    uint8_t bytes[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+} mock_protocol_tx_t;
 
 #define EXPECT_TRUE(expression)                                                     \
     do                                                                              \
@@ -105,6 +116,77 @@ static spi_status_t mock_spi_exchange(void* context,
         receive[index] = mock->response[index];
     }
     return mock->status;
+}
+
+static bool mock_protocol_send(void* context,
+                               const uint8_t* bytes,
+                               size_t length)
+{
+    mock_protocol_tx_t* mock = context;
+    size_t index;
+
+    ++mock->call_count;
+    if ((length > sizeof(mock->bytes)) || !mock->accept)
+    {
+        return false;
+    }
+    mock->length = length;
+    for (index = 0u; index < length; ++index)
+    {
+        mock->bytes[index] = bytes[index];
+    }
+    return true;
+}
+
+static bool init_native_server(native_protocol_server_t* server,
+                               mock_protocol_tx_t* transmit)
+{
+    const command_service_context_t context = {
+        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
+        .firmware_major = 0u,
+        .firmware_minor = 4u,
+        .firmware_patch = 0u,
+        .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
+        .capabilities = MOCK_PROTOCOL_CAPABILITIES,
+    };
+
+    return native_protocol_server_init(
+        server,
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        &context,
+        mock_protocol_send,
+        transmit);
+}
+
+static size_t encode_native_request(uint8_t address,
+                                    uint16_t sequence,
+                                    uint8_t message_type,
+                                    uint16_t command,
+                                    const uint8_t* payload,
+                                    size_t payload_length,
+                                    uint8_t* wire,
+                                    size_t capacity)
+{
+    native_protocol_frame_t frame = {
+        .version = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .device_address = address,
+        .sequence = sequence,
+        .message_type = message_type,
+        .command = command,
+        .payload_length = payload_length,
+    };
+    size_t index;
+
+    if ((payload == NULL) && (payload_length != 0u))
+    {
+        return 0u;
+    }
+    for (index = 0u; index < payload_length; ++index)
+    {
+        frame.payload[index] = payload[index];
+    }
+    return native_protocol_encode_wire_frame(&frame, wire, capacity);
 }
 
 static void test_reset_only_enters_diagnostic_after_passive_init(void)
@@ -221,14 +303,20 @@ static void test_diagnostics_record_abi(void)
         offsetof(diagnostics_record_t, encoder_status);
     volatile size_t rs485_offset =
         offsetof(diagnostics_record_t, rs485_status);
+    volatile size_t protocol_offset =
+        offsetof(diagnostics_record_t, native_protocol_ready);
+    volatile uint32_t capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT;
 
     EXPECT_TRUE(magic == 0x4D4B5335u);
-    EXPECT_TRUE(schema == 3u);
-    EXPECT_TRUE(record_size == 136u);
+    EXPECT_TRUE(schema == 4u);
+    EXPECT_TRUE(record_size == 184u);
     EXPECT_TRUE(sequence_offset == 12u);
     EXPECT_TRUE(panic_offset == 48u);
     EXPECT_TRUE(encoder_offset == 64u);
     EXPECT_TRUE(rs485_offset == 92u);
+    EXPECT_TRUE(protocol_offset == 136u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_NATIVE_PROTOCOL) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -588,6 +676,408 @@ static void test_ssd1306_stops_after_transport_failure(void)
     EXPECT_TRUE(mock.call_count == 2u);
 }
 
+static void test_native_protocol_crc_matches_standard_vector(void)
+{
+    static const uint8_t vector[] = {
+        '1', '2', '3', '4', '5', '6', '7', '8', '9'
+    };
+
+    EXPECT_TRUE(native_protocol_crc16_ccitt_false(
+                    vector,
+                    sizeof(vector)) == 0x29B1u);
+}
+
+static void test_native_protocol_codec_accepts_maximum_payload(void)
+{
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_frame_t source = {
+        .version = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .device_address = NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        .sequence = 0xFFFFu,
+        .message_type = NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        .command = NATIVE_PROTOCOL_COMMAND_PING,
+        .payload_length = NATIVE_PROTOCOL_MAX_PAYLOAD_SIZE,
+    };
+    native_protocol_frame_t decoded;
+    size_t wire_length;
+    size_t index;
+
+    for (index = 0u; index < source.payload_length; ++index)
+    {
+        source.payload[index] = (uint8_t)index;
+    }
+    wire_length = native_protocol_encode_wire_frame(
+        &source,
+        wire,
+        sizeof(wire));
+    EXPECT_TRUE(wire_length != 0u);
+    EXPECT_TRUE(wire_length <= NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    wire,
+                    wire_length,
+                    &decoded) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(decoded.payload_length == source.payload_length);
+    for (index = 0u; index < source.payload_length; ++index)
+    {
+        EXPECT_TRUE(decoded.payload[index] == source.payload[index]);
+    }
+}
+
+static void test_command_service_rejects_invalid_identity_payload(void)
+{
+    static const uint8_t payload = 1u;
+    const command_service_context_t context = {
+        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
+    };
+    const command_request_t request = {
+        .operation = COMMAND_OPERATION_GET_IDENTITY,
+        .payload = &payload,
+        .payload_length = 1u,
+    };
+    command_response_t response;
+
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_INVALID_PAYLOAD);
+    EXPECT_TRUE(response.kind == COMMAND_RESPONSE_NONE);
+}
+
+static void test_native_protocol_ping_round_trip_handles_zero_bytes(void)
+{
+    static const uint8_t payload[] = {0x11u, 0x00u, 0x22u};
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_frame_t response;
+    size_t wire_length;
+    size_t index;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        0x1234u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        payload,
+        sizeof(payload),
+        wire,
+        sizeof(wire));
+    EXPECT_TRUE(wire_length != 0u);
+
+    for (index = 0u; index < wire_length; ++index)
+    {
+        native_protocol_server_consume(&server, &wire[index], 1u);
+    }
+
+    EXPECT_TRUE(transmit.call_count == 1u);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(response.device_address ==
+                NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS);
+    EXPECT_TRUE(response.sequence == 0x1234u);
+    EXPECT_TRUE(response.message_type == NATIVE_PROTOCOL_MESSAGE_RESPONSE);
+    EXPECT_TRUE(response.command == NATIVE_PROTOCOL_COMMAND_PING);
+    EXPECT_TRUE(response.payload_length == 4u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 0x11u);
+    EXPECT_TRUE(response.payload[2] == 0x00u);
+    EXPECT_TRUE(response.payload[3] == 0x22u);
+}
+
+static void test_native_protocol_reports_identity_and_capabilities(void)
+{
+    static const uint8_t identity_request[] = {
+        0x03u, 0x01u, 0x01u, 0x03u, 0x01u, 0x01u,
+        0x02u, 0x02u, 0x03u, 0x74u, 0x0Bu, 0x00u
+    };
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_frame_t response;
+    size_t wire_length;
+    size_t index;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        1u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_IDENTITY,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    EXPECT_TRUE(wire_length == sizeof(identity_request));
+    for (index = 0u; index < sizeof(identity_request); ++index)
+    {
+        EXPECT_TRUE(wire[index] == identity_request[index]);
+    }
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(response.payload_length == 11u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 0x4Du);
+    EXPECT_TRUE(response.payload[2] == 0x4Bu);
+    EXPECT_TRUE(response.payload[3] == 0x53u);
+    EXPECT_TRUE(response.payload[4] == 0x35u);
+    EXPECT_TRUE(response.payload[5] == 0u);
+    EXPECT_TRUE(response.payload[6] == 4u);
+    EXPECT_TRUE(response.payload[7] == 0u);
+    EXPECT_TRUE(response.payload[8] == 0u);
+    EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
+    EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
+
+    transmit.length = 0u;
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        2u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_CAPABILITIES,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(response.payload_length == 5u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 0u);
+    EXPECT_TRUE(response.payload[2] == 0u);
+    EXPECT_TRUE(response.payload[3] == 0xA5u);
+    EXPECT_TRUE(response.payload[4] == 0x5Au);
+}
+
+static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
+{
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_stats_t stats;
+    size_t wire_length;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        3u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_CAPABILITIES,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    EXPECT_TRUE(wire_length > 3u);
+    wire[2] ^= (wire[2] == 1u) ? 2u : 1u;
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(transmit.call_count == 0u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        4u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_CAPABILITIES,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    native_protocol_server_get_stats(&server, &stats);
+    EXPECT_TRUE(transmit.call_count == 1u);
+    EXPECT_TRUE(stats.crc_errors == 1u);
+    EXPECT_TRUE(stats.valid_frames == 1u);
+}
+
+static void test_native_protocol_discards_oversize_then_resynchronizes(void)
+{
+    uint8_t oversize[NATIVE_PROTOCOL_MAX_ENCODED_FRAME_SIZE + 2u];
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_stats_t stats;
+    size_t wire_length;
+    size_t index;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    for (index = 0u; index < (sizeof(oversize) - 1u); ++index)
+    {
+        oversize[index] = 0x7Fu;
+    }
+    oversize[sizeof(oversize) - 1u] = 0u;
+    native_protocol_server_consume(&server, oversize, sizeof(oversize));
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        5u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    native_protocol_server_get_stats(&server, &stats);
+    EXPECT_TRUE(stats.length_errors == 1u);
+    EXPECT_TRUE(transmit.call_count == 1u);
+}
+
+static void test_native_protocol_rejects_bad_cobs_and_unknown_version(void)
+{
+    static const uint8_t malformed_cobs[] = {0x03u, 0x11u, 0x00u};
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_stats_t stats;
+    native_protocol_frame_t frame = {
+        .version = 2u,
+        .device_address = NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        .sequence = 12u,
+        .message_type = NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        .command = NATIVE_PROTOCOL_COMMAND_PING,
+        .payload_length = 0u,
+    };
+    const size_t wire_length = native_protocol_encode_wire_frame(
+        &frame,
+        wire,
+        sizeof(wire));
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    native_protocol_server_consume(
+        &server,
+        malformed_cobs,
+        sizeof(malformed_cobs));
+    native_protocol_server_consume(&server, wire, wire_length);
+    native_protocol_server_get_stats(&server, &stats);
+    EXPECT_TRUE(transmit.call_count == 0u);
+    EXPECT_TRUE(stats.cobs_errors == 1u);
+    EXPECT_TRUE(stats.version_errors == 1u);
+}
+
+static void test_native_protocol_suppresses_foreign_broadcast_and_response(void)
+{
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_stats_t stats;
+    size_t wire_length;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    wire_length = encode_native_request(
+        2u,
+        6u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_BROADCAST_ADDRESS,
+        7u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        8u,
+        NATIVE_PROTOCOL_MESSAGE_RESPONSE,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+
+    native_protocol_server_get_stats(&server, &stats);
+    EXPECT_TRUE(transmit.call_count == 0u);
+    EXPECT_TRUE(stats.ignored_addresses == 1u);
+    EXPECT_TRUE(stats.broadcasts_dropped == 1u);
+    EXPECT_TRUE(stats.unexpected_message_types == 1u);
+}
+
+static void test_native_protocol_returns_bounded_command_errors(void)
+{
+    static const uint8_t invalid_payload = 1u;
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_frame_t response;
+    size_t wire_length;
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        9u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        0x7777u,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] ==
+                NATIVE_PROTOCOL_STATUS_UNKNOWN_COMMAND);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        10u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_IDENTITY,
+        &invalid_payload,
+        1u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] ==
+                NATIVE_PROTOCOL_STATUS_INVALID_PAYLOAD);
+}
+
+static void test_native_protocol_counts_transport_rejection(void)
+{
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = false};
+    native_protocol_stats_t stats;
+    const size_t wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        11u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_PING,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+
+    EXPECT_TRUE(init_native_server(&server, &transmit));
+    native_protocol_server_consume(&server, wire, wire_length);
+    native_protocol_server_get_stats(&server, &stats);
+    EXPECT_TRUE(transmit.call_count == 1u);
+    EXPECT_TRUE(stats.responses_sent == 0u);
+    EXPECT_TRUE(stats.transmit_rejections == 1u);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -617,6 +1107,17 @@ int main(void)
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();
     test_ssd1306_stops_after_transport_failure();
+    test_native_protocol_crc_matches_standard_vector();
+    test_native_protocol_codec_accepts_maximum_payload();
+    test_command_service_rejects_invalid_identity_payload();
+    test_native_protocol_ping_round_trip_handles_zero_bytes();
+    test_native_protocol_reports_identity_and_capabilities();
+    test_native_protocol_rejects_bad_crc_and_resynchronizes();
+    test_native_protocol_discards_oversize_then_resynchronizes();
+    test_native_protocol_rejects_bad_cobs_and_unknown_version();
+    test_native_protocol_suppresses_foreign_broadcast_and_response();
+    test_native_protocol_returns_bounded_command_errors();
+    test_native_protocol_counts_transport_rejection();
 
     if (s_failures != 0u)
     {

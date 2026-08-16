@@ -88,14 +88,16 @@ See [MT6816 encoder bring-up](ENCODER.md).
 Bring up buttons and isolated inputs as debounced observations. The diagnostic
 image now actively configures USART1 for 115200 8N1, preloads PA8 low for
 receive, and runs continuous circular RX DMA on channel 4. Foreground drains a
-bounded number of bytes without parsing or echoing them. TX uses channel 5 and
-keeps PA8 high until USART transmission-complete, not merely DMA completion.
+bounded number of bytes into the native v1 COBS/CRC parser. TX uses channel 5
+and keeps PA8 high until USART transmission-complete, not merely DMA
+completion.
 
-The transport is silent unless `rs485_write()` is called. Framing, CRC,
-addressing, and command validation remain foreground protocol work and may
-never command a timer compare or bridge-enable register directly. Adapter and
-oscilloscope proof, including the reset-time direction pull-up, is specified in
-[USART1 / RS-485 bring-up](RS485.md).
+The first protocol slice replies only to complete, CRC-valid address-1 ping,
+identity, and capability requests. Framing, address checks, command validation,
+and reply creation remain bounded foreground work and may never command a
+timer compare or bridge-enable register directly. Adapter and oscilloscope
+proof, including the reset-time direction pull-up, is specified in [USART1 /
+RS-485 bring-up](RS485.md).
 
 ### 5. PWM and synchronous ADC
 

@@ -4,8 +4,8 @@ Feasibility-stage clean-sheet firmware project for the Makerbase MKS SERVO57D RS
 
 A buildable bridge-safe diagnostic image now exists, but it has not been
 flashed or tested on hardware and cannot drive a motor. It actively samples the
-encoder and receives RS-485 through DMA while leaving every bridge control
-untouched. The repository also
+encoder and serves a read-only native RS-485 protocol through DMA while leaving
+every bridge control untouched. The repository also
 organizes the hardware research, manufacturer support material, safety
 constraints, and staged implementation plan needed to decide whether the
 project is worth pursuing.
@@ -22,7 +22,13 @@ If the feasibility gates succeed, the project should provide:
 
 ## Scope boundaries
 
-This is a clean-sheet implementation. It will not depend on extracting, disassembling, or reproducing Makerbase firmware or its bootloader. Compatibility with Makerbase's command protocol may be considered later from public documentation, but byte-for-byte compatibility is not an initial requirement.
+This is a clean-sheet implementation. It will not depend on extracting,
+disassembling, or reproducing Makerbase firmware or its bootloader. The
+canonical interface is a project-owned, versioned protocol over a
+transport-independent command service. Modbus RTU and useful publicly
+documented Makerbase commands are optional compatibility adapters to that same
+service, not the internal API; byte-for-byte Makerbase compatibility is not a
+requirement.
 
 The project does not redesign the PCB and does not make the controller suitable for safety-critical machinery.
 
@@ -40,7 +46,8 @@ The project does not redesign the PCB and does not make the controller suitable 
 - A bounded mode-3 SPI1 reader now acquires coherent MT6816 register bursts at 100 Hz, validates parity, and reports raw angle and sensor/transport status without making encoder loss boot-fatal.
 - An active USART1 transport receives through a 256-byte circular DMA buffer,
   provides bounded DMA transmission with final-stop-bit direction turnaround,
-  and remains silent until foreground explicitly requests a transmission.
+  and responds only to complete, CRC-valid native requests addressed to the
+  board. The first read-only commands provide ping, identity, and capabilities.
 - The manufacturer SDK includes timer-synchronous ADC and motor-control-oriented PWM examples that closely match the required peripheral architecture.
 - The safe bring-up image keeps the reset-default 4 MHz MSI, initializes SRAM2 parity without allocating from it, leaves every bridge-control pin untouched, runs a seven-gate boot self-test and foreground-supervised independent watchdog, and publishes a versioned debugger diagnostic record.
 
@@ -48,6 +55,7 @@ See [hardware notes](docs/HARDWARE.md), [peripheral bring-up](docs/PERIPHERALS.m
 [MT6816 encoder bring-up](docs/ENCODER.md), [USART1 / RS-485 bring-up](docs/RS485.md),
 [passive ADC bring-up](docs/ADC.md),
 [architecture](docs/ARCHITECTURE.md), [real-time architecture](docs/REALTIME_ARCHITECTURE.md),
+[command protocol](docs/PROTOCOL.md),
 [watchdog policy](docs/WATCHDOG.md), [boot self-test](docs/BOOT_SELF_TEST.md),
 [debugger diagnostics](docs/DIAGNOSTICS.md), and the [project plan](PLAN.md) for
 the details and remaining unknowns.

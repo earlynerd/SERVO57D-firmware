@@ -69,7 +69,7 @@ remain input/no-pull. There is still no bridge-control API.
 
 ## Diagnostic fields
 
-The schema-2 encoder prefix, retained unchanged in current schema 3, contains
+The schema-2 encoder prefix, retained unchanged in current schema 4, contains
 the current MT6816 status, underlying SPI status,
 last accepted raw angle, sensor flags, accepted-sample count, error count, and
 last-attempt timestamp. Status values are defined in `mks57d/mt6816.h`; SPI

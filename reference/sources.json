@@ -41,6 +41,16 @@
       "sha256": "951E1D3E3B0DC24781FA8E94B54052B6943619419170DFF2B598CA15B2EC1FD1",
       "pages": 68,
       "render_pages": []
+    },
+    {
+      "id": "servo57d-can-manual-v1.0.9",
+      "title": "MKS SERVO42D/57D CAN User Manual",
+      "version": "1.0.9",
+      "kind": "protocol-manual",
+      "path": "reference/local/MKS-SERVO42D-57D/User Manual/V1.0.9/MKS SERVO42&57D_CAN User Manual V1.0.9.pdf",
+      "sha256": "2D16FF8E1184FFA50C997280AC05CD5AB47BDF4632EF5397EFAE233E0107078F",
+      "pages": 106,
+      "render_pages": []
     }
   ]
 }

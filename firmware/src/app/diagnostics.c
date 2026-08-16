@@ -19,10 +19,11 @@
 
 enum
 {
-    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 136u,
+    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 184u,
     DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u,
     DIAGNOSTICS_EXPECTED_ENCODER_OFFSET = 64u,
-    DIAGNOSTICS_EXPECTED_RS485_OFFSET = 92u
+    DIAGNOSTICS_EXPECTED_RS485_OFFSET = 92u,
+    DIAGNOSTICS_EXPECTED_PROTOCOL_OFFSET = 136u
 };
 
 _Static_assert(sizeof(diagnostics_record_t) == DIAGNOSTICS_EXPECTED_RECORD_SIZE,
@@ -36,6 +37,9 @@ _Static_assert(offsetof(diagnostics_record_t, encoder_status) ==
 _Static_assert(offsetof(diagnostics_record_t, rs485_status) ==
                    DIAGNOSTICS_EXPECTED_RS485_OFFSET,
                "diagnostics ABI schema-2 prefix changed");
+_Static_assert(offsetof(diagnostics_record_t, native_protocol_ready) ==
+                   DIAGNOSTICS_EXPECTED_PROTOCOL_OFFSET,
+               "diagnostics ABI schema-3 prefix changed");
 
 volatile diagnostics_record_t g_diagnostics;
 
@@ -71,13 +75,7 @@ void diagnostics_init(uint32_t app_state,
         MKS57D_FIRMWARE_VERSION_MAJOR,
         MKS57D_FIRMWARE_VERSION_MINOR,
         MKS57D_FIRMWARE_VERSION_PATCH);
-    g_diagnostics.capabilities = DIAGNOSTICS_CAPABILITY_SAFE_BRINGUP_IMAGE |
-                                 DIAGNOSTICS_CAPABILITY_STATUS_LED |
-                                 DIAGNOSTICS_CAPABILITY_IWDG |
-                                 DIAGNOSTICS_CAPABILITY_RESET_CAUSE |
-                                 DIAGNOSTICS_CAPABILITY_PRIORITY_POLICY |
-                                 DIAGNOSTICS_CAPABILITY_ENCODER_SPI |
-                                 DIAGNOSTICS_CAPABILITY_RS485_DMA;
+    g_diagnostics.capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT;
     g_diagnostics.app_state = app_state;
     g_diagnostics.uptime_millis = uptime_millis;
     g_diagnostics.heartbeat_count = heartbeat_count;
@@ -107,6 +105,18 @@ void diagnostics_init(uint32_t app_state,
     g_diagnostics.rs485_tx_frame_count = 0u;
     g_diagnostics.rs485_tx_error_count = 0u;
     g_diagnostics.rs485_tx_busy = 0u;
+    g_diagnostics.native_protocol_ready = 0u;
+    g_diagnostics.native_protocol_bytes_consumed = 0u;
+    g_diagnostics.native_protocol_valid_frames = 0u;
+    g_diagnostics.native_protocol_responses_sent = 0u;
+    g_diagnostics.native_protocol_cobs_errors = 0u;
+    g_diagnostics.native_protocol_length_errors = 0u;
+    g_diagnostics.native_protocol_crc_errors = 0u;
+    g_diagnostics.native_protocol_version_errors = 0u;
+    g_diagnostics.native_protocol_ignored_addresses = 0u;
+    g_diagnostics.native_protocol_broadcasts_dropped = 0u;
+    g_diagnostics.native_protocol_unexpected_message_types = 0u;
+    g_diagnostics.native_protocol_transmit_rejections = 0u;
 
     diagnostics_end_update(odd_sequence);
 
@@ -178,5 +188,34 @@ void diagnostics_publish_rs485(const diagnostics_rs485_t* rs485)
     g_diagnostics.rs485_tx_frame_count = rs485->tx_frame_count;
     g_diagnostics.rs485_tx_error_count = rs485->tx_error_count;
     g_diagnostics.rs485_tx_busy = rs485->tx_busy;
+    diagnostics_end_update(odd_sequence);
+}
+
+void diagnostics_publish_protocol(const diagnostics_protocol_t* protocol)
+{
+    uint32_t odd_sequence;
+
+    if (protocol == NULL)
+    {
+        return;
+    }
+
+    odd_sequence = diagnostics_begin_update();
+    g_diagnostics.native_protocol_ready = protocol->ready;
+    g_diagnostics.native_protocol_bytes_consumed = protocol->bytes_consumed;
+    g_diagnostics.native_protocol_valid_frames = protocol->valid_frames;
+    g_diagnostics.native_protocol_responses_sent = protocol->responses_sent;
+    g_diagnostics.native_protocol_cobs_errors = protocol->cobs_errors;
+    g_diagnostics.native_protocol_length_errors = protocol->length_errors;
+    g_diagnostics.native_protocol_crc_errors = protocol->crc_errors;
+    g_diagnostics.native_protocol_version_errors = protocol->version_errors;
+    g_diagnostics.native_protocol_ignored_addresses =
+        protocol->ignored_addresses;
+    g_diagnostics.native_protocol_broadcasts_dropped =
+        protocol->broadcasts_dropped;
+    g_diagnostics.native_protocol_unexpected_message_types =
+        protocol->unexpected_message_types;
+    g_diagnostics.native_protocol_transmit_rejections =
+        protocol->transmit_rejections;
     diagnostics_end_update(odd_sequence);
 }
