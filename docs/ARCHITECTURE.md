@@ -1,9 +1,10 @@
 # Firmware Architecture
 
 Status: the bridge-safe foundation, foreground encoder acquisition, DMA
-RS-485 transport, and first read-only native protocol slice are implemented;
-motor-control layers remain candidate architecture until the relevant hardware
-gates are passed.
+RS-485 transport, first read-only native protocol slice, and portable control
+foundation are implemented. The control foundation is exercised against host
+plants and is not linked into the embedded image; modulation, timing, bridge
+control, calibration, and hardware integration remain gated.
 
 ## Design priorities
 
@@ -43,10 +44,24 @@ The initial image implements only the parts that can be meaningfully built befor
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - Hardware-independent application-state and fault-latch modules with native tests.
+- Portable angle unwrapping and plausibility checks, bounded trajectory
+  generation, PI anti-windup, cascaded position/velocity control, Park and
+  inverse-Park transforms, and vector-limited d/q current regulation with
+  deterministic mechanical and electrical host-plant tests.
 
 There is deliberately no bridge module yet. Creating one would imply shutdown
 behavior, polarity, and pin truth that have not been verified on a purchased
 board. Active encoder work does not weaken that boundary.
+
+The portable control modules live under `firmware/src/control/` but are linked
+only into host tests. Their contracts use revolutions, seconds, amperes,
+volts, and radians explicitly. The outer servo core accepts timestamped raw
+encoder samples and emits a hard-clamped torque-current request; stale input,
+missed control deadlines, excessive following error, implausible encoder
+motion, and invalid arithmetic latch the output invalid. The current-control
+core accepts stationary measured current plus d/q references and emits a
+bounded stationary voltage vector. A measured motor personality and timing
+backend will adapt these contracts to the board later.
 
 The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
 contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),

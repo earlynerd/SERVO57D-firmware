@@ -1,12 +1,15 @@
 #include <stdbool.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include "mks57d/adc1.h"
+#include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
 #include "mks57d/command_service.h"
+#include "mks57d/current_controller.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
@@ -14,6 +17,9 @@
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
 #include "mks57d/native_protocol.h"
+#include "mks57d/motion_profile.h"
+#include "mks57d/pi_controller.h"
+#include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/watchdog_policy.h"
 
@@ -52,6 +58,55 @@ typedef struct
     size_t length;
     uint8_t bytes[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
 } mock_protocol_tx_t;
+
+static servo_core_config_t test_servo_config(void)
+{
+    const servo_core_config_t config = {
+        .angle_tracker = {
+            .counts_per_revolution = 16384u,
+            .maximum_sample_interval_us = 2000u,
+            .maximum_velocity_revolutions_per_second = 20.0f,
+            .velocity_filter_alpha = 0.25f,
+        },
+        .motion_profile = {
+            .maximum_velocity_revolutions_per_second = 2.0f,
+            .maximum_acceleration_revolutions_per_second_squared = 4.0f,
+            .maximum_step_seconds = 0.002f,
+            .position_tolerance_revolutions = 0.0005f,
+            .velocity_tolerance_revolutions_per_second = 0.002f,
+        },
+        .velocity_controller = {
+            .proportional_gain = 2.0f,
+            .integral_gain_per_second = 8.0f,
+            .output_limit = 2.0f,
+            .integrator_limit = 2.0f,
+        },
+        .encoder_stale_timeout_us = 3000u,
+        .maximum_control_interval_us = 2000u,
+        .position_gain_per_second = 8.0f,
+        .maximum_following_error_revolutions = 0.5f,
+        .maximum_current_amperes = 2.0f,
+    };
+
+    return config;
+}
+
+static uint16_t simulated_encoder_raw(float position_revolutions)
+{
+    float wrapped = fmodf(position_revolutions, 1.0f);
+    uint32_t raw;
+
+    if (wrapped < 0.0f)
+    {
+        wrapped += 1.0f;
+    }
+    raw = (uint32_t)((wrapped * 16384.0f) + 0.5f);
+    if (raw >= 16384u)
+    {
+        raw = 0u;
+    }
+    return (uint16_t)raw;
+}
 
 #define EXPECT_TRUE(expression)                                                     \
     do                                                                              \
@@ -1078,6 +1133,308 @@ static void test_native_protocol_counts_transport_rejection(void)
     EXPECT_TRUE(stats.transmit_rejections == 1u);
 }
 
+static void test_angle_tracker_unwraps_in_both_directions(void)
+{
+    const angle_tracker_config_t config = {
+        .counts_per_revolution = 16384u,
+        .maximum_sample_interval_us = 2000u,
+        .maximum_velocity_revolutions_per_second = 20.0f,
+        .velocity_filter_alpha = 1.0f,
+    };
+    angle_tracker_t tracker;
+
+    EXPECT_TRUE(angle_tracker_init(&tracker, &config));
+    EXPECT_TRUE(angle_tracker_push(&tracker, 16380u, 0u));
+    EXPECT_TRUE(angle_tracker_push(&tracker, 4u, 1000u));
+    EXPECT_TRUE(tracker.position_revolutions > 1.0f);
+    EXPECT_TRUE(tracker.position_revolutions < 1.001f);
+    EXPECT_TRUE(tracker.velocity_revolutions_per_second > 0.0f);
+
+    EXPECT_TRUE(angle_tracker_push(&tracker, 16380u, 2000u));
+    EXPECT_TRUE(fabsf(tracker.position_revolutions -
+                      (16380.0f / 16384.0f)) < 0.0001f);
+    EXPECT_TRUE(tracker.velocity_revolutions_per_second < 0.0f);
+}
+
+static void test_angle_tracker_rejects_implausible_motion_without_advancing(void)
+{
+    const angle_tracker_config_t config = {
+        .counts_per_revolution = 16384u,
+        .maximum_sample_interval_us = 2000u,
+        .maximum_velocity_revolutions_per_second = 2.0f,
+        .velocity_filter_alpha = 0.5f,
+    };
+    angle_tracker_t tracker;
+
+    EXPECT_TRUE(angle_tracker_init(&tracker, &config));
+    EXPECT_TRUE(angle_tracker_push(&tracker, 100u, 1000u));
+    EXPECT_TRUE(!angle_tracker_push(&tracker, 8000u, 2000u));
+    EXPECT_TRUE(tracker.last_raw_angle == 100u);
+    EXPECT_TRUE(tracker.last_timestamp_us == 1000u);
+}
+
+static void test_motion_profile_respects_velocity_and_acceleration_limits(void)
+{
+    const motion_profile_config_t config = {
+        .maximum_velocity_revolutions_per_second = 2.0f,
+        .maximum_acceleration_revolutions_per_second_squared = 4.0f,
+        .maximum_step_seconds = 0.002f,
+        .position_tolerance_revolutions = 0.0005f,
+        .velocity_tolerance_revolutions_per_second = 0.002f,
+    };
+    motion_profile_t profile;
+    float previous_velocity = 0.0f;
+    unsigned int iteration;
+
+    EXPECT_TRUE(motion_profile_init(&profile, 0.0f));
+    EXPECT_TRUE(motion_profile_set_target(&profile, 1.0f));
+    for (iteration = 0u; iteration < 4000u; ++iteration)
+    {
+        EXPECT_TRUE(motion_profile_step(&profile, &config, 0.001f));
+        EXPECT_TRUE(fabsf(profile.velocity_revolutions_per_second) <=
+                    2.0001f);
+        EXPECT_TRUE(fabsf(profile.velocity_revolutions_per_second -
+                          previous_velocity) <= 0.0041f);
+        previous_velocity = profile.velocity_revolutions_per_second;
+    }
+    EXPECT_TRUE(motion_profile_is_settled(&profile, &config));
+    EXPECT_TRUE(fabsf(profile.position_revolutions - 1.0f) < 0.001f);
+}
+
+static void test_pi_controller_prevents_integrator_windup(void)
+{
+    const pi_controller_config_t config = {
+        .proportional_gain = 2.0f,
+        .integral_gain_per_second = 10.0f,
+        .output_limit = 1.0f,
+        .integrator_limit = 2.0f,
+    };
+    pi_controller_t controller;
+    float output = 0.0f;
+    unsigned int iteration;
+
+    pi_controller_reset(&controller);
+    for (iteration = 0u; iteration < 100u; ++iteration)
+    {
+        EXPECT_TRUE(pi_controller_step(&controller,
+                                       &config,
+                                       10.0f,
+                                       0.01f,
+                                       &output));
+        EXPECT_TRUE(output == 1.0f);
+    }
+    EXPECT_TRUE(controller.integrator == 0.0f);
+    EXPECT_TRUE(pi_controller_step(&controller,
+                                   &config,
+                                   -0.1f,
+                                   0.1f,
+                                   &output));
+    EXPECT_TRUE(output < 0.0f);
+    EXPECT_TRUE(controller.integrator < 0.0f);
+}
+
+static void test_servo_core_latches_stale_encoder_feedback(void)
+{
+    const servo_core_config_t config = test_servo_config();
+    servo_core_t core;
+    servo_core_output_t output;
+
+    EXPECT_TRUE(servo_core_init(&core, &config));
+    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, 0u) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_step(&core, 1000u, &output) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_step(&core, 2000u, &output) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_step(&core, 4000u, &output) ==
+                SERVO_CORE_STATUS_FAULTED);
+    EXPECT_TRUE(!output.valid);
+    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
+    EXPECT_TRUE((output.fault_flags & SERVO_FAULT_STALE_ENCODER) != 0u);
+}
+
+static void test_servo_core_latches_following_error(void)
+{
+    servo_core_config_t config = test_servo_config();
+    servo_core_t core;
+    servo_core_output_t output;
+    uint32_t timestamp_us = 0u;
+    unsigned int iteration;
+
+    config.maximum_following_error_revolutions = 0.005f;
+    EXPECT_TRUE(servo_core_init(&core, &config));
+    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
+                SERVO_CORE_STATUS_OK);
+
+    for (iteration = 0u;
+         (iteration < 500u) && !servo_core_is_faulted(&core);
+         ++iteration)
+    {
+        timestamp_us += 1000u;
+        EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+                    SERVO_CORE_STATUS_OK);
+        (void)servo_core_step(&core, timestamp_us, &output);
+    }
+
+    EXPECT_TRUE(servo_core_is_faulted(&core));
+    EXPECT_TRUE((core.fault_flags & SERVO_FAULT_FOLLOWING_ERROR) != 0u);
+}
+
+static void test_servo_core_closes_position_loop_against_simple_plant(void)
+{
+    const servo_core_config_t config = test_servo_config();
+    servo_core_t core;
+    servo_core_output_t output;
+    float plant_position = 0.0f;
+    float plant_velocity = 0.0f;
+    float maximum_current = 0.0f;
+    uint32_t timestamp_us = 0u;
+    unsigned int iteration;
+
+    EXPECT_TRUE(servo_core_init(&core, &config));
+    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
+                SERVO_CORE_STATUS_OK);
+
+    for (iteration = 0u; iteration < 8000u; ++iteration)
+    {
+        float acceleration;
+
+        timestamp_us += 1000u;
+        EXPECT_TRUE(servo_core_observe_encoder(
+                        &core,
+                        simulated_encoder_raw(plant_position),
+                        timestamp_us) == SERVO_CORE_STATUS_OK);
+        EXPECT_TRUE(servo_core_step(&core, timestamp_us, &output) ==
+                    SERVO_CORE_STATUS_OK);
+        EXPECT_TRUE(output.valid);
+        EXPECT_TRUE(fabsf(output.torque_current_request_amperes) <=
+                    config.maximum_current_amperes);
+
+        if (fabsf(output.torque_current_request_amperes) > maximum_current)
+        {
+            maximum_current =
+                fabsf(output.torque_current_request_amperes);
+        }
+        acceleration =
+            (8.0f * output.torque_current_request_amperes) -
+            (2.0f * plant_velocity);
+        plant_velocity += acceleration * 0.001f;
+        plant_position += plant_velocity * 0.001f;
+    }
+
+    EXPECT_TRUE(!servo_core_is_faulted(&core));
+    EXPECT_TRUE(maximum_current <= config.maximum_current_amperes);
+    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
+    EXPECT_TRUE(fabsf(plant_velocity) < 0.05f);
+}
+
+static current_controller_config_t test_current_controller_config(void)
+{
+    const current_controller_config_t config = {
+        .d_axis = {
+            .proportional_gain = 2.0f,
+            .integral_gain_per_second = 400.0f,
+            .output_limit = 4.0f,
+            .integrator_limit = 4.0f,
+        },
+        .q_axis = {
+            .proportional_gain = 2.0f,
+            .integral_gain_per_second = 400.0f,
+            .output_limit = 4.0f,
+            .integrator_limit = 4.0f,
+        },
+        .maximum_voltage_magnitude = 4.0f,
+        .vector_anti_windup_gain_per_second = 100.0f,
+    };
+
+    return config;
+}
+
+static void test_park_transform_round_trip(void)
+{
+    const stationary_vector_t stationary = {
+        .alpha = 1.25f,
+        .beta = -0.75f,
+    };
+    rotating_vector_t rotating;
+    stationary_vector_t recovered;
+
+    EXPECT_TRUE(park_transform(stationary, 1.234f, &rotating));
+    EXPECT_TRUE(inverse_park_transform(rotating, 1.234f, &recovered));
+    EXPECT_TRUE(fabsf(recovered.alpha - stationary.alpha) < 0.0001f);
+    EXPECT_TRUE(fabsf(recovered.beta - stationary.beta) < 0.0001f);
+}
+
+static void test_current_controller_limits_voltage_vector(void)
+{
+    const current_controller_config_t config =
+        test_current_controller_config();
+    current_controller_t controller;
+    current_controller_output_t output;
+    const stationary_vector_t measured = {0};
+    const rotating_vector_t requested = {
+        .d = 100.0f,
+        .q = 100.0f,
+    };
+
+    EXPECT_TRUE(current_controller_init(&controller, &config));
+    EXPECT_TRUE(current_controller_step(&controller,
+                                        &config,
+                                        measured,
+                                        requested,
+                                        0.7f,
+                                        0.00005f,
+                                        &output));
+    EXPECT_TRUE(output.voltage_saturated);
+    EXPECT_TRUE(hypotf(output.voltage_dq.d, output.voltage_dq.q) <=
+                4.0001f);
+    EXPECT_TRUE(hypotf(output.voltage_alpha_beta.alpha,
+                       output.voltage_alpha_beta.beta) <= 4.0001f);
+}
+
+static void test_current_controller_regulates_simple_rl_plant(void)
+{
+    const current_controller_config_t config =
+        test_current_controller_config();
+    const rotating_vector_t requested = {
+        .d = 0.0f,
+        .q = 1.0f,
+    };
+    current_controller_t controller;
+    current_controller_output_t output;
+    stationary_vector_t current = {0};
+    unsigned int iteration;
+
+    EXPECT_TRUE(current_controller_init(&controller, &config));
+    for (iteration = 0u; iteration < 5000u; ++iteration)
+    {
+        EXPECT_TRUE(current_controller_step(&controller,
+                                            &config,
+                                            current,
+                                            requested,
+                                            0.0f,
+                                            0.00005f,
+                                            &output));
+
+        /* Independent alpha/beta 5 mH, 1 ohm winding model. */
+        current.alpha +=
+            ((output.voltage_alpha_beta.alpha - current.alpha) /
+             0.005f) * 0.00005f;
+        current.beta +=
+            ((output.voltage_alpha_beta.beta - current.beta) /
+             0.005f) * 0.00005f;
+    }
+
+    EXPECT_TRUE(fabsf(current.alpha) < 0.01f);
+    EXPECT_TRUE(fabsf(current.beta - 1.0f) < 0.02f);
+    EXPECT_TRUE(hypotf(output.voltage_alpha_beta.alpha,
+                       output.voltage_alpha_beta.beta) <= 4.0001f);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -1118,6 +1475,16 @@ int main(void)
     test_native_protocol_suppresses_foreign_broadcast_and_response();
     test_native_protocol_returns_bounded_command_errors();
     test_native_protocol_counts_transport_rejection();
+    test_angle_tracker_unwraps_in_both_directions();
+    test_angle_tracker_rejects_implausible_motion_without_advancing();
+    test_motion_profile_respects_velocity_and_acceleration_limits();
+    test_pi_controller_prevents_integrator_windup();
+    test_servo_core_latches_stale_encoder_feedback();
+    test_servo_core_latches_following_error();
+    test_servo_core_closes_position_loop_against_simple_plant();
+    test_park_transform_round_trip();
+    test_current_controller_limits_voltage_vector();
+    test_current_controller_regulates_simple_rl_plant();
 
     if (s_failures != 0u)
     {

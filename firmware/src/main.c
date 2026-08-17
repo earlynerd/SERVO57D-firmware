@@ -17,6 +17,10 @@
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
 
+#if !defined(MKS57D_PASSIVE_BRINGUP_IMAGE)
+#error "This entry point is reserved for the bridge-incapable bring-up image"
+#endif
+
 _Static_assert((unsigned int)NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE <=
                    (unsigned int)RS485_TX_MAX_FRAME_SIZE,
                "native frames must fit the bounded RS-485 TX staging buffer");

@@ -1,5 +1,35 @@
 set(FIRMWARE_TARGET mks57d)
 
+set(PORTABLE_CONTROL_SOURCES
+    src/control/angle_tracker.c
+    src/control/current_controller.c
+    src/control/motion_profile.c
+    src/control/pi_controller.c
+    src/control/servo_core.c
+)
+
+# Cross-compile the production control core on every firmware build, but do
+# not link it into the known passive image. Host tests own execution until a
+# measured board backend and numerical policy are selected.
+add_library(mks57d_portable_control OBJECT ${PORTABLE_CONTROL_SOURCES})
+target_include_directories(mks57d_portable_control PRIVATE include)
+target_compile_features(mks57d_portable_control PRIVATE c_std_11)
+target_compile_options(mks57d_portable_control PRIVATE
+    -mcpu=cortex-m4
+    -mthumb
+    -mfloat-abi=soft
+    -ffunction-sections
+    -fdata-sections
+    -fno-common
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Werror=implicit-function-declaration
+    $<$<CONFIG:Debug>:-Og>
+    $<$<CONFIG:Debug>:-g3>
+    $<$<CONFIG:Release>:-Os>
+)
+
 set(PROJECT_SOURCES
     src/main.c
     src/app/app_state.c
@@ -43,10 +73,17 @@ target_include_directories(${FIRMWARE_TARGET} PRIVATE
 # the first image on reset-default 4 MHz MSI and does not configure HSI/HSE/PLL.
 target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     N32L40X
+    MKS57D_PASSIVE_BRINGUP_IMAGE=1
     MKS57D_FIRMWARE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     MKS57D_FIRMWARE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
+
+# Keep an explicit build target for tomorrow's known bridge-incapable image.
+# Portable production control modules are host-tested but are not linked here
+# until a measured hardware backend is available.
+add_custom_target(bringup-passive DEPENDS ${FIRMWARE_TARGET})
+add_custom_target(portable-control-arm DEPENDS mks57d_portable_control)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)
 target_compile_options(${FIRMWARE_TARGET} PRIVATE

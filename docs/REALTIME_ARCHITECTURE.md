@@ -248,6 +248,29 @@ The intended common control domain is stationary `alpha/beta` current transforme
 | Voltage command | Common inverse Park transform to stationary voltage | Common inverse Park transform to stationary voltage |
 | Modulation | Two bipolar H-bridges | Three-leg modulation/SVPWM with the unused fourth leg held in its proven disabled state |
 
+### Portable implementation status
+
+The hardware-independent portion is now implemented under
+`firmware/src/control/` and linked into host tests only:
+
+- raw encoder angle is unwrapped in both directions with timestamp, sample-age,
+  maximum-velocity, and filter contracts;
+- a trapezoidal position trajectory independently limits reference velocity
+  and acceleration;
+- cascaded position and velocity control emits a hard-clamped torque-current
+  request and latches stale encoder, deadline, following-error, and numeric
+  faults;
+- Park/inverse-Park transforms and two anti-windup PI axes emit a
+  magnitude-limited stationary voltage request; and
+- deterministic mechanical and two-axis RL plant tests exercise the complete
+  portable path through encoder wrapping, trajectory completion, saturation,
+  and current regulation.
+
+These tests establish signs, units, bounds, state ownership, and fault
+behavior. They do not establish loop gains, numerical representation,
+electrical-angle alignment, current scaling, modulation, or stability on the
+physical motor.
+
 The motor personality owns current/angle adaptation and modulation. It does not own PWM registers, ADC timing, fault latching, or bridge enable. A four-phase personality is not assumed feasible until current observability and the exact motor connection are established.
 
 ### Fast-loop sequence

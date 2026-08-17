@@ -147,6 +147,12 @@ safety rules, staged implementation order, and remaining wire-format decisions.
 
 ## Phase 8 — Hardening and release
 
+Software note: native tests now exercise the initial encoder estimator,
+trajectory limits, PI anti-windup, cascaded outer loop, d/q transforms,
+voltage-vector saturation, deterministic mechanical plant, and two-axis RL
+current plant. Configuration migration, modulation, replay/fuzz coverage,
+measured timing, and hardware-in-the-loop coverage remain open.
+
 - [ ] Add host unit tests for control math, protocol parsing, and configuration migration.
 - [ ] Add hardware-in-the-loop tests for reset, brownout, watchdog, communications, and fault shutdown.
 - [ ] Measure CPU load, ISR latency, stack use, flash use, and worst-case loop timing.

@@ -2,6 +2,11 @@ add_executable(host_unit_tests
     test_main.c
     ../firmware/src/app/app_state.c
     ../firmware/src/app/command_service.c
+    ../firmware/src/control/angle_tracker.c
+    ../firmware/src/control/current_controller.c
+    ../firmware/src/control/motion_profile.c
+    ../firmware/src/control/pi_controller.c
+    ../firmware/src/control/servo_core.c
     ../firmware/src/drivers/adc_sample.c
     ../firmware/src/drivers/dma_ring.c
     ../firmware/src/drivers/mt6816.c
@@ -19,6 +24,7 @@ if(MSVC)
     target_compile_options(host_unit_tests PRIVATE /W4 /WX)
 else()
     target_compile_options(host_unit_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(host_unit_tests PRIVATE m)
 endif()
 
 add_test(NAME host_unit_tests COMMAND host_unit_tests)
