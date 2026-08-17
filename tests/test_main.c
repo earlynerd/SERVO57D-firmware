@@ -1,10 +1,12 @@
 #include <stdbool.h>
 #include <math.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include "mks57d/adc1.h"
+#include "mks57d/application_core.h"
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
@@ -16,11 +18,13 @@
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
+#include "mks57d/motion_manager.h"
 #include "mks57d/native_protocol.h"
 #include "mks57d/motion_profile.h"
 #include "mks57d/pi_controller.h"
 #include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
+#include "mks57d/step_direction.h"
 #include "mks57d/watchdog_policy.h"
 
 static unsigned int s_failures;
@@ -86,6 +90,51 @@ static servo_core_config_t test_servo_config(void)
         .position_gain_per_second = 8.0f,
         .maximum_following_error_revolutions = 0.5f,
         .maximum_current_amperes = 2.0f,
+    };
+
+    return config;
+}
+
+static application_core_config_t test_application_config(
+    uint32_t lease_timeout_us,
+    uint32_t allowed_motion_sources)
+{
+    const application_core_config_t config = {
+        .servo = {
+            .angle_tracker = {
+                .counts_per_revolution = 16384u,
+                .maximum_sample_interval_us = 2000u,
+                .maximum_velocity_revolutions_per_second = 20.0f,
+                .velocity_filter_alpha = 0.25f,
+            },
+            .motion_profile = {
+                .maximum_velocity_revolutions_per_second = 2.0f,
+                .maximum_acceleration_revolutions_per_second_squared = 4.0f,
+                .maximum_step_seconds = 0.002f,
+                .position_tolerance_revolutions = 0.0005f,
+                .velocity_tolerance_revolutions_per_second = 0.002f,
+            },
+            .velocity_controller = {
+                .proportional_gain = 2.0f,
+                .integral_gain_per_second = 8.0f,
+                .output_limit = 2.0f,
+                .integrator_limit = 2.0f,
+            },
+            .encoder_stale_timeout_us = 3000u,
+            .maximum_control_interval_us = 2000u,
+            .position_gain_per_second = 8.0f,
+            .maximum_following_error_revolutions = 0.5f,
+            .maximum_current_amperes = 2.0f,
+        },
+        .motion = {
+            .remote_lease_timeout_us = lease_timeout_us,
+            .allowed_motion_sources = allowed_motion_sources,
+        },
+        .step_direction = {
+            .steps_per_revolution = 3200u,
+            .maximum_sample_interval_us = 2000u,
+            .maximum_step_rate_per_second = 160000.0f,
+        },
     };
 
     return config;
@@ -1201,6 +1250,41 @@ static void test_motion_profile_respects_velocity_and_acceleration_limits(void)
     EXPECT_TRUE(fabsf(profile.position_revolutions - 1.0f) < 0.001f);
 }
 
+static void test_motion_profile_controlled_stop_decelerates_to_rest(void)
+{
+    const motion_profile_config_t config = {
+        .maximum_velocity_revolutions_per_second = 2.0f,
+        .maximum_acceleration_revolutions_per_second_squared = 4.0f,
+        .maximum_step_seconds = 0.002f,
+        .position_tolerance_revolutions = 0.0005f,
+        .velocity_tolerance_revolutions_per_second = 0.002f,
+    };
+    motion_profile_t profile;
+    float position_when_stop_requested;
+    float stop_target;
+    unsigned int iteration;
+
+    EXPECT_TRUE(motion_profile_init(&profile, 0.0f));
+    EXPECT_TRUE(motion_profile_set_target(&profile, 10.0f));
+    for (iteration = 0u; iteration < 500u; ++iteration)
+    {
+        EXPECT_TRUE(motion_profile_step(&profile, &config, 0.001f));
+    }
+    position_when_stop_requested = profile.position_revolutions;
+    EXPECT_TRUE(profile.velocity_revolutions_per_second > 1.9f);
+    EXPECT_TRUE(motion_profile_request_stop(&profile, &config));
+    stop_target = profile.target_position_revolutions;
+    EXPECT_TRUE(stop_target > position_when_stop_requested);
+
+    for (iteration = 0u; iteration < 2000u; ++iteration)
+    {
+        EXPECT_TRUE(motion_profile_step(&profile, &config, 0.001f));
+    }
+    EXPECT_TRUE(motion_profile_is_settled(&profile, &config));
+    EXPECT_TRUE(fabsf(profile.position_revolutions - stop_target) < 0.001f);
+    EXPECT_TRUE(profile.velocity_revolutions_per_second == 0.0f);
+}
+
 static void test_pi_controller_prevents_integrator_windup(void)
 {
     const pi_controller_config_t config = {
@@ -1435,6 +1519,863 @@ static void test_current_controller_regulates_simple_rl_plant(void)
                        output.voltage_alpha_beta.beta) <= 4.0001f);
 }
 
+static bool apply_motion_action_to_servo(servo_core_t* core,
+                                         const motion_action_t* action)
+{
+    switch (action->kind)
+    {
+        case MOTION_ACTION_NONE:
+        case MOTION_ACTION_ENABLE:
+        case MOTION_ACTION_DISABLE:
+            return true;
+
+        case MOTION_ACTION_SET_POSITION_TARGET:
+            return servo_core_set_position_target(
+                       core,
+                       action->position_revolutions) ==
+                   SERVO_CORE_STATUS_OK;
+
+        case MOTION_ACTION_REQUEST_CONTROLLED_STOP:
+            return servo_core_request_stop(core) ==
+                   SERVO_CORE_STATUS_OK;
+
+        default:
+            return false;
+    }
+}
+
+static void test_motion_manager_enforces_authority_and_idempotency(void)
+{
+    const motion_manager_config_t config = {
+        .remote_lease_timeout_us = 100000u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE |
+                                  MOTION_SOURCE_MASK_MODBUS,
+    };
+    const motion_request_t enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 1u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    const motion_request_t move = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 2u,
+        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
+        .position_revolutions = 1.0f,
+    };
+    motion_request_t request;
+    motion_manager_t manager;
+    motion_manager_status_t status;
+    motion_action_t action;
+    uint32_t lease_deadline;
+
+    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_NOT_ENABLED);
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &enable,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(action.kind == MOTION_ACTION_ENABLE);
+    lease_deadline = manager.lease_deadline_us;
+
+    request = move;
+    request.source = MOTION_SOURCE_MODBUS;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      1000u,
+                                      0.0f,
+                                      &action) == MOTION_SUBMIT_BUSY);
+
+    request.source = MOTION_SOURCE_LOCAL;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      1000u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_SOURCE_DISABLED);
+
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      1000u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(action.kind == MOTION_ACTION_SET_POSITION_TARGET);
+    EXPECT_TRUE(action.position_revolutions == 1.0f);
+    lease_deadline = manager.lease_deadline_us;
+
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      50000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_DUPLICATE);
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    EXPECT_TRUE(manager.lease_deadline_us == lease_deadline);
+
+    request = move;
+    request.position_revolutions = 2.0f;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      50000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_CONFLICT);
+
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    60000u,
+                                    true,
+                                    false,
+                                    &action));
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.state == MOTION_STATE_READY);
+    EXPECT_TRUE(status.authority == MOTION_SOURCE_NATIVE);
+    EXPECT_TRUE(status.active_completion == MOTION_COMPLETION_NONE);
+    EXPECT_TRUE(status.last_command_id == 2u);
+    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_COMPLETED);
+}
+
+static void test_motion_manager_lease_expiry_stops_then_disables(void)
+{
+    const motion_manager_config_t config = {
+        .remote_lease_timeout_us = 100000u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
+    };
+    const motion_request_t enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 10u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    const motion_request_t move = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 11u,
+        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
+        .position_revolutions = 5.0f,
+    };
+    motion_manager_t manager;
+    motion_manager_status_t status;
+    motion_action_t action;
+
+    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &enable,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    99999u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    100000u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.state == MOTION_STATE_STOPPING);
+    EXPECT_TRUE(status.last_command_id == 11u);
+    EXPECT_TRUE(status.last_completion ==
+                MOTION_COMPLETION_ABORTED_LEASE);
+
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    101000u,
+                                    true,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_DISABLE);
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.state == MOTION_STATE_DISABLED);
+    EXPECT_TRUE(status.authority == MOTION_SOURCE_NONE);
+}
+
+static void test_motion_manager_keepalive_is_explicit_and_retries_stay_safe(void)
+{
+    const motion_manager_config_t config = {
+        .remote_lease_timeout_us = 100000u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
+    };
+    const motion_request_t enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 30u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    const motion_request_t move = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 31u,
+        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
+        .position_revolutions = 5.0f,
+    };
+    const motion_request_t keepalive = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 32u,
+        .kind = MOTION_COMMAND_KEEPALIVE,
+    };
+    motion_manager_t manager;
+    motion_manager_status_t status;
+    motion_action_t action;
+    uint32_t refreshed_deadline;
+
+    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &enable,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      1000u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &keepalive,
+                                      50000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    refreshed_deadline = manager.lease_deadline_us;
+    EXPECT_TRUE(refreshed_deadline == 150000u);
+
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &keepalive,
+                                      60000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_DUPLICATE);
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &move,
+                                      60000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_DUPLICATE);
+    EXPECT_TRUE(manager.lease_deadline_us == refreshed_deadline);
+
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    149999u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    150000u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_NATIVE);
+    EXPECT_TRUE(status.last_command_id == 31u);
+    EXPECT_TRUE(status.last_completion ==
+                MOTION_COMPLETION_ABORTED_LEASE);
+    EXPECT_TRUE(status.previous_command_source == MOTION_SOURCE_NATIVE);
+    EXPECT_TRUE(status.previous_command_id == 32u);
+    EXPECT_TRUE(status.previous_completion == MOTION_COMPLETION_COMPLETED);
+}
+
+static void test_motion_manager_lease_deadline_survives_timestamp_wrap(void)
+{
+    const motion_manager_config_t config = {
+        .remote_lease_timeout_us = 100u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
+    };
+    const motion_request_t enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 40u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    motion_manager_t manager;
+    motion_action_t action;
+
+    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &enable,
+                                      UINT32_MAX - 50u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(manager.lease_deadline_us == 49u);
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    UINT32_MAX,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    48u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    49u,
+                                    false,
+                                    false,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
+}
+
+static void test_motion_manager_allows_foreign_stop_and_latches_fault(void)
+{
+    const motion_manager_config_t config = {
+        .remote_lease_timeout_us = 100000u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
+    };
+    motion_request_t request = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 20u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    motion_manager_t manager;
+    motion_manager_status_t status;
+    motion_action_t action;
+
+    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      0u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    request.command_id = 21u;
+    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
+    request.position_revolutions = 3.0f;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      1000u,
+                                      0.0f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+
+    request.source = MOTION_SOURCE_LOCAL;
+    request.command_id = 22u;
+    request.kind = MOTION_COMMAND_STOP;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      2000u,
+                                      0.1f,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.active_command_source == MOTION_SOURCE_LOCAL);
+    EXPECT_TRUE(status.active_command_id == 22u);
+    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_NATIVE);
+    EXPECT_TRUE(status.last_command_id == 21u);
+    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_ABORTED_STOP);
+
+    EXPECT_TRUE(motion_manager_poll(&manager,
+                                    3000u,
+                                    false,
+                                    true,
+                                    &action));
+    EXPECT_TRUE(action.kind == MOTION_ACTION_DISABLE);
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.state == MOTION_STATE_FAULT);
+    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_LOCAL);
+    EXPECT_TRUE(status.last_command_id == 22u);
+    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_FAULTED);
+    EXPECT_TRUE(status.previous_command_source == MOTION_SOURCE_NATIVE);
+    EXPECT_TRUE(status.previous_command_id == 21u);
+    EXPECT_TRUE(status.previous_completion ==
+                MOTION_COMPLETION_ABORTED_STOP);
+    EXPECT_TRUE(!motion_manager_clear_fault(&manager, false, 0.1f));
+    EXPECT_TRUE(motion_manager_clear_fault(&manager, true, 0.1f));
+    motion_manager_get_status(&manager, &status);
+    EXPECT_TRUE(status.state == MOTION_STATE_DISABLED);
+}
+
+static void test_step_direction_reanchors_and_tracks_signed_counts(void)
+{
+    const step_direction_config_t config = {
+        .steps_per_revolution = 3200u,
+        .maximum_sample_interval_us = 2000u,
+        .maximum_step_rate_per_second = 160000.0f,
+    };
+    step_direction_t model;
+    step_direction_output_t output;
+
+    EXPECT_TRUE(step_direction_init(&model, &config));
+    EXPECT_TRUE(step_direction_update(&model,
+                                      100,
+                                      false,
+                                      0u,
+                                      2.0f,
+                                      &output));
+    EXPECT_TRUE(output.event == STEP_DIRECTION_EVENT_NONE);
+    EXPECT_TRUE(step_direction_update(&model,
+                                      200,
+                                      false,
+                                      1000u,
+                                      2.1f,
+                                      &output));
+    EXPECT_TRUE(output.target_position_revolutions == 2.1f);
+
+    EXPECT_TRUE(step_direction_update(&model,
+                                      200,
+                                      true,
+                                      2000u,
+                                      2.2f,
+                                      &output));
+    EXPECT_TRUE(output.event == STEP_DIRECTION_EVENT_ENABLED);
+    EXPECT_TRUE(output.target_position_revolutions == 2.2f);
+    EXPECT_TRUE(step_direction_update(&model,
+                                      360,
+                                      true,
+                                      3000u,
+                                      2.2f,
+                                      &output));
+    EXPECT_TRUE(output.event == STEP_DIRECTION_EVENT_TARGET_UPDATED);
+    EXPECT_TRUE(output.delta_steps == 160);
+    EXPECT_TRUE(fabsf(output.target_position_revolutions - 2.25f) <
+                0.0001f);
+    EXPECT_TRUE(step_direction_update(&model,
+                                      200,
+                                      true,
+                                      4000u,
+                                      2.2f,
+                                      &output));
+    EXPECT_TRUE(output.delta_steps == -160);
+    EXPECT_TRUE(fabsf(output.target_position_revolutions - 2.2f) <
+                0.0001f);
+
+    EXPECT_TRUE(step_direction_update(&model,
+                                      200,
+                                      false,
+                                      5000u,
+                                      2.18f,
+                                      &output));
+    EXPECT_TRUE(output.event == STEP_DIRECTION_EVENT_DISABLED);
+    EXPECT_TRUE(step_direction_update(&model,
+                                      500,
+                                      true,
+                                      6000u,
+                                      2.19f,
+                                      &output));
+    EXPECT_TRUE(output.event == STEP_DIRECTION_EVENT_ENABLED);
+    EXPECT_TRUE(fabsf(output.target_position_revolutions - 2.19f) <
+                0.0001f);
+}
+
+static void test_step_direction_rejects_rate_and_handles_counter_wrap(void)
+{
+    const step_direction_config_t config = {
+        .steps_per_revolution = 3200u,
+        .maximum_sample_interval_us = 2000u,
+        .maximum_step_rate_per_second = 160000.0f,
+    };
+    step_direction_t model;
+    step_direction_output_t output;
+
+    EXPECT_TRUE(step_direction_init(&model, &config));
+    EXPECT_TRUE(step_direction_update(&model,
+                                      INT32_MAX - 5,
+                                      true,
+                                      0u,
+                                      0.0f,
+                                      &output));
+    EXPECT_TRUE(step_direction_update(&model,
+                                      INT32_MIN + 4,
+                                      true,
+                                      1000u,
+                                      0.0f,
+                                      &output));
+    EXPECT_TRUE(output.delta_steps == 10);
+
+    EXPECT_TRUE(!step_direction_update(&model,
+                                       INT32_MIN + 1004,
+                                       true,
+                                       2000u,
+                                       0.0f,
+                                       &output));
+    EXPECT_TRUE(model.last_cumulative_steps == INT32_MIN + 4);
+    EXPECT_TRUE(model.last_timestamp_us == 1000u);
+}
+
+static void test_motion_manager_reports_simulated_move_completion(void)
+{
+    const servo_core_config_t servo_config = test_servo_config();
+    const motion_manager_config_t manager_config = {
+        .remote_lease_timeout_us = 10000000u,
+        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
+    };
+    motion_request_t request = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 30u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    servo_core_t core;
+    servo_core_output_t servo_output;
+    motion_manager_t manager;
+    motion_manager_status_t manager_status;
+    motion_action_t action;
+    float plant_position = 0.0f;
+    float plant_velocity = 0.0f;
+    uint32_t timestamp_us = 0u;
+    unsigned int iteration;
+
+    EXPECT_TRUE(servo_core_init(&core, &servo_config));
+    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(motion_manager_init(&manager, &manager_config, 0.0f));
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      timestamp_us,
+                                      plant_position,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
+
+    request.command_id = 31u;
+    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
+    request.position_revolutions = 1.0f;
+    EXPECT_TRUE(motion_manager_submit(&manager,
+                                      &request,
+                                      timestamp_us,
+                                      plant_position,
+                                      &action) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
+
+    for (iteration = 0u; iteration < 8000u; ++iteration)
+    {
+        bool motion_complete;
+        float acceleration;
+
+        timestamp_us += 1000u;
+        EXPECT_TRUE(servo_core_observe_encoder(
+                        &core,
+                        simulated_encoder_raw(plant_position),
+                        timestamp_us) == SERVO_CORE_STATUS_OK);
+        EXPECT_TRUE(servo_core_step(&core,
+                                    timestamp_us,
+                                    &servo_output) ==
+                    SERVO_CORE_STATUS_OK);
+        motion_complete =
+            servo_output.trajectory_settled &&
+            (fabsf(manager.target_position_revolutions -
+                   servo_output.measured_position_revolutions) < 0.005f) &&
+            (fabsf(servo_output.measured_velocity_revolutions_per_second) <
+             0.02f);
+        EXPECT_TRUE(motion_manager_poll(&manager,
+                                        timestamp_us,
+                                        motion_complete,
+                                        false,
+                                        &action));
+        EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
+
+        acceleration =
+            (8.0f * servo_output.torque_current_request_amperes) -
+            (2.0f * plant_velocity);
+        plant_velocity += acceleration * 0.001f;
+        plant_position += plant_velocity * 0.001f;
+    }
+
+    motion_manager_get_status(&manager, &manager_status);
+    EXPECT_TRUE(manager_status.state == MOTION_STATE_READY);
+    EXPECT_TRUE(manager_status.last_command_id == 31u);
+    EXPECT_TRUE(manager_status.last_completion ==
+                MOTION_COMPLETION_COMPLETED);
+    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
+}
+
+static void test_application_core_executes_remote_move(void)
+{
+    const application_core_config_t config = test_application_config(
+        10000000u,
+        MOTION_SOURCE_MASK_NATIVE);
+    motion_request_t request = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 40u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    application_core_t application;
+    application_core_output_t output;
+    float plant_position = 0.0f;
+    float plant_velocity = 0.0f;
+    uint32_t timestamp_us = 0u;
+    unsigned int iteration;
+
+    EXPECT_TRUE(application_core_init(&application, &config));
+    EXPECT_TRUE(application_core_observe_encoder(&application,
+                                                  0u,
+                                                  timestamp_us) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_step(&application,
+                                      timestamp_us,
+                                      &output) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(!output.control_enabled);
+    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
+
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &request,
+                                                timestamp_us) ==
+                MOTION_SUBMIT_ACCEPTED);
+    request.command_id = 41u;
+    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
+    request.position_revolutions = 1.0f;
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &request,
+                                                timestamp_us) ==
+                MOTION_SUBMIT_ACCEPTED);
+
+    for (iteration = 0u; iteration < 8000u; ++iteration)
+    {
+        float acceleration;
+
+        timestamp_us += 1000u;
+        EXPECT_TRUE(application_core_observe_encoder(
+                        &application,
+                        simulated_encoder_raw(plant_position),
+                        timestamp_us) == APPLICATION_CORE_STATUS_OK);
+        EXPECT_TRUE(application_core_step(&application,
+                                          timestamp_us,
+                                          &output) ==
+                    APPLICATION_CORE_STATUS_OK);
+        EXPECT_TRUE(output.control_enabled);
+        EXPECT_TRUE(fabsf(output.torque_current_request_amperes) <= 2.0f);
+
+        acceleration =
+            (8.0f * output.torque_current_request_amperes) -
+            (2.0f * plant_velocity);
+        plant_velocity += acceleration * 0.001f;
+        plant_position += plant_velocity * 0.001f;
+    }
+
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_READY);
+    EXPECT_TRUE(output.motion.last_command_id == 41u);
+    EXPECT_TRUE(output.motion.last_completion ==
+                MOTION_COMPLETION_COMPLETED);
+    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
+}
+
+static void test_application_core_lease_stops_and_disables_plant(void)
+{
+    const application_core_config_t config = test_application_config(
+        100000u,
+        MOTION_SOURCE_MASK_NATIVE);
+    motion_request_t request = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 50u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    application_core_t application;
+    application_core_output_t output;
+    float plant_position = 0.0f;
+    float plant_velocity = 0.0f;
+    uint32_t timestamp_us = 0u;
+    unsigned int iteration;
+
+    EXPECT_TRUE(application_core_init(&application, &config));
+    EXPECT_TRUE(application_core_observe_encoder(&application,
+                                                  0u,
+                                                  timestamp_us) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &request,
+                                                timestamp_us) ==
+                MOTION_SUBMIT_ACCEPTED);
+    request.command_id = 51u;
+    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
+    request.position_revolutions = 5.0f;
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &request,
+                                                timestamp_us) ==
+                MOTION_SUBMIT_ACCEPTED);
+
+    for (iteration = 0u; iteration < 3000u; ++iteration)
+    {
+        float acceleration;
+
+        timestamp_us += 1000u;
+        EXPECT_TRUE(application_core_observe_encoder(
+                        &application,
+                        simulated_encoder_raw(plant_position),
+                        timestamp_us) == APPLICATION_CORE_STATUS_OK);
+        EXPECT_TRUE(application_core_step(&application,
+                                          timestamp_us,
+                                          &output) ==
+                    APPLICATION_CORE_STATUS_OK);
+        acceleration =
+            (8.0f * output.torque_current_request_amperes) -
+            (2.0f * plant_velocity);
+        plant_velocity += acceleration * 0.001f;
+        plant_position += plant_velocity * 0.001f;
+        if (output.motion.state == MOTION_STATE_DISABLED)
+        {
+            break;
+        }
+    }
+
+    EXPECT_TRUE(iteration < 3000u);
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
+    EXPECT_TRUE(!output.control_enabled);
+    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
+    EXPECT_TRUE(output.motion.last_command_id == 51u);
+    EXPECT_TRUE(output.motion.last_completion ==
+                MOTION_COMPLETION_ABORTED_LEASE);
+    EXPECT_TRUE(plant_position < 0.25f);
+}
+
+static void test_application_core_maps_step_direction_stream(void)
+{
+    const application_core_config_t config = test_application_config(
+        100000u,
+        MOTION_SOURCE_MASK_STEP_DIRECTION);
+    const motion_request_t remote_enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 60u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    application_core_t application;
+    application_core_output_t output;
+    motion_submit_status_t submit_status;
+
+    EXPECT_TRUE(application_core_init(&application, &config));
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &remote_enable,
+                                                0u) ==
+                MOTION_SUBMIT_SOURCE_DISABLED);
+    EXPECT_TRUE(application_core_update_step_direction(&application,
+                                                       0,
+                                                       false,
+                                                       0u,
+                                                       &submit_status));
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 1000u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_update_step_direction(&application,
+                                                       0,
+                                                       true,
+                                                       1000u,
+                                                       &submit_status));
+    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 2000u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_update_step_direction(&application,
+                                                       160,
+                                                       true,
+                                                       2000u,
+                                                       &submit_status));
+    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(application_core_step(&application, 2000u, &output) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(output.control_enabled);
+    EXPECT_TRUE(output.motion.authority == MOTION_SOURCE_STEP_DIRECTION);
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_MOVING);
+    EXPECT_TRUE(fabsf(output.motion.target_position_revolutions - 0.05f) <
+                0.0001f);
+
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 3000u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_update_step_direction(&application,
+                                                       160,
+                                                       false,
+                                                       3000u,
+                                                       &submit_status));
+    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(application_core_step(&application, 3000u, &output) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(!output.control_enabled);
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
+    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
+}
+
+static void test_application_core_fault_requires_safe_recovery(void)
+{
+    const application_core_config_t config = test_application_config(
+        100000u,
+        MOTION_SOURCE_MASK_NATIVE);
+    const motion_request_t enable = {
+        .source = MOTION_SOURCE_NATIVE,
+        .command_id = 70u,
+        .kind = MOTION_COMMAND_ENABLE,
+    };
+    application_core_t application;
+    application_core_output_t output;
+
+    EXPECT_TRUE(application_core_init(&application, &config));
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_submit_motion(&application,
+                                                &enable,
+                                                0u) ==
+                MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(application_core_observe_encoder(&application,
+                                                  20000u,
+                                                  1000u) ==
+                APPLICATION_CORE_STATUS_FAULTED);
+    EXPECT_TRUE(application_core_step(&application, 1000u, &output) ==
+                APPLICATION_CORE_STATUS_FAULTED);
+    EXPECT_TRUE(!output.control_enabled);
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_FAULT);
+    EXPECT_TRUE(!application_core_recover(&application,
+                                          false,
+                                          0u,
+                                          2000u));
+    EXPECT_TRUE(application_core_recover(&application,
+                                         true,
+                                         0u,
+                                         2000u));
+    EXPECT_TRUE(application_core_step(&application, 2000u, &output) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
+}
+
+static void test_application_core_invalid_step_stream_faults_immediately(void)
+{
+    const application_core_config_t config = test_application_config(
+        100000u,
+        MOTION_SOURCE_MASK_STEP_DIRECTION);
+    application_core_t application;
+    application_core_output_t output;
+    motion_submit_status_t submit_status;
+
+    EXPECT_TRUE(application_core_init(&application, &config));
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(application_core_update_step_direction(&application,
+                                                       0,
+                                                       true,
+                                                       0u,
+                                                       &submit_status));
+    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
+    EXPECT_TRUE(application.control_enabled);
+    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 1000u) ==
+                APPLICATION_CORE_STATUS_OK);
+    EXPECT_TRUE(!application_core_update_step_direction(&application,
+                                                        1000,
+                                                        true,
+                                                        1000u,
+                                                        &submit_status));
+    EXPECT_TRUE(submit_status == MOTION_SUBMIT_FAULTED);
+    EXPECT_TRUE(!application.control_enabled);
+    EXPECT_TRUE(application.motion.state == MOTION_STATE_FAULT);
+    EXPECT_TRUE(application_core_step(&application, 1000u, &output) ==
+                APPLICATION_CORE_STATUS_FAULTED);
+    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -1478,6 +2419,7 @@ int main(void)
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_motion_profile_respects_velocity_and_acceleration_limits();
+    test_motion_profile_controlled_stop_decelerates_to_rest();
     test_pi_controller_prevents_integrator_windup();
     test_servo_core_latches_stale_encoder_feedback();
     test_servo_core_latches_following_error();
@@ -1485,6 +2427,19 @@ int main(void)
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();
+    test_motion_manager_enforces_authority_and_idempotency();
+    test_motion_manager_lease_expiry_stops_then_disables();
+    test_motion_manager_keepalive_is_explicit_and_retries_stay_safe();
+    test_motion_manager_lease_deadline_survives_timestamp_wrap();
+    test_motion_manager_allows_foreign_stop_and_latches_fault();
+    test_step_direction_reanchors_and_tracks_signed_counts();
+    test_step_direction_rejects_rate_and_handles_counter_wrap();
+    test_motion_manager_reports_simulated_move_completion();
+    test_application_core_executes_remote_move();
+    test_application_core_lease_stops_and_disables_plant();
+    test_application_core_maps_step_direction_stream();
+    test_application_core_fault_requires_safe_recovery();
+    test_application_core_invalid_step_stream_faults_immediately();
 
     if (s_failures != 0u)
     {

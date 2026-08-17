@@ -5,10 +5,12 @@ Feasibility-stage clean-sheet firmware project for the Makerbase MKS SERVO57D RS
 A buildable bridge-safe diagnostic image now exists, but it has not been
 flashed or tested on hardware and cannot drive a motor. It actively samples the
 encoder and serves a read-only native RS-485 protocol through DMA while leaving
-every bridge control untouched. The repository also
-organizes the hardware research, manufacturer support material, safety
-constraints, and staged implementation plan needed to decide whether the
-project is worth pursuing.
+every bridge control untouched. The repository also organizes the hardware
+research, manufacturer support material, safety constraints, and staged
+implementation plan. A separate portable application and control build now
+exercises motion ownership, remote lease expiry, step/direction input, bounded
+trajectory and servo behavior, and fault recovery against deterministic host
+plants; it is deliberately not linked into the bridge-safe image.
 
 ## Intended outcome
 
@@ -83,7 +85,11 @@ External manufacturer material is retained under ignored `reference/local/` and 
 
 ## Project status
 
-The immediate decision is whether to proceed past feasibility. The first meaningful milestone is not motor movement: it is proving that a purchased board can be unlocked, erased, programmed, reset, and debugged reliably.
+The portable application structure is ready for hardware facts, but no control
+path has been commissioned on a board. The next gate is proving that the
+purchased board can be unlocked, erased, programmed, reset, and debugged
+reliably while the bridge remains disabled; passive peripherals and the board
+revision are then verified before any bridge backend is added.
 
 ## License
 

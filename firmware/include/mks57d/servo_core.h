@@ -62,6 +62,7 @@ typedef struct
     uint32_t fault_flags;
     bool initialized;
     bool feedback_ready;
+    bool suspended;
 } servo_core_t;
 
 bool servo_core_config_is_valid(const servo_core_config_t* config);
@@ -73,6 +74,10 @@ servo_core_status_t servo_core_observe_encoder(servo_core_t* core,
 servo_core_status_t servo_core_set_position_target(
     servo_core_t* core,
     float target_position_revolutions);
+servo_core_status_t servo_core_request_stop(servo_core_t* core);
+servo_core_status_t servo_core_suspend(servo_core_t* core);
+servo_core_status_t servo_core_resume(servo_core_t* core,
+                                      uint32_t timestamp_us);
 servo_core_status_t servo_core_step(servo_core_t* core,
                                     uint32_t timestamp_us,
                                     servo_core_output_t* output);

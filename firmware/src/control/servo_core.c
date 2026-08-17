@@ -80,6 +80,7 @@ bool servo_core_init(servo_core_t* core,
     core->fault_flags = SERVO_FAULT_NONE;
     core->initialized = true;
     core->feedback_ready = false;
+    core->suspended = false;
     return true;
 }
 
@@ -145,6 +146,78 @@ servo_core_status_t servo_core_set_position_target(
     return SERVO_CORE_STATUS_OK;
 }
 
+servo_core_status_t servo_core_request_stop(servo_core_t* core)
+{
+    if ((core == NULL) || !core->initialized)
+    {
+        return SERVO_CORE_STATUS_INVALID_ARGUMENT;
+    }
+    if (core->fault_flags != SERVO_FAULT_NONE)
+    {
+        return SERVO_CORE_STATUS_FAULTED;
+    }
+    if (!core->feedback_ready)
+    {
+        return SERVO_CORE_STATUS_NOT_READY;
+    }
+    if (!motion_profile_request_stop(&core->motion_profile,
+                                     &core->config.motion_profile))
+    {
+        return latch_fault(core, SERVO_FAULT_INTERNAL_NUMERIC, NULL);
+    }
+    return SERVO_CORE_STATUS_OK;
+}
+
+servo_core_status_t servo_core_suspend(servo_core_t* core)
+{
+    if ((core == NULL) || !core->initialized)
+    {
+        return SERVO_CORE_STATUS_INVALID_ARGUMENT;
+    }
+    if (core->fault_flags != SERVO_FAULT_NONE)
+    {
+        return SERVO_CORE_STATUS_FAULTED;
+    }
+    if (!core->feedback_ready)
+    {
+        return SERVO_CORE_STATUS_NOT_READY;
+    }
+    if (!motion_profile_init(&core->motion_profile,
+                             core->angle_tracker.position_revolutions))
+    {
+        return latch_fault(core, SERVO_FAULT_INTERNAL_NUMERIC, NULL);
+    }
+    pi_controller_reset(&core->velocity_controller);
+    core->suspended = true;
+    return SERVO_CORE_STATUS_OK;
+}
+
+servo_core_status_t servo_core_resume(servo_core_t* core,
+                                      uint32_t timestamp_us)
+{
+    if ((core == NULL) || !core->initialized)
+    {
+        return SERVO_CORE_STATUS_INVALID_ARGUMENT;
+    }
+    if (core->fault_flags != SERVO_FAULT_NONE)
+    {
+        return SERVO_CORE_STATUS_FAULTED;
+    }
+    if (!core->feedback_ready)
+    {
+        return SERVO_CORE_STATUS_NOT_READY;
+    }
+    if (!motion_profile_init(&core->motion_profile,
+                             core->angle_tracker.position_revolutions))
+    {
+        return latch_fault(core, SERVO_FAULT_INTERNAL_NUMERIC, NULL);
+    }
+    pi_controller_reset(&core->velocity_controller);
+    core->last_control_timestamp_us = timestamp_us;
+    core->suspended = false;
+    return SERVO_CORE_STATUS_OK;
+}
+
 servo_core_status_t servo_core_step(servo_core_t* core,
                                     uint32_t timestamp_us,
                                     servo_core_output_t* output)
@@ -166,6 +239,10 @@ servo_core_status_t servo_core_step(servo_core_t* core,
         return SERVO_CORE_STATUS_FAULTED;
     }
     if (!core->feedback_ready)
+    {
+        return SERVO_CORE_STATUS_NOT_READY;
+    }
+    if (core->suspended)
     {
         return SERVO_CORE_STATUS_NOT_READY;
     }

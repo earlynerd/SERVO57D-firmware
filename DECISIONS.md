@@ -192,3 +192,32 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Most application behavior can advance before hardware arrives without committing to unverified PWM, ADC-trigger, bridge-polarity, current-scaling, or numerical-backend details.
 - **Supersedes:** (initial)
 - **Affects:** `firmware/src/control/`, `firmware/include/mks57d/`, `tests/`, firmware target composition, future hardware backends
+
+## 2026-08-16 — Give motion authority to one source with controlled lease expiry
+
+- **Decision:** The portable motion manager grants one source exclusive setpoint authority, reports acceptance separately from completion, treats matching retries as idempotent, always permits valid stop/disable requests, and converts remote-lease expiry into a bounded trajectory stop followed by disable.
+- **Why:** Native, Modbus, Makerbase, local, and step/direction adapters need one deterministic arbitration and timeout contract without writing control state directly.
+- **Supersedes:** The unresolved lease and motion-completion decisions in “Freeze the native v1 discovery frame.”
+- **Affects:** `firmware/src/app/motion_manager.c`, command adapters, application state, protocol status, motion tests
+
+## 2026-08-16 — Model step/direction as cumulative timer counts
+
+- **Decision:** The portable step/direction service consumes timestamped signed cumulative-step snapshots, explicitly re-anchors on enable transitions, rejects implausible rates, and produces position targets without requiring an application callback per input edge.
+- **Why:** Hardware timer counting can support high pulse rates deterministically while keeping polarity, pin mapping, and counter-extension details in the future board backend.
+- **Supersedes:** (initial)
+- **Affects:** `firmware/src/app/step_direction.c`, future timer/input-capture backend, input-mode configuration, host tests
+
+## 2026-08-16 — Refresh remote authority only with explicit new commands
+
+- **Decision:** A newly accepted owner command or explicit `KEEPALIVE`
+  refreshes the remote motion lease. A duplicate request remains an idempotent
+  retry and does not refresh it. Motion status retains the two newest terminal
+  command results, including source identity, so a stop or disable result does
+  not immediately erase the interrupted move's outcome.
+- **Why:** A long move needs an unambiguous heartbeat that cannot be synthesized
+  by replaying stale traffic, while interrupted command results must remain
+  observable long enough for a transport adapter to report them.
+- **Supersedes:** The implicit lease-refresh and single-result details in “Give
+  motion authority to one source with controlled lease expiry.”
+- **Affects:** `firmware/src/app/motion_manager.c`, future native/Modbus/Makerbase
+  motion adapters, and status/telemetry mappings

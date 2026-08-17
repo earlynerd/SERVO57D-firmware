@@ -171,9 +171,11 @@ All adapters are untrusted-input boundaries and follow the same rules:
   reply creation execute as bounded foreground work.
 - Malformed, unsupported, out-of-range, or unauthorized commands have no motor
   effect and never refresh a remote-control lease.
-- Only a complete valid message addressed to this device may refresh its
-  communications lease. Lease expiry revokes remote motion authority and uses
-  the application's defined safe-stop policy.
+- A remote motion lease is refreshed only by a newly accepted command from its
+  current owner or an explicit newly accepted `KEEPALIVE`. An exact retry is
+  idempotent and does not refresh the lease. Lease expiry requests a bounded
+  trajectory stop and disables control after the stopped trajectory and
+  measured motion satisfy their completion tolerances.
 - Configuration that affects control or safety is immutable while running and
   changes only through a validated safe-state transaction.
 - Broadcast commands never produce replies. Broadcast motion is accepted only
@@ -186,6 +188,29 @@ All adapters are untrusted-input boundaries and follow the same rules:
 - Protocol commands request behavior; they never manipulate bridge GPIO,
   timer, ADC, or DMA registers directly.
 
+### Implemented transport-independent motion contract
+
+The portable application layer now implements the semantics below the wire
+adapters:
+
+- native, Modbus, Makerbase, step/direction, and local inputs share one motion
+  authority; only its owner may change position targets;
+- valid stop and disable requests remain available regardless of the current
+  owner or the source's permission to initiate motion;
+- the eight most recently accepted `(source, command_id)` identities are
+  retained: an exact replay is a duplicate with no repeated effect, while the
+  same identity with different content is a conflict;
+- command acceptance is distinct from active and terminal completion, and
+  status retains the two most recent terminal outcomes with source identity;
+- a new explicit heartbeat supports moves longer than one lease interval; and
+- step/direction is represented as timestamped cumulative hardware counts,
+  with re-anchoring at enable and bounded count-rate validation.
+
+These are application contracts, not new native-v1 wire commands. Command IDs,
+payload encoding, status/event messages, permission configuration, and each
+protocol adapter still need explicit mappings. The modules compile for the Arm
+target but remain excluded from the passive bring-up image.
+
 ## Implementation sequence
 
 1. **Complete:** define host-testable command request, response, error,
@@ -197,10 +222,13 @@ All adapters are untrusted-input boundaries and follow the same rules:
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
    conformance tests from public manual examples.
-5. Connect homing and motion commands only after the application state machine,
-   limits, command arbiter, and safe-stop behavior exist.
-6. Add lease, telemetry scheduling, staged synchronization, compatibility
-   matrices, and hardware-in-the-loop multidrop tests.
+5. **Application prerequisite complete:** the portable application shell,
+   limits, command arbiter, retry history, lease, safe-stop, and completion
+   behavior exist and have end-to-end simulated-plant tests. Add native motion
+   wire mappings only after the hardware control state has a proven disable
+   path; homing remains deferred until alignment behavior exists.
+6. Add telemetry scheduling, staged synchronization, compatibility matrices,
+   final lease timing, and hardware-in-the-loop multidrop tests.
 
 Every parser needs tests for valid frames, every truncated length, excessive
 lengths, bad CRCs, noise before and between frames, unknown commands, invalid
@@ -229,9 +257,10 @@ adapters a natural clean-sheet boundary.
 Before native v1 grows beyond the read-only discovery slice, decide and record:
 
 - address range, provisioning, and recovery behavior after a lost address;
-- duplicate-sequence handling and retry/idempotency rules;
-- accepted-versus-completed motion response semantics;
-- motion command identifiers, data units, and scaling;
-- communications-lease timing and the safe-stop transition it requests;
+- native motion command identifiers, data units, scaling, and mappings from
+  wire sequences to application command identities;
+- motion status/event payloads for acceptance, active state, and retained
+  terminal results;
+- the production lease duration and how it is provisioned;
 - the project-owned Modbus register map and supported function codes; and
 - the exact Makerbase compatibility matrix, baud options, and response modes.

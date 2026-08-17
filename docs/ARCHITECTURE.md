@@ -48,14 +48,20 @@ The initial image implements only the parts that can be meaningfully built befor
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
   deterministic mechanical and electrical host-plant tests.
+- A portable application shell that arbitrates native, Modbus, Makerbase,
+  step/direction, and local motion sources; applies explicit enable, stop,
+  disable, lease, completion, and recovery contracts; and drives the servo core
+  in end-to-end simulated-plant tests.
 
 There is deliberately no bridge module yet. Creating one would imply shutdown
 behavior, polarity, and pin truth that have not been verified on a purchased
 board. Active encoder work does not weaken that boundary.
 
-The portable control modules live under `firmware/src/control/` but are linked
-only into host tests. Their contracts use revolutions, seconds, amperes,
-volts, and radians explicitly. The outer servo core accepts timestamped raw
+The portable control and application modules live under
+`firmware/src/control/` and `firmware/src/app/`. They are compiled for both the
+host and the exact Arm target, but are not linked into the passive `mks57d`
+image. Their contracts use revolutions, seconds, amperes, volts, and radians
+explicitly. The outer servo core accepts timestamped raw
 encoder samples and emits a hard-clamped torque-current request; stale input,
 missed control deadlines, excessive following error, implausible encoder
 motion, and invalid arithmetic latch the output invalid. The current-control
@@ -90,7 +96,8 @@ The initial bring-up should be bare-metal. An RTOS can be reconsidered only if m
 
 ```mermaid
 flowchart LR
-    CMD["RS-485 or step/direction command"] --> MOTION["Trajectory, position, and velocity limits"]
+    CMD["RS-485 or step/direction command"] --> AUTH["Motion authority, lease, and completion"]
+    AUTH --> MOTION["Trajectory, position, and velocity limits"]
     ENC["SPI magnetic encoder"] --> EST["Angle unwrap, velocity, and electrical angle"]
     EST --> MOTION
     EST --> CURRENT
@@ -102,6 +109,7 @@ flowchart LR
     MOD --> PWM["Validated PWM preload update"]
     PWM --> BRIDGE["Two full H-bridges"]
     SAFE["Fault manager and hard limits"] --> PWM
+    SAFE --> AUTH
     ADC --> SAFE
     EST --> SAFE
 ```

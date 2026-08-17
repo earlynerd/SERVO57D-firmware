@@ -134,9 +134,12 @@ Go criterion: controlled moves and disturbances remain stable, faults shut down 
 
 - [x] Choose and document a transport-independent command architecture with native, Modbus RTU, and Makerbase compatibility roles.
 - [x] Specify and freeze the native RS-485 v1 base frame, default address, CRC, read-only command IDs, and initial error contract.
-- [ ] Define address provisioning, duplicate-request handling, retries, control leases, and motion completion semantics.
+- [ ] Define address provisioning and recovery after a lost address.
+- [x] Define and implement transport-independent duplicate-request, retry,
+  control-lease, and motion-completion semantics.
 - [x] Retain Modbus RTU as an optional standards-oriented integration profile.
-- [ ] Implement step/direction behavior and edge-rate limits.
+- [x] Implement portable step/direction behavior and edge-rate limits.
+- [ ] Map step/direction capture to the verified timer and physical pins.
 - [ ] Define configuration, status, telemetry, and fault registers or messages.
 - [ ] Add protocol fuzz and malformed-frame tests.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
@@ -150,8 +153,12 @@ safety rules, staged implementation order, and remaining wire-format decisions.
 Software note: native tests now exercise the initial encoder estimator,
 trajectory limits, PI anti-windup, cascaded outer loop, d/q transforms,
 voltage-vector saturation, deterministic mechanical plant, and two-axis RL
-current plant. Configuration migration, modulation, replay/fuzz coverage,
-measured timing, and hardware-in-the-loop coverage remain open.
+current plant. They also exercise one-source motion authority, explicit remote
+heartbeats and lease expiry, controlled stop/disable, idempotent recent
+requests, retained command outcomes, cumulative step/direction input, and
+application-level fault recovery. Configuration migration, modulation,
+replay/fuzz coverage, measured timing, and hardware-in-the-loop coverage remain
+open.
 
 - [ ] Add host unit tests for control math, protocol parsing, and configuration migration.
 - [ ] Add hardware-in-the-loop tests for reset, brownout, watchdog, communications, and fault shutdown.

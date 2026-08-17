@@ -251,7 +251,8 @@ The intended common control domain is stationary `alpha/beta` current transforme
 ### Portable implementation status
 
 The hardware-independent portion is now implemented under
-`firmware/src/control/` and linked into host tests only:
+`firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
+exact Arm target, and deliberately excluded from the passive firmware image:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -260,11 +261,17 @@ The hardware-independent portion is now implemented under
 - cascaded position and velocity control emits a hard-clamped torque-current
   request and latches stale encoder, deadline, following-error, and numeric
   faults;
+- one motion manager arbitrates all command sources, retains bounded retry and
+  completion history, applies an explicit remote heartbeat/lease contract, and
+  converts lease expiry into controlled stop followed by disable;
+- step/direction consumes cumulative hardware-count snapshots, re-anchors on
+  enable, and rejects ambiguous or implausible count changes without requiring
+  an interrupt for each edge;
 - Park/inverse-Park transforms and two anti-windup PI axes emit a
   magnitude-limited stationary voltage request; and
 - deterministic mechanical and two-axis RL plant tests exercise the complete
-  portable path through encoder wrapping, trajectory completion, saturation,
-  and current regulation.
+  portable path through encoder wrapping, command arbitration, lease expiry,
+  trajectory completion, saturation, fault recovery, and current regulation.
 
 These tests establish signs, units, bounds, state ownership, and fault
 behavior. They do not establish loop gains, numerical representation,
