@@ -36,10 +36,10 @@ typedef struct
 } rs485_stats_t;
 
 /*
- * Active, receive-first USART1 transport for the RS-485 V1.1 schematic:
- * PA8 low receives, PA8 high transmits, PA9 is USART1_TX, and PA10 is
+ * Active, receive-first USART1 transport for purchased-board bring-up:
+ * PC13 low receives, PC13 high transmits, PA9 is USART1_TX, and PA10 is
  * USART1_RX. RX byte movement is continuous on DMA channel 4; TX frames use
- * DMA channel 5 and release PA8 only after the USART transmission-complete
+ * DMA channel 5 and release PC13 only after the USART transmission-complete
  * event proves that the final stop bit has left the shifter.
  */
 rs485_status_t rs485_init(uint32_t peripheral_clock_hz);

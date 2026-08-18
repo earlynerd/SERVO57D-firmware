@@ -11,21 +11,20 @@
 
 enum
 {
-    RS485_DIRECTION_PIN = 8u,
+    RS485_DIRECTION_PIN = 13u,
     RS485_TX_PIN = 9u,
     RS485_RX_PIN = 10u,
     RS485_DIRECTION_MASK = 1u << RS485_DIRECTION_PIN,
-    RS485_GPIO_PIN_MASK = (1u << RS485_DIRECTION_PIN) |
-                          (1u << RS485_TX_PIN) |
-                          (1u << RS485_RX_PIN),
-    RS485_GPIO_MODE_MASK = (3u << (RS485_DIRECTION_PIN * 2u)) |
-                           (3u << (RS485_TX_PIN * 2u)) |
-                           (3u << (RS485_RX_PIN * 2u)),
-    RS485_GPIO_MODE_VALUE = (1u << (RS485_DIRECTION_PIN * 2u)) |
-                            (2u << (RS485_TX_PIN * 2u)) |
-                            (2u << (RS485_RX_PIN * 2u)),
-    RS485_GPIO_DRIVE_4MA = (2u << (RS485_DIRECTION_PIN * 2u)) |
-                           (2u << (RS485_TX_PIN * 2u)),
+    RS485_DIRECTION_MODE_MASK = 3u << (RS485_DIRECTION_PIN * 2u),
+    RS485_DIRECTION_MODE_OUTPUT = 1u << (RS485_DIRECTION_PIN * 2u),
+    RS485_DIRECTION_DRIVE_4MA = 2u << (RS485_DIRECTION_PIN * 2u),
+    RS485_USART_GPIO_PIN_MASK = (1u << RS485_TX_PIN) |
+                                (1u << RS485_RX_PIN),
+    RS485_USART_GPIO_MODE_MASK = (3u << (RS485_TX_PIN * 2u)) |
+                                 (3u << (RS485_RX_PIN * 2u)),
+    RS485_USART_GPIO_MODE_AF = (2u << (RS485_TX_PIN * 2u)) |
+                               (2u << (RS485_RX_PIN * 2u)),
+    RS485_USART_GPIO_DRIVE_4MA = 2u << (RS485_TX_PIN * 2u),
     RS485_GPIO_AF_MASK = (15u << ((RS485_TX_PIN - 8u) * 4u)) |
                          (15u << ((RS485_RX_PIN - 8u) * 4u)),
     RS485_GPIO_AF4 = (4u << ((RS485_TX_PIN - 8u) * 4u)) |
@@ -51,6 +50,12 @@ enum
                            DMA_CFG_MEMORY_TO_PERIPHERAL |
                            DMA_CFG_MEMORY_INCREMENT |
                            DMA_CFG_PRIORITY_MEDIUM,
+    DMA_CHANNEL4_ALL_INTERRUPT_FLAGS =
+        DMA_INTCLR_CGLBF4 | DMA_INTCLR_CTXCF4 |
+        DMA_INTCLR_CHTXF4 | DMA_INTCLR_CERRF4,
+    DMA_CHANNEL5_ALL_INTERRUPT_FLAGS =
+        DMA_INTCLR_CGLBF5 | DMA_INTCLR_CTXCF5 |
+        DMA_INTCLR_CHTXF5 | DMA_INTCLR_CERRF5,
     USART_ERROR_MASK = USART_STS_PEF | USART_STS_FEF |
                        USART_STS_NEF | USART_STS_OREF,
     NVIC_PRIORITY_SHIFT = 8u - __NVIC_PRIO_BITS
@@ -163,7 +168,7 @@ static bool baud_divider(uint32_t peripheral_clock_hz,
 
 static void force_receive_mode(void)
 {
-    GPIOA->PBC = (uint32_t)RS485_DIRECTION_MASK;
+    GPIOC->PBC = (uint32_t)RS485_DIRECTION_MASK;
 }
 
 static void fail_transport(rs485_status_t status)
@@ -181,23 +186,32 @@ static void fail_transport(rs485_status_t status)
     s_initialized = false;
 }
 
+static bool dma_configuration_readback_ok(void)
+{
+    return ((USART1->CTRL3 & (USART_CTRL3_DMARXEN |
+                             USART_CTRL3_DMATXEN)) ==
+                (USART_CTRL3_DMARXEN | USART_CTRL3_DMATXEN)) &&
+           (DMA_CH4->CHSEL == DMA_REQUEST_USART1_RX) &&
+           ((DMA_CH4->CHCFG & DMA_CFG_ENABLE) != 0u) &&
+           (DMA_CH5->CHSEL == DMA_REQUEST_USART1_TX);
+}
+
 static bool configuration_readback_ok(uint16_t divider)
 {
-    return ((GPIOA->PMODE & (uint32_t)RS485_GPIO_MODE_MASK) ==
-                (uint32_t)RS485_GPIO_MODE_VALUE) &&
+    return ((GPIOA->PMODE & (uint32_t)RS485_USART_GPIO_MODE_MASK) ==
+                (uint32_t)RS485_USART_GPIO_MODE_AF) &&
+           ((GPIOC->PMODE & (uint32_t)RS485_DIRECTION_MODE_MASK) ==
+                (uint32_t)RS485_DIRECTION_MODE_OUTPUT) &&
            ((GPIOA->AFH & (uint32_t)RS485_GPIO_AF_MASK) ==
                 (uint32_t)RS485_GPIO_AF4) &&
-           ((GPIOA->POD & (uint32_t)RS485_DIRECTION_MASK) == 0u) &&
+           ((GPIOC->POD & (uint32_t)RS485_DIRECTION_MASK) == 0u) &&
            (USART1->BRCF == divider) &&
            ((USART1->CTRL1 & (USART_CTRL1_UEN |
                               USART_CTRL1_RXEN |
                               USART_CTRL1_TXEN)) ==
                 (USART_CTRL1_UEN | USART_CTRL1_RXEN |
                  USART_CTRL1_TXEN)) &&
-           ((USART1->CTRL3 & USART_CTRL3_DMARXEN) != 0u) &&
-           (DMA_CH4->CHSEL == DMA_REQUEST_USART1_RX) &&
-           ((DMA_CH4->CHCFG & DMA_CFG_ENABLE) != 0u) &&
-           (DMA_CH5->CHSEL == DMA_REQUEST_USART1_TX);
+           dma_configuration_readback_ok();
 }
 
 rs485_status_t rs485_init(uint32_t peripheral_clock_hz)
@@ -216,24 +230,34 @@ rs485_status_t rs485_init(uint32_t peripheral_clock_hz)
 
     RCC->APB2PCLKEN |= RCC_APB2PCLKEN_AFIOEN |
                        RCC_APB2PCLKEN_IOPAEN |
+                       RCC_APB2PCLKEN_IOPCEN |
                        RCC_APB2PCLKEN_USART1EN;
     RCC->AHBPCLKEN |= RCC_AHBPCLKEN_DMAEN;
     __DSB();
 
-    /* Preload receive-low before PA8 becomes an output. The schematic's
-       external pull-up otherwise selects transmit while the MCU is in reset. */
-    GPIOA->POD &= ~((uint32_t)RS485_DIRECTION_MASK);
-    GPIOA->POTYPE &= ~((uint32_t)RS485_GPIO_PIN_MASK);
-    GPIOA->PUPD &= ~((uint32_t)RS485_GPIO_MODE_MASK);
-    GPIOA->DS = (GPIOA->DS & ~((uint32_t)RS485_GPIO_MODE_MASK)) |
-                (uint32_t)RS485_GPIO_DRIVE_4MA;
+    /* Preload receive-low before PC13 becomes an output. */
+    GPIOC->POD &= ~((uint32_t)RS485_DIRECTION_MASK);
+    GPIOC->POTYPE &= ~((uint32_t)RS485_DIRECTION_MASK);
+    GPIOC->PUPD &= ~((uint32_t)RS485_DIRECTION_MODE_MASK);
+    GPIOC->DS = (GPIOC->DS & ~((uint32_t)RS485_DIRECTION_MODE_MASK)) |
+                (uint32_t)RS485_DIRECTION_DRIVE_4MA;
+    *((volatile uint16_t*)&GPIOC->SR) |=
+        (uint16_t)RS485_DIRECTION_MASK;
+    GPIOC->PMODE =
+        (GPIOC->PMODE & ~((uint32_t)RS485_DIRECTION_MODE_MASK)) |
+        (uint32_t)RS485_DIRECTION_MODE_OUTPUT;
+
+    GPIOA->POTYPE &= ~((uint32_t)RS485_USART_GPIO_PIN_MASK);
+    GPIOA->PUPD &= ~((uint32_t)RS485_USART_GPIO_MODE_MASK);
+    GPIOA->DS = (GPIOA->DS & ~((uint32_t)RS485_USART_GPIO_MODE_MASK)) |
+                (uint32_t)RS485_USART_GPIO_DRIVE_4MA;
     *((volatile uint16_t*)&GPIOA->SR) |=
-        (uint16_t)RS485_GPIO_PIN_MASK;
+        (uint16_t)RS485_USART_GPIO_PIN_MASK;
     GPIOA->AFH = (GPIOA->AFH & ~((uint32_t)RS485_GPIO_AF_MASK)) |
                  (uint32_t)RS485_GPIO_AF4;
     GPIOA->PMODE =
-        (GPIOA->PMODE & ~((uint32_t)RS485_GPIO_MODE_MASK)) |
-        (uint32_t)RS485_GPIO_MODE_VALUE;
+        (GPIOA->PMODE & ~((uint32_t)RS485_USART_GPIO_MODE_MASK)) |
+        (uint32_t)RS485_USART_GPIO_MODE_AF;
     force_receive_mode();
 
     if (((DMA_CH4->CHCFG | DMA_CH5->CHCFG) & DMA_CFG_ENABLE) != 0u)
@@ -251,7 +275,8 @@ rs485_status_t rs485_init(uint32_t peripheral_clock_hz)
 
     DMA_CH4->CHCFG = 0u;
     DMA_CH5->CHCFG = 0u;
-    DMA->INTCLR = DMA_INTCLR_CGLBF4 | DMA_INTCLR_CGLBF5;
+    DMA->INTCLR = DMA_CHANNEL4_ALL_INTERRUPT_FLAGS |
+                  DMA_CHANNEL5_ALL_INTERRUPT_FLAGS;
 
     s_rx_dma_wrap_count = 0u;
     s_rx_idle_events = 0u;
@@ -295,7 +320,10 @@ rs485_status_t rs485_init(uint32_t peripheral_clock_hz)
     NVIC_EnableIRQ(DMA_Channel5_IRQn);
     NVIC_EnableIRQ(USART1_IRQn);
 
-    USART1->CTRL3 = USART_CTRL3_DMARXEN | USART_CTRL3_ERRIEN;
+    /* Match the Nations USART/DMA examples: leave both peripheral DMA
+       requests enabled and gate each transfer with its DMA channel. */
+    USART1->CTRL3 = USART_CTRL3_DMARXEN | USART_CTRL3_DMATXEN |
+                    USART_CTRL3_ERRIEN;
     DMA_CH4->CHCFG = DMA_RX_CONFIGURATION | DMA_CFG_ENABLE;
     USART1->CTRL1 = USART_CTRL1_UEN | USART_CTRL1_RXEN |
                     USART_CTRL1_TXEN | USART_CTRL1_IDLEIEN;
@@ -357,17 +385,20 @@ rs485_status_t rs485_write(const uint8_t* bytes, size_t length)
     s_tx_length = (uint32_t)length;
     s_tx_busy = 1u;
     DMA_CH5->CHCFG = DMA_TX_CONFIGURATION;
-    DMA->INTCLR = DMA_INTCLR_CGLBF5;
+    DMA->INTCLR = DMA_CHANNEL5_ALL_INTERRUPT_FLAGS;
     DMA_CH5->MADDR = (uint32_t)(uintptr_t)s_tx_dma_buffer;
     DMA_CH5->TXNUM = (uint32_t)length;
     USART1->CTRL1 &= (uint16_t)~USART_CTRL1_TXCIEN;
-    USART1->STS = (uint16_t)~USART_STS_TXC;
 
-    /* The SP485E driver is enabled before the DMA request can write the first
-       byte. Its 70 ns maximum enable time is shorter than this register path. */
-    GPIOA->PBSC = (uint32_t)RS485_DIRECTION_MASK;
+    /* N32L40x clears TXC with an STS read followed by a DAT write. Prime
+       that documented sequence here; the first DMA request supplies the
+       actual first frame byte to DAT without emitting a dummy byte. */
+    (void)USART1->STS;
+
+    /* The SP485E driver is enabled before channel 5 can write the first byte.
+       Its 70 ns maximum enable time is shorter than this register path. */
+    GPIOC->PBSC = (uint32_t)RS485_DIRECTION_MASK;
     __DMB();
-    USART1->CTRL3 |= USART_CTRL3_DMATXEN;
     DMA_CH5->CHCFG = DMA_TX_CONFIGURATION | DMA_CFG_ENABLE;
     return RS485_STATUS_OK;
 }
@@ -397,19 +428,19 @@ void DMA_Channel4_IRQHandler(void)
 
     if ((flags & DMA_INTSTS_ERRF4) != 0u)
     {
-        DMA->INTCLR = DMA_INTCLR_CGLBF4;
+        DMA->INTCLR = DMA_CHANNEL4_ALL_INTERRUPT_FLAGS;
         ++s_rx_error_count;
         fail_transport(RS485_STATUS_DMA_ERROR);
         return;
     }
     if ((flags & DMA_INTSTS_TXCF4) != 0u)
     {
-        DMA->INTCLR = DMA_INTCLR_CTXCF4;
+        DMA->INTCLR = DMA_INTCLR_CTXCF4 | DMA_INTCLR_CGLBF4;
         ++s_rx_dma_wrap_count;
     }
     if ((flags & DMA_INTSTS_HTXF4) != 0u)
     {
-        DMA->INTCLR = DMA_INTCLR_CHTXF4;
+        DMA->INTCLR = DMA_INTCLR_CHTXF4 | DMA_INTCLR_CGLBF4;
     }
 }
 
@@ -419,16 +450,15 @@ void DMA_Channel5_IRQHandler(void)
 
     if ((flags & DMA_INTSTS_ERRF5) != 0u)
     {
-        DMA->INTCLR = DMA_INTCLR_CGLBF5;
+        DMA->INTCLR = DMA_CHANNEL5_ALL_INTERRUPT_FLAGS;
         ++s_tx_error_count;
         fail_transport(RS485_STATUS_DMA_ERROR);
         return;
     }
     if ((flags & DMA_INTSTS_TXCF5) != 0u)
     {
-        DMA->INTCLR = DMA_INTCLR_CTXCF5;
+        DMA->INTCLR = DMA_INTCLR_CTXCF5 | DMA_INTCLR_CGLBF5;
         DMA_CH5->CHCFG = DMA_TX_CONFIGURATION;
-        USART1->CTRL3 &= (uint16_t)~USART_CTRL3_DMATXEN;
 
         /* DMA completion means only that DAT accepted the last byte. Keep the
            transceiver driving until USART TXC proves the shifter is empty. */
@@ -459,7 +489,10 @@ void USART1_IRQHandler(void)
         ((USART1->CTRL1 & USART_CTRL1_TXCIEN) != 0u))
     {
         USART1->CTRL1 &= (uint16_t)~USART_CTRL1_TXCIEN;
-        USART1->STS = (uint16_t)~USART_STS_TXC;
+
+        /* TXC is not write-to-clear on this USART. Leave it latched with
+           TXCIEN disabled; the next STS-read/DAT-write transmit sequence
+           clears it without adding a byte to the bus. */
         force_receive_mode();
         s_tx_bytes += s_tx_length;
         ++s_tx_frame_count;

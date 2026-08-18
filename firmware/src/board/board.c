@@ -12,6 +12,7 @@ enum
     STATUS_LED_MODE_MASK = 3u << STATUS_LED_MODE_SHIFT,
     STATUS_LED_OUTPUT_MODE = 1u << STATUS_LED_MODE_SHIFT,
     STATUS_LED_4MA_DRIVE = 2u << STATUS_LED_MODE_SHIFT,
+    GPIO_MODE_FIELD_LSB_MASK = 0x55555555u,
     BRIDGE_PA_MODE_MASK = (3u << (6u * 2u)) |
                           (3u << (7u * 2u)),
     BRIDGE_PB_MODE_MASK = (3u << (0u * 2u)) |
@@ -19,6 +20,18 @@ enum
                           (3u << (7u * 2u)) |
                           (3u << (9u * 2u))
 };
+
+static bool gpio_modes_are_non_driving(uint32_t modes, uint32_t mask)
+{
+    /* PMODE 00 is analog and 11 is digital input. Both are high impedance.
+       Output 01 and alternate-function 10 have unequal field bits, so this
+       rejects every actively driven bridge-pin mode without requiring one
+       particular high-impedance state. */
+    const uint32_t selected_mode_lsbs =
+        (uint32_t)mask & (uint32_t)GPIO_MODE_FIELD_LSB_MASK;
+
+    return (((modes ^ (modes >> 1u)) & selected_mode_lsbs) == 0u);
+}
 
 void board_init_passive(void)
 {
@@ -58,7 +71,7 @@ bool board_bridge_invariants_hold(void)
     const uint32_t port_clocks = RCC->APB2PCLKEN;
 
     if (((port_clocks & RCC_APB2PCLKEN_IOPAEN) != 0u) &&
-        (((GPIOA->PMODE & BRIDGE_PA_MODE_MASK) != 0u) ||
+        ((!gpio_modes_are_non_driving(GPIOA->PMODE, BRIDGE_PA_MODE_MASK)) ||
          ((GPIOA->PUPD & BRIDGE_PA_MODE_MASK) != 0u)))
     {
         return false;
@@ -68,8 +81,20 @@ bool board_bridge_invariants_hold(void)
         return true;
     }
 
-    return ((GPIOB->PMODE & BRIDGE_PB_MODE_MASK) == 0u) &&
+    return gpio_modes_are_non_driving(GPIOB->PMODE, BRIDGE_PB_MODE_MASK) &&
            ((GPIOB->PUPD & BRIDGE_PB_MODE_MASK) == 0u);
+}
+
+void board_status_led_set(bool on)
+{
+    if (on)
+    {
+        GPIOD->PBSC = (uint32_t)STATUS_LED_MASK;
+    }
+    else
+    {
+        GPIOD->PBC = (uint32_t)STATUS_LED_MASK;
+    }
 }
 
 void board_status_led_toggle(void)

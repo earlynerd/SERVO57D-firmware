@@ -52,6 +52,29 @@ The linker follows the N32L406xB memory map in User Manual V2.6: 128 KiB flash, 
 
 Every firmware build also runs a post-link check that verifies the initial vector stack pointer and the SRAM bank boundary symbols. This catches a regression to the incompatible contiguous layouts present in the vendor SDK and CMSIS pack metadata.
 
+## First J-Link flash
+
+After the target has been deliberately released from RDP L1 to L0, use the
+guarded J-Link wrapper from the repository root:
+
+```powershell
+pwsh -File tools/flash-jlink.ps1
+pwsh -File tools/flash-jlink.ps1 -Yes
+```
+
+The first invocation is a dry run. It builds the debug firmware, validates the
+binary's initial stack pointer and reset vector, and prints the exact artifact
+and SHA-256 without accessing the probe. `-Yes` additionally selects SEGGER's
+exact `N32L406CB` target at 200 kHz SWD, programs `mks57d.elf`, independently
+verifies `mks57d.bin` at `0x08000000`, resets, and starts the image. An optional
+probe serial number can be selected with `-ProbeSerial`.
+
+Keep the motor disconnected and use a current-limited supply. The script first
+requires a valid RDP L0 option-byte state; it does not release read protection,
+erase option bytes, or configure the power bridge.
+The stock OLED display remains off because the first image does not initialize
+it; successful execution should instead produce the PD0 status heartbeat.
+
 ## Host tests
 
 On Windows, use the wrapper so the MSVC environment is loaded before CMake:
@@ -82,7 +105,7 @@ This is a bridge-safe diagnostic image, not motor-driving firmware. It:
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then rechecks bridge pins after GPIOA/GPIOB are enabled for communications and SPI1.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and performs bounded foreground MT6816 burst reads every 10 ms after a 20 ms power-up delay.
-11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PA8 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
+11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
 12. Parses native v1 COBS/CRC frames in foreground and replies only to valid address-1 ping, identity, and capability requests.
 13. Publishes firmware `0.4.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, and native-protocol counters through the 184-byte schema-4 `g_diagnostics` RAM record.
 14. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.

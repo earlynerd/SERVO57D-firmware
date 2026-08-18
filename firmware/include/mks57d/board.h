@@ -11,6 +11,7 @@
 void board_init_passive(void);
 bool board_passive_invariants_hold(void);
 bool board_bridge_invariants_hold(void);
+void board_status_led_set(bool on);
 void board_status_led_toggle(void);
 
 #endif

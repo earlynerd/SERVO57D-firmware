@@ -221,3 +221,24 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
   motion authority to one source with controlled lease expiry.”
 - **Affects:** `firmware/src/app/motion_manager.c`, future native/Modbus/Makerbase
   motion adapters, and status/telemetry mappings
+
+## 2026-08-17 — Define passive bridge pins by electrical behavior
+
+- **Decision:** Passive bring-up accepts each bridge-control pin in analog or floating digital-input mode, while rejecting output, alternate-function, or pull-enabled configurations.
+- **Why:** Both accepted modes are high impedance; requiring analog mode alone incorrectly rejected the N32L406 reset-default input state and stopped otherwise safe firmware at boot.
+- **Supersedes:** The exact-zero PMODE assumption in the passive bridge invariant.
+- **Affects:** `firmware/src/board/board.c`, passive boot self-test, bridge-safety contract
+
+## 2026-08-17 — Test PC13 as RS-485 transceiver direction control
+
+- **Decision:** Drive the tied RS-485 DE/RE control from PC13, low for receive and high for transmit, while retaining USART1 TX on PA9 and RX on PA10; leave PA8 untouched by the RS-485 transport.
+- **Why:** PA8 is labeled `nDIR` on the schematic, while PC13 is labeled `RE1` and was traced by the user to the populated RS-485 transceiver. A diagnostic beacon using PC13 direction control was subsequently received on the board's working RS-485 connector.
+- **Supersedes:** The PA8 direction assignment in “Activate bounded receive-first USART1 transport.”
+- **Affects:** `firmware/src/platform/usart1_rs485.c`, `firmware/include/mks57d/rs485.h`, PC13, PA8, RS-485 bring-up documentation
+
+## 2026-08-17 — Identify the working RS-485 connector by bench test
+
+- **Decision:** Use the physical connector labeled `485_A2`/`485_B2` in the published schematic for RS-485 bring-up on the tested board; do not assume the connector labeled `485_A`/`485_B` is electrically usable without a continuity check.
+- **Why:** The user received the 115200 8N1 diagnostic beacon cleanly only from the `485_A2`/`485_B2` connector. This contradicts the apparent schematic net connectivity, where the populated transceiver is shown on `485_A`/`485_B` and the `_2` labels appear isolated.
+- **Supersedes:** The assumption that either published connector, or specifically the schematic-connected `485_A`/`485_B` connector, is the verified RS-485 bench port.
+- **Affects:** Bench wiring, connector identification, `docs/BRINGUP.md`, `docs/RS485.md`, and hardware-revision verification
