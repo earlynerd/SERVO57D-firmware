@@ -27,10 +27,7 @@ typedef struct
     bool use_internal_iref;
 } ssd1306_panel_config_t;
 
-/*
- * Candidate profile inferred from the schematic and an independent open
- * SERVO57D implementation. The fitted display still requires bench proof.
- */
+/* Bench-proven profile for the fitted 72-by-40 SSD1306-compatible panel. */
 extern const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D_CANDIDATE;
 
 bool ssd1306_config_is_valid(const ssd1306_panel_config_t* config);
@@ -38,6 +35,12 @@ i2c_status_t ssd1306_initialize(const i2c_bus_t* bus,
                                 const ssd1306_panel_config_t* config);
 i2c_status_t ssd1306_write_frame(const i2c_bus_t* bus,
                                  const ssd1306_panel_config_t* config,
+                                 const uint8_t* pixels,
+                                 size_t length);
+i2c_status_t ssd1306_write_pages(const i2c_bus_t* bus,
+                                 const ssd1306_panel_config_t* config,
+                                 uint8_t first_page,
+                                 uint8_t page_count,
                                  const uint8_t* pixels,
                                  size_t length);
 

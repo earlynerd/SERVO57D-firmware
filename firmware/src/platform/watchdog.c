@@ -78,12 +78,10 @@ watchdog_status_t watchdog_supervisor_start(watchdog_supervisor_t *supervisor,
         return WATCHDOG_STATUS_REGISTER_VERIFY_ERROR;
     }
 
-    /*
-     * The bridge-safe image has no bridge-control API, so halting the core cannot
-     * preserve an energized output. This debug exemption must be removed before
-     * a bridge-capable image exists.
-     */
-    DBG->CTRL |= DBG_CTRL_IWDG_STOP;
+    /* A halted characterization image must still reset. Reset returns the MCU
+       pins to their hardware state; normal firmware faults first command the
+       deterministic all-low bridge vector through the common panic path. */
+    DBG->CTRL &= ~((uint32_t)DBG_CTRL_IWDG_STOP);
 
     IWDG->KEY = IWDG_RELOAD_KEY;
     IWDG->KEY = IWDG_ENABLE_KEY;

@@ -1,8 +1,9 @@
 # MT6816 Encoder Bring-up
 
-Status: implemented as an active, bounded foreground reader and covered by
-host-side protocol tests. It has not yet been exercised on the purchased
-board.
+Status: implemented as an active, bounded foreground reader, covered by
+host-side protocol tests, and exercised successfully on the purchased board.
+Position is stable at rest, follows shaft motion consistently, and wraps at the
+same point once per revolution.
 
 ## Evidence and confidence
 
@@ -16,10 +17,9 @@ from 3.3 V, and routes its four-wire interface to SPI1:
 | `SPI_MOSI` | PB5 | SPI1 MOSI, AF0 |
 | `SPI_CS` | PB6 | Software-controlled active-low GPIO |
 
-The mapping is high-confidence for the published schematic and is corroborated
-by an independent open SERVO57D implementation. The fitted sensor identity,
-OTP-selected three-wire/four-wire mode, alternate-function behavior, and
-magnet geometry still need physical confirmation.
+The mapping and four-wire behavior are bench-proven and are corroborated by an
+independent open SERVO57D implementation. The fitted sensor's exact marking,
+OTP configuration, and magnet geometry still need to be recorded.
 
 The MT6816 Rev. 1.9 datasheet specifies 14-bit angle data, SPI mode 3
 (`CPOL=1`, `CPHA=1`), MSB-first transfers, even parity across angle registers
@@ -61,11 +61,11 @@ foreground records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
-SPI initialization enables GPIOB only for PB3-PB6. A post-initialization board
-invariant verifies that PB0/PB1 bridge controls, provisional PB7 `nEN`, and
-PB9 `KEY_MENU` remain input/no-pull. The active RS-485 transport now enables
-GPIOA, so the post-peripheral board invariant directly verifies that PA6/PA7
-remain input/no-pull. There is still no bridge-control API.
+SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.14.0
+later claims PB0/PB1 and PA6/PA7 for bridge characterization while separate
+input monitoring reads PB7 `nEN` and configures PB8/PB9/PB12/PB13 and PA15 as
+pulled-up inputs. Encoder foreground acquisition pauses while the selected
+bridge leg is toggling.
 
 ## Diagnostic fields
 
@@ -75,21 +75,15 @@ last accepted raw angle, sensor flags, accepted-sample count, error count, and
 last-attempt timestamp. Status values are defined in `mks57d/mt6816.h`; SPI
 transport values are defined in `mks57d/spi_bus.h`.
 
-## Bench validation
+## Bench result and remaining validation
 
-With the motor disconnected and bridge controls monitored:
+The displayed raw position tracks shaft motion, remains stationary when the
+shaft is still, and rolls over repeatably at one mechanical position per
+revolution. This establishes a usable passive position signal and the expected
+14-bit cyclic behavior.
 
-1. Confirm the fitted device marking and 3.3 V supply.
-2. Verify PB6 idles high, SCK idles high, the first command is `0x83`, and the
-   clock is at or below 500 kHz.
-3. Confirm one low-CS window contains all 32 clock edges and meets setup/hold
-   timing.
-4. Rotate the magnet slowly through a full revolution and check monotonic raw
-   counts, wrap between 16383 and 0, direction, repeatability, and parity.
-5. Remove or displace the magnet and confirm `MT6816_FLAG_NO_MAGNET` without a
-   boot panic.
-6. Halt and resume the debugger while observing PA6/PA7/PB0/PB1/PB7; none may
-   leave its safe state.
-
-Only after this proof should acquisition move into a timestamped rotor-feedback
-ISR or DMA path and increase toward the proposed control-rate range.
+Remaining work is to record the fitted marking, quantify raw noise and
+repeatability, define the positive direction and zero convention, test the
+no-magnet flag, scope SPI timing, and observe bridge pins during debugger halt
+and resume. Only then should acquisition move into a timestamped
+rotor-feedback ISR or DMA path and increase toward the control-rate range.

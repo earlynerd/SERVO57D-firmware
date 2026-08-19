@@ -12,7 +12,7 @@ set(PORTABLE_CONTROL_SOURCES
 )
 
 # Cross-compile the production control core on every firmware build, but do
-# not link it into the known passive image. Host tests own execution until a
+# not link it into the bridge-characterization image. Host tests own execution until a
 # measured board backend and numerical policy are selected.
 add_library(mks57d_portable_control OBJECT ${PORTABLE_CONTROL_SOURCES})
 target_include_directories(mks57d_portable_control PRIVATE include)
@@ -39,13 +39,23 @@ set(PROJECT_SOURCES
     src/app/command_service.c
     src/app/diagnostics.c
     src/board/board.c
+    src/board/board_inputs.c
+    src/drivers/adc_calibration.c
+    src/drivers/adc_display.c
     src/drivers/adc_sample.c
+    src/drivers/bridge_characterizer.c
+    src/drivers/bridge_display.c
     src/drivers/dma_ring.c
+    src/drivers/encoder_display.c
+    src/drivers/input_display.c
     src/drivers/mt6816.c
+    src/drivers/pulse_input_display.c
     src/drivers/ssd1306.c
+    src/drivers/user_inputs.c
     src/platform/adc1.c
     src/platform/i2c1.c
     src/platform/spi1.c
+    src/platform/tim3_bridge_pwm.c
     src/platform/interrupt_priority.c
     src/platform/panic.c
     src/platform/runtime.c
@@ -76,16 +86,16 @@ target_include_directories(${FIRMWARE_TARGET} PRIVATE
 # the first image on reset-default 4 MHz MSI and does not configure HSI/HSE/PLL.
 target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     N32L40X
-    MKS57D_PASSIVE_BRINGUP_IMAGE=1
+    MKS57D_BRIDGE_CHARACTERIZATION_IMAGE=1
     MKS57D_FIRMWARE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     MKS57D_FIRMWARE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
-# Keep an explicit build target for tomorrow's known bridge-incapable image.
-# Portable production control modules are host-tested but are not linked here
-# until a measured hardware backend is available.
-add_custom_target(bringup-passive DEPENDS ${FIRMWARE_TARGET})
+# Keep an explicit target for the manually controlled characterization image.
+# Portable production control modules remain excluded until PWM and current
+# acquisition have measured hardware backends.
+add_custom_target(bridge-characterization DEPENDS ${FIRMWARE_TARGET})
 add_custom_target(portable-control-arm DEPENDS mks57d_portable_control)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)

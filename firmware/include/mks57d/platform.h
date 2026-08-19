@@ -12,6 +12,9 @@ typedef enum
     PLATFORM_BOOT_RESET_CLOCK_UNEXPECTED,
     PLATFORM_BOOT_MSI_TIMEOUT,
     PLATFORM_BOOT_MSI_SWITCH_TIMEOUT,
+    PLATFORM_BOOT_HSE_TIMEOUT,
+    PLATFORM_BOOT_PLL_TIMEOUT,
+    PLATFORM_BOOT_PLL_SWITCH_TIMEOUT,
     PLATFORM_BOOT_CLOCK_VERIFY_ERROR,
     PLATFORM_BOOT_READY
 } platform_boot_status_t;
@@ -37,5 +40,9 @@ extern volatile platform_boot_diagnostics_t g_platform_boot_diagnostics;
 
 bool platform_early_memory_ready(void);
 platform_boot_status_t platform_clock_init(void);
+uint32_t platform_apb1_clock_hz(void);
+uint32_t platform_apb2_clock_hz(void);
+uint32_t platform_apb1_timer_clock_hz(void);
+uint32_t platform_apb2_timer_clock_hz(void);
 
 #endif

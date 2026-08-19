@@ -49,8 +49,8 @@ This procedure intentionally delays motor connection. Each stage should produce 
 4. Confirm SWD remains recoverable after every case.
 5. Verify flash contents through both the vendor utility and the development programmer path.
 6. Confirm an unserviced running image resets near the measured IWDG interval and exposes `RCC_CTRLSTS_IWDGRSTF` in `g_platform_boot_diagnostics.reset_flags` after reboot.
-7. Confirm a debugger halt pauses IWDG only in this bridge-incapable image and that PA6/PA7/PB0/PB1/PB7 remain at their safe reset levels throughout halt and resume.
-8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `4`, size `184`, firmware version `0.4.0`, and an even stable sequence.
+7. Confirm a debugger halt does not pause IWDG or TIM3 in firmware 0.15.0; capture PA6/PA7/PB0/PB1, gate outputs, and the watchdog reset transition.
+8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `4`, size `184`, firmware version `0.15.0`, and an even stable sequence.
 9. Scope PD0 and confirm the active-high heartbeat without button contention on PB9.
 10. Scope PB3-PB6 and confirm the bounded MT6816 mode-3 burst described in [encoder bring-up](ENCODER.md), including non-fatal no-magnet behavior.
 11. Compare the diagnostic reset and retained-panic fields across power-on, NRST, software panic, and IWDG reset cases.
@@ -58,7 +58,8 @@ This procedure intentionally delays motor connection. Each stage should produce 
 
 ## Stage 4 — Passive inputs
 
-With the bridge disabled:
+Use the last passive image or perform these checks before the characterization
+image takes ownership of PA6/PA7/PB0/PB1:
 
 1. Read current-sense zero offsets and bus voltage repeatedly.
 2. Read encoder position through complete mechanical revolutions.
@@ -74,7 +75,8 @@ Do not begin until safe reset behavior and passive peripherals have passed.
 2. Apply a low-frequency, low-duty diagnostic pattern.
 3. Observe high-side and low-side gate signals and bridge switch nodes.
 4. Test reset, watchdog, firmware fault, breakpoint, and communications loss while the pattern is active.
-5. Confirm the bridge-disable path acts immediately in every case.
+5. Confirm the all-low zero-vector fault path acts immediately in every case;
+   this PCB has no defined software-commanded all-FET-off state.
 6. Characterize minimum pulse width, dead time, propagation delay, and bootstrap behavior.
 
 ## Abort conditions

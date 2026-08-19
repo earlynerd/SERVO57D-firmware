@@ -7,7 +7,9 @@ post-link tests. The record has not yet been read from physical hardware.
 
 The first diagnostic channel is a structured RAM record exported as the ELF
 symbol `g_diagnostics`. It reports boot, active encoder, DMA-backed RS-485, and
-native-protocol state without emitting unsolicited serial traffic.
+native-protocol state without emitting unsolicited serial traffic. Display and
+passive-ADC and user-input monitoring are advertised as capabilities, but their
+live state and samples are not fields in schema 4.
 
 The record is not assigned a fixed SRAM address. A debugger locates it through
 symbols in the matching `mks57d.elf`. Native commands may later expose selected
@@ -26,8 +28,8 @@ schema-3 prefixes are unchanged; native-protocol fields are appended.
 | 4 | `schema_version` | Record schema, currently `4` |
 | 8 | `record_size` | Total bytes available, currently `184` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.4.0` |
-| 20 | `capabilities` | Safe-bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, and native-protocol capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.14.0` |
+| 20 | `capabilities` | Bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, and bridge-characterizer capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -55,7 +57,7 @@ schema-3 prefixes are unchanged; native-protocol fields are appended.
 | 120 | `rs485_tx_bytes` | Bytes whose final stop bits completed |
 | 124 | `rs485_tx_frame_count` | Frames completed and returned to receive mode |
 | 128 | `rs485_tx_error_count` | TX DMA transfer errors |
-| 132 | `rs485_tx_busy` | One while a DMA/USART line transmission owns PA8 |
+| 132 | `rs485_tx_busy` | One while a DMA/USART line transmission owns PC13 direction control |
 | 136 | `native_protocol_ready` | One after the foreground native server is initialized |
 | 140 | `native_protocol_bytes_consumed` | Bytes passed from the RX drain into the streaming parser |
 | 144 | `native_protocol_valid_frames` | Version-1 frames accepted after COBS, length, and CRC validation, including filtered addresses/types |
@@ -103,7 +105,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 During first safe bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.4.0`, schema is 4, and record size is 184;
+- confirm `firmware_version` decodes to `0.14.0`, schema is 4, and record size is 184;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
@@ -113,10 +115,11 @@ During first safe bring-up:
 - send known bytes from an external RS-485 adapter and verify RX byte, IDLE,
   last-byte, and error fields without unsolicited board transmission;
 - trigger one bounded TX call and confirm byte/frame completion and busy state
-  agree with scoped PA8 and final-stop-bit timing;
+  agree with scoped PC13 and final-stop-bit timing;
 - send valid and deliberately malformed native frames and confirm response,
   COBS, length, CRC, address, broadcast, type, and TX-rejection counters;
 - leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.
 
-The RS-485 and native-protocol fields are software evidence only until the
-direction and bus waveforms are observed on the purchased board.
+RS-485 command/response behavior is bench-proven, while the diagnostic record
+and exact direction/bus waveforms still require debugger and oscilloscope
+correlation on the purchased board.

@@ -1,14 +1,17 @@
 # Firmware Architecture
 
-Status: the bridge-safe foundation, foreground encoder acquisition, DMA
-RS-485 transport, first read-only native protocol slice, and portable control
-foundation are implemented. The control foundation is exercised against host
-plants and is not linked into the embedded image; modulation, timing, bridge
-control, calibration, and hardware integration remain gated.
+Status: the reset-safe foundation, foreground encoder and ADC acquisition,
+OLED diagnostics, DMA RS-485 transport, first read-only native protocol slice,
+portable control foundation, and manually gated TIM3 bridge characterizer are
+implemented. The passive peripherals are bench-proven. The control foundation
+is exercised against host plants and is not linked into the embedded image;
+production modulation, synchronous sampling, and calibrated current control
+remain gated on waveform measurements.
 
 ## Design priorities
 
-1. Safe and deterministic bridge shutdown.
+1. Deterministic bridge fault state and explicit accounting for the PCB's lack
+   of a defined all-FET-off command.
 2. Deterministic PWM and current-sampling timing.
 3. Small, auditable hardware abstraction around the N32L406.
 4. Testable control math and protocol parsing.
@@ -30,19 +33,28 @@ control, calibration, and hardware integration remain gated.
 The initial image implements only the parts that can be meaningfully built before hardware arrives:
 
 - Nations CMSIS/device startup with a project-owned split-bank linker layout: 16 KiB SRAM1, an 8 KiB address gap, and 8 KiB SRAM2.
-- A project-owned minimal `SystemInit` that verifies and retains the reset-default 4 MHz MSI.
+- A project-owned clock path that verifies reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for a bench-proven 64 MHz HCLK with explicit APB and timer clock derivation.
 - The initial stack and ordinary runtime sections confined to SRAM1; SRAM2 receives a store-only parity initialization and remains unavailable for allocation.
 - Project-owned core-exception and unclaimed-interrupt panic handling with a `.noinit` panic code.
 - Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
 - A 1 kHz monotonic SysTick timebase.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
+- A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
+  sustained 50 Hz two-page transactions are proven and the current characterizer uses 5 Hz.
+- A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM3-triggered 20 kHz
+  `currentB`/`currentA` sequence captured by circular DMA channel 1, with
+  host-tested schematic-derived engineering conversion using runtime reference
+  and zeros.
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
-  draining, DMA TX, and line-complete PA8 turnaround.
+  draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
   adapter serving only ping, identity, and capabilities from foreground.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
+- An edge-aligned 20 kHz TIM3 characterization backend mapping channels 1-4
+  to PA6/PA7/PB0/PB1 on AF2, with preloaded zero/50% compare updates and a
+  direct-GPIO all-low panic fallback.
 - Hardware-independent application-state and fault-latch modules with native tests.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
@@ -55,7 +67,7 @@ The initial image implements only the parts that can be meaningfully built befor
 
 There is deliberately no bridge module yet. Creating one would imply shutdown
 behavior, polarity, and pin truth that have not been verified on a purchased
-board. Active encoder work does not weaken that boundary.
+board. Active low-energy peripheral work does not weaken that boundary.
 
 The portable control and application modules live under
 `firmware/src/control/` and `firmware/src/app/`. They are compiled for both the

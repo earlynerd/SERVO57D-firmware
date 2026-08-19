@@ -242,3 +242,143 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** The user received the 115200 8N1 diagnostic beacon cleanly only from the `485_A2`/`485_B2` connector. This contradicts the apparent schematic net connectivity, where the populated transceiver is shown on `485_A`/`485_B` and the `_2` labels appear isolated.
 - **Supersedes:** The assumption that either published connector, or specifically the schematic-connected `485_A`/`485_B` connector, is the verified RS-485 bench port.
 - **Affects:** Bench wiring, connector identification, `docs/BRINGUP.md`, `docs/RS485.md`, and hardware-revision verification
+
+## 2026-08-18 — Activate bounded passive display bring-up
+
+- **Decision:** Firmware 0.4.1 holds unbiased PB2 active-low display reset from passive board initialization, activates 100 kHz I2C1 on PA4/PA5, then makes one non-fatal SSD1306-compatible `0x3C` initialization and bordered `MKS57D` frame attempt while continuing to enforce every bridge-pin invariant.
+- **Why:** The user checked the schematic mapping, 4.7 kOhm bus pull-ups, lack of PB2 bias, and absence of bridge sharing; a readable static pattern is the next low-energy hardware discriminator after native RS-485 command/response success.
+- **Supersedes:** “Stage passive I2C and OLED support before activation.”
+- **Affects:** `firmware/src/board/board.c`, `firmware/src/platform/i2c1.c`, `firmware/src/drivers/display_test_pattern.c`, `firmware/src/main.c`, passive boot behavior, and display capability reporting
+
+## 2026-08-18 — Show encoder position with bounded fast-mode display updates
+
+- **Decision:** Run I2C1 in fast mode at the 4 MHz clock's conservative 333.3 kHz divider and refresh a five-digit raw encoder position at 50 Hz using only two SSD1306 pages; display failures remain non-fatal and never affect bridge safety or control state.
+- **Why:** The fitted panel is bench-proven, and partial updates provide a smooth visual encoder check without attempting the panel's out-of-spec 1 MHz rate or monopolizing the polling foreground.
+- **Supersedes:** The static test-frame behavior and 100 kHz bus rate in “Activate bounded passive display bring-up.”
+- **Affects:** `firmware/src/platform/i2c1.c`, `firmware/src/drivers/encoder_display.c`, `firmware/src/drivers/ssd1306.c`, `firmware/src/main.c`, passive display timing and behavior
+
+## 2026-08-18 — Activate sequential passive ADC validation
+
+- **Decision:** Firmware 0.6.0 initializes the staged PA1 `currentB`, PA2 `currentA`, and PA3 `vBus` polling ADC path, samples all three raw channels at 20 Hz, and cycles labeled `A`, `B`, and `V` values on the OLED once per second; sampling and display failures remain non-fatal.
+- **Why:** Encoder and display behavior are bench-proven, making bridge-disabled raw current-sense and bus-voltage observation the next passive hardware gate without introducing scaling, DMA, interrupts, or control authority.
+- **Supersedes:** The inactive status in “Stage sequential raw ADC sampling before synchronous acquisition” and the encoder-only screen behavior in “Show encoder position with bounded fast-mode display updates.”
+- **Affects:** `firmware/src/platform/adc1.c`, `firmware/src/drivers/adc_display.c`, `firmware/src/main.c`, capability reporting, passive boot behavior and OLED contents
+
+## 2026-08-18 — Encode schematic-derived ADC engineering scaling
+
+- **Decision:** Convert calibrated ADC samples with `Vout = Vref + 6.65 * I * 0.020 ohm` for each current channel and a `(15.4 kohm + 1 kohm) / 1 kohm = 16.4` VBus ratio; supply actual ADC reference voltage and independently measured A/B zero counts at runtime rather than hard-coding nominal midscale or this board's observed offsets.
+- **Why:** The Kelvin shunt network gives the mid-rail reference unity gain and the differential shunt voltage 6.65 gain, while bench readings establish stable channel-specific zero offsets but not universal production calibration values.
+- **Supersedes:** The deferred engineering-unit scaling portion of “Stage sequential raw ADC sampling before synchronous acquisition.”
+- **Affects:** `firmware/include/mks57d/adc_calibration.h`, `firmware/src/drivers/adc_calibration.c`, future current limits, telemetry, startup offset calibration and bus-voltage checks
+
+## 2026-08-18 — Maintain durable documentation, omit ephemeral bench narration
+
+- **Decision:** Keep the README, plan, and subsystem documentation synchronized with durable implementation and hardware findings, while not maintaining instructions or narration useful only during the current one-off bench session.
+- **Why:** Stale project facts are harmful, but disposable bring-up notes do not justify ongoing documentation work once the present board has passed that step.
+- **Supersedes:** (initial)
+- **Affects:** `README.md`, `PLAN.md`, `docs/`, future bring-up work
+
+## 2026-08-18 — Activate debounced passive input monitoring
+
+- **Decision:** Firmware 0.7.0 configures PB8 `KEY_ENTER`, PB9 `KEY_MENU`, PA15 `KEY_NEXT`, PB13 `M_IN1`, and PB12 `M_IN2` as pulled-up inputs, debounces each independently over three 10 ms samples, and shows their raw active-low levels as `E M N 1 2` on the OLED at 50 Hz.
+- **Why:** These local and opto-isolated signals are the final mapped low-energy inputs and can be validated without granting any bridge authority; showing raw levels avoids assuming application semantics during electrical bring-up.
+- **Supersedes:** The unimplemented buttons/isolated-input portion of Phase 3; the ADC remains sampled but no longer owns the current OLED view.
+- **Affects:** `firmware/src/board/board_inputs.c`, `firmware/src/drivers/user_inputs.c`, `firmware/src/drivers/input_display.c`, `firmware/src/main.c`, diagnostics capability bitmap, passive GPIO invariants
+
+## 2026-08-18 — Confirm physical key layout and auxiliary inputs
+
+- **Decision:** Treat the tested board's physical key order as left `KEY_NEXT`/N, center `KEY_ENTER`/E, right `KEY_MENU`/M; accept the active-low operation of all three keys plus M_IN1 and M_IN2 as bench-proven.
+- **Why:** The firmware 0.7.0 OLED monitor changed independently and correctly for every physical button and both isolated auxiliary inputs.
+- **Supersedes:** The unverified hardware status in “Activate debounced passive input monitoring.”
+- **Affects:** `PLAN.md`, `README.md`, `docs/HARDWARE.md`, `docs/PERIPHERALS.md`, physical UI mapping
+
+## 2026-08-18 — Defer external step/direction/enable mode
+
+- **Decision:** Defer tracing and implementing the isolated step/direction/enable interface; it is not a prerequisite for the first bridge and current-control milestones, and provisional PB7 `nEN` remains untouched and must not be treated as a proven hardware bridge-disable signal.
+- **Why:** The native RS-485 path is sufficient for controlled bring-up, while step/direction mode adds a separate input-capture and polarity-validation track that does not reduce the immediate power-stage risk.
+- **Supersedes:** The Phase 3 requirement to bring up isolated step/direction/enable before entering power-stage characterization.
+- **Affects:** `PLAN.md`, `README.md`, `docs/PERIPHERALS.md`, Phase 3 exit scope, future step/direction backend
+
+## 2026-08-18 — Validate pulse-interface pins before deferring the mode
+
+- **Decision:** Firmware 0.8.0 passively samples schematic candidates PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as high-impedance, no-pull inputs and shows their debounced raw electrical levels as `S D E` on the OLED. Use this only to validate pin mapping and active-low behavior; defer timer capture, pulse-rate validation, motion authority, enable semantics, and the step/direction operating mode.
+- **Why:** Implementing step/direction control is not required for the first RS-485-controlled bridge tests, but confirming the physical input mapping now prevents a known schematic assumption from becoming stale or silently trusted later.
+- **Supersedes:** The pin-tracing deferral in “Defer external step/direction/enable mode”; that entry's implementation deferral remains in force.
+- **Affects:** `firmware/src/board/board_inputs.c`, `firmware/src/drivers/pulse_input_display.c`, `firmware/src/main.c`, `PLAN.md`, `README.md`, `docs/HARDWARE.md`, `docs/PERIPHERALS.md`
+
+## 2026-08-18 — Confirm isolated pulse-interface mapping
+
+- **Decision:** Accept PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as bench-proven active-low isolated inputs in their expected physical locations on the tested board; retain their passive read-only treatment and defer pulse capture and operating semantics.
+- **Why:** Exercising Step, Direction, and Enable through the physical interface changed only the corresponding `S`, `D`, and `E` OLED indications with the expected polarity.
+- **Supersedes:** The unverified hardware status in “Validate pulse-interface pins before deferring the mode.”
+- **Affects:** `PLAN.md`, `README.md`, `firmware/README.md`, `docs/HARDWARE.md`, `docs/PERIPHERALS.md`, physical input pin map
+
+## 2026-08-18 — Retire the permanent bridge-pin no-drive invariant
+
+- **Decision:** Firmware 0.9.0 removes the post-peripheral `board_bridge_invariants_hold()` panic gate that permanently required PA6/PA7/PB0/PB1 to remain non-driving; retain the early `board_passive_invariants_hold()` reset-safe state check until an explicit bridge backend takes ownership.
+- **Why:** The passive-peripheral phase is complete, and the four gate-control signals cannot be mapped or characterized without deliberately driving the bridge interface.
+- **Supersedes:** The permanent post-initialization no-drive contract in “Allow safe peripherals after passive boot” and subsequent bring-up entries; reset-safe startup and common immediate-off requirements remain.
+- **Affects:** `firmware/src/board/board.c`, `firmware/include/mks57d/board.h`, `firmware/src/main.c`, boot self-test meaning, Phase 3 exit, Phase 4 bridge characterization
+
+## 2026-08-18 — Characterize tied EG3013 inputs from an all-low zero vector
+
+- **Decision:** Firmware 0.10.0 preloads and drives PA6, PA7, PB0, and PB1 low, then permits one manually selected leg to toggle at 500 Hz only while Enter is held. Next selects A1/A2/B1/B2; raw Enter release, Menu, and the software panic path return all four commands low. The IWDG is not paused during debugger halt.
+- **Why:** Each board command is tied directly to EG3013 HIN and LIN. HIN is active-high, LIN is active-low, and the driver inserts nominal 120 ns dead time, so one GPIO selects exactly one FET in its half bridge. Opposing input bias networks make a floating GPIO undefined. All-low is a deterministic zero differential-voltage vector, not an all-FET-off state; the missing coast state does not prevent two-level PWM or FOC, but it materially changes reset, fault, and current-decay behavior.
+- **Supersedes:** The assumption that a common software-commanded all-FET-off state is available, and earlier bridge-disable wording that described all-low as off.
+- **Affects:** `firmware/src/board/board.c`, `firmware/src/drivers/bridge_characterizer.c`, `firmware/src/platform/panic.c`, watchdog/debug policy, power-stage validation, future PWM modulation and fault handling
+
+## 2026-08-18 — Move bridge characterization to TIM3 hardware PWM
+
+- **Decision:** Firmware 0.11.0 maps TIM3 channels 1-4 to PA6, PA7, PB0, and PB1 on AF2 and uses an edge-aligned 20 kHz carrier. `RUN` applies an exact 50% compare value to one selected channel while the other three remain at zero. Compare and auto-reload preloads are enabled, and start/stop writes are committed with a forced update event. The direct-GPIO all-low path remains authoritative for panic and initialization failure.
+- **Why:** The 500 Hz foreground pattern proved bridge polarity and ordinary commutation, but current regulation requires hardware-owned edge timing. Nations Library 2.3.0 contains a four-channel TIM3 PWM example using this exact pin and AF mapping. At the retained 4 MHz timer clock, 200 edge-aligned counts produce exactly 20 kHz and 100 counts produce exactly 50% duty.
+- **Supersedes:** The foreground-timed 500 Hz `RUN` behavior in “Characterize tied EG3013 inputs from an all-low zero vector”; its button gating, selected-leg UI, and all-low zero/fault contract remain in force.
+- **Affects:** `firmware/src/platform/tim3_bridge_pwm.c`, `firmware/src/board/board.c`, bridge-characterizer state, PWM/ADC timing validation, firmware version 0.11.0
+
+## 2026-08-18 — Capture both current channels from the TIM3 carrier boundary
+
+- **Decision:** Firmware 0.12.0 configures TIM3 update as `TRGO` and uses it to trigger one ADC regular sequence per 20 kHz PWM period. ADC scan mode sequences `currentB` then `currentA`; DMA channel 1 stores complete 16-bit results in a circular buffer without interrupts. Foreground accepts only a stable complete pair, inhibits PWM until one pair exists, and sends acquisition faults to the common all-low panic path. While `RUN` is held, the OLED alternates the raw A/B samples.
+- **Why:** Current regulation needs hardware-synchronous acquisition rather than unrelated 20 Hz polling. At the retained 2 MHz ADC clock, two 28.5-cycle samples require approximately 44 microseconds including conservative single-sequence overhead and fit within the 50 microsecond carrier period. The update boundary is deterministic and sufficient to validate trigger/DMA behavior, but its proximity to switching edges means it is not yet accepted as the production quiet sampling point.
+- **Supersedes:** The current-channel portion of the polling-only acquisition in “Activate raw ADC sampling and display”; polling `vBus` is temporarily displaced in this characterization image.
+- **Affects:** `firmware/src/platform/adc1.c`, `firmware/src/platform/tim3_bridge_pwm.c`, DMA channel 1 ownership, OLED characterizer behavior, Phase 5 sampling validation, firmware version 0.12.0
+
+## 2026-08-18 — Keep diagnostics alive when synchronous acquisition is unavailable
+
+- **Decision:** Firmware 0.12.1 treats current acquisition as mandatory for PWM authority but not for diagnostic liveness. ADC initialization or DMA acquisition failure keeps the bridge at the all-low vector, rejects `RUN`, and leaves the heartbeat, protocol, and OLED operational. The OLED renders the numeric `adc1_status_t` value as `A####` whenever acquisition is unavailable.
+- **Why:** Firmware 0.12.0 cleared the OLED and then entered the terminal panic path when initial synchronous acquisition setup failed, leaving no heartbeat or visible indication of which new peripheral gate failed. Loss of current data must inhibit the bridge, but killing independent diagnostics makes bring-up unnecessarily opaque.
+- **Supersedes:** The requirement in “Capture both current channels from the TIM3 carrier boundary” that every acquisition setup/runtime fault enter terminal panic. Invalid acquisition still removes PWM authority immediately.
+- **Affects:** `firmware/src/main.c`, bridge enable gating, OLED error reporting, diagnostic availability, firmware version 0.12.1
+
+## 2026-08-18 — Isolate the manufacturer ADC-DMA example before restoring PWM synchronization
+
+- **Decision:** Firmware 0.12.2 temporarily replaces the failing two-rank TIM3-triggered acquisition with Nations SDK 2.3.0's one-channel software-triggered continuous ADC-DMA pattern on PA2 `currentA`. DMA channel 1 uses a fixed one-halfword circular destination, and the OLED displays that value as `A####`. Bridge switching is suppressed for this isolation image.
+- **Why:** Firmware 0.12.1 reported DMA channel-1 `ERRF`. The user manual and SDK confirm the selected channel, request, peripheral address, and halfword widths, so the next test removes TIM3 triggering, multi-rank scan, memory increment, and the ring buffer without introducing undocumented alternatives.
+- **Supersedes:** The active acquisition behavior in “Capture both current channels from the TIM3 carrier boundary”; that design remains the target after the basic ADC-DMA path is proven.
+- **Affects:** `firmware/src/platform/adc1.c`, `firmware/src/main.c`, bridge authority, OLED behavior, firmware version 0.12.2
+
+## 2026-08-18 — Restore the ADC DMA ring before restoring scan or timer trigger
+
+- **Decision:** Firmware 0.12.3 keeps the proven PA2 software-triggered conversion and manufacturer initialization order, but restores DMA memory increment, transfer count 64, and the 64-halfword circular destination. The OLED publishes the latest stable ring sample, and bridge switching remains suppressed.
+- **Why:** Firmware 0.12.2 produced stable 2039-2044 readings, proving the basic ADC-to-DMA path. Changing only the destination behavior determines whether the original `ERRF` was caused by memory increment or the larger circular transfer before multi-rank scan and TIM3 trigger are reintroduced.
+- **Supersedes:** The fixed one-halfword destination in “Isolate the manufacturer ADC-DMA example before restoring PWM synchronization”; the one-channel software-triggered conversion remains in force.
+- **Affects:** `firmware/src/platform/adc1.c`, ADC DMA snapshot logic, OLED behavior, firmware version 0.12.3
+
+## 2026-08-18 — Collapse the remaining ADC tests into the target synchronous path
+
+- **Decision:** Firmware 0.13.0 restores the target two-rank `currentB/currentA` sequence triggered by 20 kHz TIM3 update, but configures and arms ADC/DMA before TIM3 initialization. The OLED alternates stable B/A pairs, and bridge switching remains suppressed until this target feedback path is bench-proven.
+- **Why:** Both the manufacturer fixed-destination pattern and the 64-halfword incrementing ring produced stable PA2 samples. The user chose to stop testing scan and trigger separately; reversing the original timer-first startup order while restoring the final configuration gives one directly useful acceptance test.
+- **Supersedes:** “Restore the ADC DMA ring before restoring scan or timer trigger”; the diagnostic ladder ends and target acquisition resumes.
+- **Affects:** `firmware/src/platform/adc1.c`, `firmware/src/main.c`, ADC/TIM3 initialization order, OLED behavior, bridge authority, firmware version 0.13.0
+
+## 2026-08-18 — Accept synchronous acquisition and zero-calibrate each phase independently
+
+- **Decision:** Accept the 20 kHz TIM3-triggered `currentB/currentA` DMA acquisition as bench-proven. Firmware 0.14.0 averages 32 foreground snapshots while the bridge remains at the all-low zero vector, stores independent B/A zero offsets, converts both channels using the schematic-derived `6.65 * 20 mOhm` transfer and nominal 3.3 V ADC reference, and displays simultaneous signed milliamperes as compact `A+#####mA` / `B+#####mA` rows. Raw counts remain the underlying acquisition representation.
+- **Why:** The target sequence is as stable as the isolated DMA tests and no longer reports `ERRF`. The tested board's B offset differs visibly from A, so a shared nominal midscale would create a false current. At the nominal reference, one ADC count is approximately 6.06 mA; absolute scale accuracy remains limited by the unmeasured ADC reference and analog tolerances.
+- **Supersedes:** The pending bench-acceptance state in “Collapse the remaining ADC tests into the target synchronous path” and the raw alternating OLED view.
+- **Affects:** `firmware/src/main.c`, `firmware/src/drivers/adc_calibration.c`, `firmware/src/drivers/adc_display.c`, startup current calibration, OLED behavior, Phase 5 current scaling, firmware version 0.14.0
+
+## 2026-08-18 — Promote the board's 8 MHz HSE through PLL to 64 MHz
+
+- **Decision:** Firmware 0.15.0 starts from the verified reset MSI, enables the fitted 8 MHz HSE, selects undivided HSE times eight for a 64 MHz PLL system clock, uses one Flash wait state, HCLK 64 MHz, PCLK2 32 MHz, and PCLK1 16 MHz. APB1 timers receive the documented doubled 32 MHz clock. Drivers receive explicit HCLK, APB, or timer clocks instead of assuming `SystemCoreClock` is universal.
+- **Why:** The 4 MHz first-image clock leaves no practical execution budget after the 44 microsecond current ADC sequence in a 50 microsecond PWM period. The N32L40x manual documents the 64 MHz maximum, HSE x8 encoding, Flash latency, APB limits, and timer multiplier; firmware 0.15.0 then passed bench boot and peripheral checks.
+- **Supersedes:** “Keep the first image on reset-default 4 MHz MSI.” MSI remains only the reset/startup source and safe pre-PLL state.
+- **Affects:** `firmware/src/platform/system.c`, platform clock API, SysTick, ADC, TIM3, I2C1, SPI1, USART1, diagnostics, firmware version 0.15.0

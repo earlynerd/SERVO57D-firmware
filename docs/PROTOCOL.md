@@ -92,13 +92,13 @@ from causing reply storms.
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
 
 The product ID is `0x4D4B5335` (`MKS5`). The current identity reports firmware
-0.4.0 and protocol 1.0. The capability bitmap uses the same stable bit
+0.14.0 and protocol 1.0. The capability bitmap uses the same stable bit
 definitions as the debugger diagnostic record, including the native-protocol
 capability.
 
 | Bit | Capability |
 | ---: | --- |
-| 0 | Bridge-safe bring-up image |
+| 0 | Bring-up/characterization image |
 | 1 | Status LED |
 | 2 | Foreground-supervised IWDG |
 | 3 | Reset-cause capture |
@@ -106,6 +106,10 @@ capability.
 | 5 | Encoder SPI acquisition |
 | 6 | RS-485 RX/TX DMA transport |
 | 7 | Native v1 protocol |
+| 8 | SSD1306-compatible I2C display |
+| 9 | Raw ADC acquisition, including timer-synchronous current capture |
+| 10 | Debounced passive-input monitor |
+| 11 | Manually gated TIM3 bridge-PWM characterizer |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:

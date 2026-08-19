@@ -1,5 +1,6 @@
 #include "mks57d/panic.h"
 
+#include "mks57d/board.h"
 #include "n32l40x.h"
 
 volatile panic_code_t g_last_panic __attribute__((section(".noinit")));
@@ -7,6 +8,7 @@ volatile panic_code_t g_last_panic __attribute__((section(".noinit")));
 _Noreturn void platform_panic(panic_code_t code)
 {
     __disable_irq();
+    board_bridge_force_low_zero();
     g_last_panic = code;
     __DSB();
 

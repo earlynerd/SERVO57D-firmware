@@ -4,27 +4,36 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "mks57d/adc1.h"
+#include "mks57d/adc_calibration.h"
+#include "mks57d/adc_display.h"
 #include "mks57d/application_core.h"
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
+#include "mks57d/bridge_characterizer.h"
+#include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
 #include "mks57d/current_controller.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
+#include "mks57d/encoder_display.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
+#include "mks57d/input_display.h"
 #include "mks57d/mt6816.h"
 #include "mks57d/motion_manager.h"
 #include "mks57d/native_protocol.h"
 #include "mks57d/motion_profile.h"
 #include "mks57d/pi_controller.h"
+#include "mks57d/pulse_input_display.h"
 #include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/step_direction.h"
+#include "mks57d/user_inputs.h"
 #include "mks57d/watchdog_policy.h"
 
 static unsigned int s_failures;
@@ -421,6 +430,14 @@ static void test_diagnostics_record_abi(void)
     EXPECT_TRUE(protocol_offset == 136u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_NATIVE_PROTOCOL) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_DISPLAY_I2C) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_PASSIVE_ADC) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_USER_INPUTS) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -697,6 +714,109 @@ static void test_adc_sample_rejects_values_outside_12_bits(void)
     EXPECT_TRUE(!adc_sample_build(NULL, 1u, 2u, 3u, 4u));
 }
 
+static void test_adc_calibration_uses_measured_front_end_scaling(void)
+{
+    adc_calibration_t calibration;
+    adc_engineering_sample_t engineering = {
+        .current_b_amperes = 10.0f,
+        .current_a_amperes = 20.0f,
+        .vbus_volts = 30.0f,
+        .capture_index = 40u,
+    };
+    adc_sample_t raw;
+    const float expected_amperes_per_count =
+        (ADC_NOMINAL_REFERENCE_VOLTS / (float)ADC_SAMPLE_RAW_MAX) /
+        (ADC_CURRENT_SHUNT_OHMS * ADC_CURRENT_SENSE_GAIN);
+    const float expected_vbus =
+        895.0f *
+        (ADC_NOMINAL_REFERENCE_VOLTS / (float)ADC_SAMPLE_RAW_MAX) *
+        ((ADC_VBUS_UPPER_RESISTANCE_OHMS +
+          ADC_VBUS_LOWER_RESISTANCE_OHMS) /
+         ADC_VBUS_LOWER_RESISTANCE_OHMS);
+
+    EXPECT_TRUE(!adc_calibration_build(NULL, 3.3f, 2053.0f, 2041.0f));
+    EXPECT_TRUE(!adc_calibration_build(&calibration,
+                                       0.0f,
+                                       2053.0f,
+                                       2041.0f));
+    EXPECT_TRUE(!adc_calibration_build(&calibration,
+                                       3.3f,
+                                       4096.0f,
+                                       2041.0f));
+    EXPECT_TRUE(adc_calibration_build(&calibration,
+                                      ADC_NOMINAL_REFERENCE_VOLTS,
+                                      2053.0f,
+                                      2041.0f));
+    EXPECT_TRUE(adc_calibration_is_valid(&calibration));
+
+    EXPECT_TRUE(adc_sample_build(&raw, 2053u, 2041u, 895u, 23u));
+    EXPECT_TRUE(adc_sample_convert(&raw, &calibration, &engineering));
+    EXPECT_TRUE(fabsf(engineering.current_b_amperes) < 0.000001f);
+    EXPECT_TRUE(fabsf(engineering.current_a_amperes) < 0.000001f);
+    EXPECT_TRUE(fabsf(engineering.vbus_volts - expected_vbus) < 0.00001f);
+    EXPECT_TRUE(engineering.capture_index == 23u);
+
+    EXPECT_TRUE(adc_sample_build(&raw, 2052u, 2042u, 895u, 24u));
+    EXPECT_TRUE(adc_sample_convert(&raw, &calibration, &engineering));
+    EXPECT_TRUE(fabsf(engineering.current_b_amperes +
+                      expected_amperes_per_count) < 0.000001f);
+    EXPECT_TRUE(fabsf(engineering.current_a_amperes -
+                      expected_amperes_per_count) < 0.000001f);
+    EXPECT_TRUE(fabsf(expected_amperes_per_count - 0.00606f) < 0.00001f);
+
+    raw.vbus_raw = ADC_SAMPLE_RAW_MAX + 1u;
+    EXPECT_TRUE(!adc_sample_convert(&raw, &calibration, &engineering));
+    EXPECT_TRUE(engineering.capture_index == 24u);
+    EXPECT_TRUE(!adc_sample_convert(NULL, &calibration, &engineering));
+    EXPECT_TRUE(!adc_sample_convert(&raw, NULL, &engineering));
+    EXPECT_TRUE(!adc_sample_convert(&raw, &calibration, NULL));
+}
+
+static void test_adc_zero_calibration_and_milliamp_conversion(void)
+{
+    adc_zero_calibrator_t calibrator;
+    adc_calibration_t calibration;
+    int32_t current_b_milliamperes = 123;
+    int32_t current_a_milliamperes = 456;
+    uint32_t sample;
+
+    EXPECT_TRUE(!adc_zero_calibrator_init(NULL,
+                                          ADC_NOMINAL_REFERENCE_VOLTS));
+    EXPECT_TRUE(!adc_zero_calibrator_init(&calibrator, 0.0f));
+    EXPECT_TRUE(adc_zero_calibrator_init(
+        &calibrator,
+        ADC_NOMINAL_REFERENCE_VOLTS));
+    EXPECT_TRUE(!adc_zero_calibrator_get(&calibrator, &calibration));
+
+    for (sample = 0u; sample < ADC_ZERO_CALIBRATION_SAMPLE_COUNT; ++sample)
+    {
+        EXPECT_TRUE(adc_zero_calibrator_observe(
+            &calibrator,
+            (uint16_t)(2052u + (sample & 1u)),
+            (uint16_t)(2041u + (sample & 1u))));
+    }
+    EXPECT_TRUE(adc_zero_calibrator_get(&calibrator, &calibration));
+    EXPECT_TRUE(fabsf(calibration.current_b_zero_raw - 2052.5f) <
+                0.000001f);
+    EXPECT_TRUE(fabsf(calibration.current_a_zero_raw - 2041.5f) <
+                0.000001f);
+
+    EXPECT_TRUE(adc_current_pair_convert_milliamperes(
+        2054u,
+        2040u,
+        &calibration,
+        &current_b_milliamperes,
+        &current_a_milliamperes));
+    EXPECT_TRUE(current_b_milliamperes == 9);
+    EXPECT_TRUE(current_a_milliamperes == -9);
+    EXPECT_TRUE(!adc_current_pair_convert_milliamperes(
+        2054u,
+        2040u,
+        NULL,
+        &current_b_milliamperes,
+        &current_a_milliamperes));
+}
+
 static void test_servo57d_oled_candidate_profile_is_valid(void)
 {
     const ssd1306_panel_config_t* config =
@@ -709,6 +829,353 @@ static void test_servo57d_oled_candidate_profile_is_valid(void)
     EXPECT_TRUE(config->column_offset == 28u);
     EXPECT_TRUE(config->multiplex_ratio == 0x27u);
     EXPECT_TRUE(config->start_line == 0u);
+}
+
+static bool encoder_display_pixel_is_set(const uint8_t* pixels,
+                                         size_t x,
+                                         size_t y)
+{
+    const size_t index =
+        ((y / 8u) * ENCODER_DISPLAY_WIDTH) + x;
+
+    return (pixels[index] & (uint8_t)(1u << (y % 8u))) != 0u;
+}
+
+static void test_adc_display_labels_channels_and_rejects_invalid_values(void)
+{
+    uint8_t current_a[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t current_b[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t vbus[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t out_of_range[ADC_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!adc_display_render(NULL,
+                                    sizeof(current_a),
+                                    ADC_DISPLAY_CURRENT_A,
+                                    0u,
+                                    true));
+    EXPECT_TRUE(!adc_display_render(current_a,
+                                    sizeof(current_a) - 1u,
+                                    ADC_DISPLAY_CURRENT_A,
+                                    0u,
+                                    true));
+    EXPECT_TRUE(!adc_display_render(current_a,
+                                    sizeof(current_a),
+                                    ADC_DISPLAY_CHANNEL_COUNT,
+                                    0u,
+                                    true));
+    EXPECT_TRUE(adc_display_render(current_a,
+                                   sizeof(current_a),
+                                   ADC_DISPLAY_CURRENT_A,
+                                   2048u,
+                                   true));
+    EXPECT_TRUE(adc_display_render(current_b,
+                                   sizeof(current_b),
+                                   ADC_DISPLAY_CURRENT_B,
+                                   2048u,
+                                   true));
+    EXPECT_TRUE(adc_display_render(vbus,
+                                   sizeof(vbus),
+                                   ADC_DISPLAY_VBUS,
+                                   ADC_SAMPLE_RAW_MAX,
+                                   true));
+    EXPECT_TRUE(adc_display_render(invalid,
+                                   sizeof(invalid),
+                                   ADC_DISPLAY_CURRENT_A,
+                                   0u,
+                                   false));
+    EXPECT_TRUE(adc_display_render(out_of_range,
+                                   sizeof(out_of_range),
+                                   ADC_DISPLAY_CURRENT_A,
+                                   ADC_SAMPLE_RAW_MAX + 1u,
+                                   true));
+
+    EXPECT_TRUE(memcmp(current_a, current_b, sizeof(current_a)) != 0);
+    EXPECT_TRUE(memcmp(current_a, vbus, sizeof(current_a)) != 0);
+    EXPECT_TRUE(memcmp(invalid, out_of_range, sizeof(invalid)) == 0);
+}
+
+static void test_adc_display_renders_both_signed_milliamp_values(void)
+{
+    uint8_t values[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t reversed[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[ADC_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!adc_display_render_currents_milliamperes(
+        NULL, sizeof(values), 0, 0, true));
+    EXPECT_TRUE(!adc_display_render_currents_milliamperes(
+        values, sizeof(values) - 1u, 0, 0, true));
+    EXPECT_TRUE(adc_display_render_currents_milliamperes(
+        values, sizeof(values), 1234, -5678, true));
+    EXPECT_TRUE(adc_display_render_currents_milliamperes(
+        reversed, sizeof(reversed), -5678, 1234, true));
+    EXPECT_TRUE(adc_display_render_currents_milliamperes(
+        invalid, sizeof(invalid), 0, 0, false));
+    EXPECT_TRUE(memcmp(values, reversed, sizeof(values)) != 0);
+    EXPECT_TRUE(memcmp(values, invalid, sizeof(values)) != 0);
+}
+
+static void test_encoder_display_renders_position_and_invalid_state(void)
+{
+    uint8_t zero[ENCODER_DISPLAY_FRAME_BYTES];
+    uint8_t maximum[ENCODER_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[ENCODER_DISPLAY_FRAME_BYTES];
+    uint8_t out_of_range[ENCODER_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!encoder_display_render(NULL, sizeof(zero), 0u, true));
+    EXPECT_TRUE(!encoder_display_render(zero, sizeof(zero) - 1u, 0u, true));
+    EXPECT_TRUE(encoder_display_render(zero, sizeof(zero), 0u, true));
+    EXPECT_TRUE(encoder_display_render(maximum,
+                                       sizeof(maximum),
+                                       MT6816_ANGLE_RAW_MAX,
+                                       true));
+    EXPECT_TRUE(encoder_display_render(invalid,
+                                       sizeof(invalid),
+                                       0u,
+                                       false));
+    EXPECT_TRUE(encoder_display_render(out_of_range,
+                                       sizeof(out_of_range),
+                                       MT6816_ANGLE_RAW_MAX + 1u,
+                                       true));
+
+    EXPECT_TRUE(memcmp(zero, maximum, sizeof(zero)) != 0);
+    EXPECT_TRUE(memcmp(invalid, out_of_range, sizeof(invalid)) == 0);
+    EXPECT_TRUE(encoder_display_pixel_is_set(zero, 7u, 3u));
+    EXPECT_TRUE(!encoder_display_pixel_is_set(invalid, 7u, 3u));
+    EXPECT_TRUE(encoder_display_pixel_is_set(invalid, 7u, 7u));
+}
+
+static void test_user_inputs_debounce_each_active_low_signal_independently(void)
+{
+    user_inputs_debouncer_t debouncer = {0};
+    uint32_t raw = USER_INPUT_MASK;
+
+    EXPECT_TRUE(!user_inputs_debouncer_init(NULL, raw));
+    EXPECT_TRUE(!user_inputs_debouncer_init(
+        &debouncer,
+        USER_INPUT_MASK | (1u << 12)));
+    EXPECT_TRUE(user_inputs_debouncer_init(&debouncer, raw));
+    EXPECT_TRUE(user_inputs_debounced_levels(&debouncer) == USER_INPUT_MASK);
+
+    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(user_inputs_debounced_levels(&debouncer) == USER_INPUT_MASK);
+    EXPECT_TRUE(user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
+                 USER_INPUT_KEY_ENTER) == 0u);
+
+    raw &= ~((uint32_t)USER_INPUT_M_IN1);
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    raw |= USER_INPUT_M_IN1;
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    raw &= ~((uint32_t)USER_INPUT_M_IN1);
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
+                 USER_INPUT_M_IN1) == 0u);
+    EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
+                 USER_INPUT_KEY_MENU) != 0u);
+
+    raw &= ~((uint32_t)USER_INPUT_STEP);
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE(user_inputs_debouncer_update(&debouncer, raw));
+    EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
+                 USER_INPUT_STEP) == 0u);
+}
+
+static void test_input_display_labels_five_raw_levels(void)
+{
+    uint8_t all_high[INPUT_DISPLAY_FRAME_BYTES];
+    uint8_t all_low[INPUT_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[INPUT_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!input_display_render(NULL,
+                                      sizeof(all_high),
+                                      USER_INPUT_MASK,
+                                      true));
+    EXPECT_TRUE(!input_display_render(all_high,
+                                      sizeof(all_high) - 1u,
+                                      USER_INPUT_MASK,
+                                      true));
+    EXPECT_TRUE(!input_display_render(all_high,
+                                      sizeof(all_high),
+                                      USER_INPUT_MASK | (1u << 12),
+                                      true));
+    EXPECT_TRUE(input_display_render(all_high,
+                                     sizeof(all_high),
+                                     USER_INPUT_MASK,
+                                     true));
+    EXPECT_TRUE(input_display_render(all_low,
+                                     sizeof(all_low),
+                                     0u,
+                                     true));
+    EXPECT_TRUE(input_display_render(invalid,
+                                     sizeof(invalid),
+                                     USER_INPUT_MASK,
+                                     false));
+    EXPECT_TRUE(memcmp(all_high, all_low, sizeof(all_high)) != 0);
+    EXPECT_TRUE(memcmp(all_high, invalid, sizeof(all_high)) != 0);
+    EXPECT_TRUE(memcmp(all_low, invalid, sizeof(all_low)) != 0);
+}
+
+static void test_pulse_input_display_labels_three_raw_levels(void)
+{
+    uint8_t all_high[PULSE_INPUT_DISPLAY_FRAME_BYTES];
+    uint8_t all_low[PULSE_INPUT_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[PULSE_INPUT_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!pulse_input_display_render(NULL,
+                                            sizeof(all_high),
+                                            USER_INPUT_MASK,
+                                            true));
+    EXPECT_TRUE(!pulse_input_display_render(all_high,
+                                            sizeof(all_high) - 1u,
+                                            USER_INPUT_MASK,
+                                            true));
+    EXPECT_TRUE(!pulse_input_display_render(all_high,
+                                            sizeof(all_high),
+                                            USER_INPUT_MASK | (1u << 12),
+                                            true));
+    EXPECT_TRUE(pulse_input_display_render(all_high,
+                                           sizeof(all_high),
+                                           USER_INPUT_MASK,
+                                           true));
+    EXPECT_TRUE(pulse_input_display_render(all_low,
+                                           sizeof(all_low),
+                                           0u,
+                                           true));
+    EXPECT_TRUE(pulse_input_display_render(invalid,
+                                           sizeof(invalid),
+                                           USER_INPUT_MASK,
+                                           false));
+    EXPECT_TRUE(memcmp(all_high, all_low, sizeof(all_high)) != 0);
+    EXPECT_TRUE(memcmp(all_high, invalid, sizeof(all_high)) != 0);
+    EXPECT_TRUE(memcmp(all_low, invalid, sizeof(all_low)) != 0);
+}
+
+static void test_bridge_characterizer_requires_release_and_stops_raw(void)
+{
+    bridge_characterizer_t characterizer = {0};
+    uint32_t raw = USER_INPUT_MASK;
+    uint32_t debounced = USER_INPUT_MASK;
+
+    EXPECT_TRUE(!bridge_characterizer_init(NULL, raw, debounced));
+    EXPECT_TRUE(!bridge_characterizer_init(
+        &characterizer,
+        raw | (1u << 12),
+        debounced));
+    EXPECT_TRUE(bridge_characterizer_init(&characterizer,
+                                          raw,
+                                          debounced));
+    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A1);
+    EXPECT_TRUE(!characterizer.active);
+
+    raw &= ~((uint32_t)USER_INPUT_KEY_NEXT);
+    debounced &= ~((uint32_t)USER_INPUT_KEY_NEXT);
+    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
+                                             raw,
+                                             debounced));
+    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A2);
+    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
+                                              raw,
+                                              debounced));
+    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A2);
+
+    raw |= USER_INPUT_KEY_NEXT;
+    debounced |= USER_INPUT_KEY_NEXT;
+    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
+                                              raw,
+                                              debounced));
+    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    debounced &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
+                                             raw,
+                                             debounced));
+    EXPECT_TRUE(characterizer.active);
+
+    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
+                                              raw,
+                                              debounced));
+    EXPECT_TRUE(characterizer.active);
+
+    raw |= USER_INPUT_KEY_ENTER;
+    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
+                                             raw,
+                                             debounced));
+    EXPECT_TRUE(!characterizer.active);
+
+    bridge_characterizer_stop(&characterizer);
+    EXPECT_TRUE(!characterizer.active);
+}
+
+static void test_bridge_characterizer_does_not_start_held_at_boot(void)
+{
+    bridge_characterizer_t characterizer = {0};
+    uint32_t raw = USER_INPUT_MASK & ~((uint32_t)USER_INPUT_KEY_ENTER);
+    uint32_t debounced = raw;
+
+    EXPECT_TRUE(bridge_characterizer_init(&characterizer,
+                                          raw,
+                                          debounced));
+    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
+                                              raw,
+                                              debounced));
+    EXPECT_TRUE(!characterizer.active);
+
+    raw |= USER_INPUT_KEY_ENTER;
+    debounced |= USER_INPUT_KEY_ENTER;
+    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
+                                              raw,
+                                              debounced));
+    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    debounced &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
+                                             raw,
+                                             debounced));
+    EXPECT_TRUE(characterizer.active);
+
+    raw &= ~((uint32_t)USER_INPUT_KEY_MENU);
+    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
+                                             raw,
+                                             debounced));
+    EXPECT_TRUE(!characterizer.active);
+}
+
+static void test_bridge_display_labels_leg_and_zero_run_state(void)
+{
+    uint8_t a1_zero[BRIDGE_DISPLAY_FRAME_BYTES];
+    uint8_t a1_run[BRIDGE_DISPLAY_FRAME_BYTES];
+    uint8_t b2_zero[BRIDGE_DISPLAY_FRAME_BYTES];
+
+    EXPECT_TRUE(!bridge_display_render(NULL,
+                                       sizeof(a1_zero),
+                                       BRIDGE_CHARACTERIZER_LEG_A1,
+                                       false));
+    EXPECT_TRUE(!bridge_display_render(a1_zero,
+                                       sizeof(a1_zero) - 1u,
+                                       BRIDGE_CHARACTERIZER_LEG_A1,
+                                       false));
+    EXPECT_TRUE(!bridge_display_render(a1_zero,
+                                       sizeof(a1_zero),
+                                       BRIDGE_CHARACTERIZER_LEG_COUNT,
+                                       false));
+    EXPECT_TRUE(bridge_display_render(a1_zero,
+                                      sizeof(a1_zero),
+                                      BRIDGE_CHARACTERIZER_LEG_A1,
+                                      false));
+    EXPECT_TRUE(bridge_display_render(a1_run,
+                                      sizeof(a1_run),
+                                      BRIDGE_CHARACTERIZER_LEG_A1,
+                                      true));
+    EXPECT_TRUE(bridge_display_render(b2_zero,
+                                      sizeof(b2_zero),
+                                      BRIDGE_CHARACTERIZER_LEG_B2,
+                                      false));
+    EXPECT_TRUE(memcmp(a1_zero, a1_run, sizeof(a1_zero)) != 0);
+    EXPECT_TRUE(memcmp(a1_zero, b2_zero, sizeof(a1_zero)) != 0);
 }
 
 static void test_ssd1306_init_uses_one_bounded_command_transaction(void)
@@ -750,7 +1217,7 @@ static void test_ssd1306_frame_uses_configured_visible_window(void)
                     &SSD1306_PANEL_SERVO57D_CANDIDATE,
                     pixels,
                     sizeof(pixels)) == I2C_STATUS_OK);
-    EXPECT_TRUE(mock.call_count == 24u);
+    EXPECT_TRUE(mock.call_count == 13u);
     EXPECT_TRUE(mock.lengths[0] == 7u);
     EXPECT_TRUE(mock.bytes[0][0] == 0x00u);
     EXPECT_TRUE(mock.bytes[0][1] == 0x21u);
@@ -760,7 +1227,38 @@ static void test_ssd1306_frame_uses_configured_visible_window(void)
     EXPECT_TRUE(mock.bytes[0][5] == 0u);
     EXPECT_TRUE(mock.bytes[0][6] == 4u);
     EXPECT_TRUE(mock.bytes[1][0] == 0x40u);
-    EXPECT_TRUE(mock.lengths[23] == 9u);
+    EXPECT_TRUE(mock.lengths[12] == 20u);
+}
+
+static void test_ssd1306_partial_pages_use_requested_window(void)
+{
+    uint8_t pixels[ENCODER_DISPLAY_FRAME_BYTES] = {0};
+    mock_i2c_t mock = {0};
+    const i2c_bus_t bus = {
+        .write = mock_i2c_write,
+        .context = &mock,
+    };
+
+    EXPECT_TRUE(ssd1306_write_pages(
+                    &bus,
+                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    ENCODER_DISPLAY_START_PAGE,
+                    ENCODER_DISPLAY_PAGE_COUNT,
+                    pixels,
+                    sizeof(pixels)) == I2C_STATUS_OK);
+    EXPECT_TRUE(mock.call_count == 6u);
+    EXPECT_TRUE(mock.bytes[0][4] == 0x22u);
+    EXPECT_TRUE(mock.bytes[0][5] == 1u);
+    EXPECT_TRUE(mock.bytes[0][6] == 2u);
+    EXPECT_TRUE(mock.lengths[1] == 32u);
+    EXPECT_TRUE(mock.lengths[5] == 21u);
+    EXPECT_TRUE(ssd1306_write_pages(
+                    &bus,
+                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    4u,
+                    2u,
+                    pixels,
+                    sizeof(pixels)) == I2C_STATUS_INVALID_ARGUMENT);
 }
 
 static void test_ssd1306_stops_after_transport_failure(void)
@@ -2401,9 +2899,21 @@ int main(void)
     test_interrupt_priority_contract();
     test_adc_channel_and_sample_order_contract();
     test_adc_sample_rejects_values_outside_12_bits();
+    test_adc_calibration_uses_measured_front_end_scaling();
+    test_adc_zero_calibration_and_milliamp_conversion();
     test_servo57d_oled_candidate_profile_is_valid();
+    test_adc_display_labels_channels_and_rejects_invalid_values();
+    test_adc_display_renders_both_signed_milliamp_values();
+    test_encoder_display_renders_position_and_invalid_state();
+    test_user_inputs_debounce_each_active_low_signal_independently();
+    test_input_display_labels_five_raw_levels();
+    test_pulse_input_display_labels_three_raw_levels();
+    test_bridge_characterizer_requires_release_and_stops_raw();
+    test_bridge_characterizer_does_not_start_held_at_boot();
+    test_bridge_display_labels_leg_and_zero_run_state();
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();
+    test_ssd1306_partial_pages_use_requested_window();
     test_ssd1306_stops_after_transport_failure();
     test_native_protocol_crc_matches_standard_vector();
     test_native_protocol_codec_accepts_maximum_payload();

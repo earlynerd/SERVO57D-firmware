@@ -42,7 +42,8 @@ Goal: produce a small, auditable project-owned firmware base.
 
 - [x] Import only the required Nations CMSIS and device-support files, preserving their license headers.
 - [x] Add the N32L406CBL7 startup file and an exact 128 KiB flash / split 16 KiB SRAM1 + 8 KiB SRAM2 linker layout with link-time guards.
-- [x] Keep the first image on the reset-default 4 MHz MSI; defer HSI, HSE, and PLL operation.
+- [x] Keep the first image on the reset-default 4 MHz MSI.
+- [x] Promote the functional image to the board's 8 MHz HSE through PLL at 64 MHz, with HCLK/APB/timer clocks explicitly derived and bench-proven.
 - [x] Establish deterministic reset behavior and route core faults and unclaimed interrupts to one panic path.
 - [x] Add a monotonic timebase.
 - [x] Define the initial interrupt-priority, execution-ownership, and multi-rate control architecture.
@@ -52,51 +53,68 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
 
-Software status: the bridge-safe image builds, runs a seven-gate boot self-test,
-initializes and verifies the documented NVIC grouping and SysTick priority,
-actively samples the MT6816 candidate through bounded foreground SPI, and
-publishes firmware, boot/runtime, encoder, RS-485, and native-protocol
-diagnostics through a 184-byte schema-4 sequence-protected RAM record. Post-link memory/vector/diagnostic
-checks and host-testable state, fault, self-test, watchdog-liveness,
-diagnostic-ABI, priority, and MT6816 protocol checks pass. Reset behavior,
-clock assumptions, SRAM2 initialization, IWDG timing, LED and SPI electrical
-behavior, physical bridge safety, exception handling, priority registers,
-board invariants, encoder identity, and debugger visibility remain unverified
-on hardware.
+Software status: firmware 0.15.0 builds, runs from the bench-proven 8 MHz HSE
+through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
+samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
+read-only native protocol over RS-485. The 184-byte schema-4 RAM diagnostic
+record remains ABI-checked. The retained 20 kHz TIM3 PWM characterizer
+preloads and returns to the all-low vector, but bridge switching remains
+inhibited until a bounded current-loop backend owns it. Display operation, encoder motion, RS-485
+command/response, and stable bridge-disabled ADC readings are bench-proven.
+Reset waveforms, SRAM2 and IWDG details, debugger-visible diagnostics,
+exception behavior, and physical bridge safety still require explicit hardware
+validation.
 
-Go criterion: a clean checkout builds, flashes, boots, and reports its version while the bridge remains disabled.
+Go criterion: a clean checkout builds, flashes, boots, and reports its version from a defined board state.
 
 ## Phase 3 — Passive peripheral bring-up
 
 Goal: understand every input without commanding motor current.
 
 - [ ] Verify all pin assignments against continuity measurements on the actual board.
-- [ ] Read buttons and isolated step/direction/enable inputs.
-- [ ] Bring up the display only if it is useful for diagnostics.
-- [x] Add an inactive, bounded I2C1 transport and host-tested configurable SSD1306-compatible display layer.
-- [x] Add an inactive, bounded PA1/PA2/PA3 ADC transport and host-tested raw-sample contract.
+- [x] Add debounced monitoring for the three local keys and M_IN1/M_IN2.
+- [x] Verify all five monitored input levels and active-low behavior on the board.
+- [x] Add a passive static monitor for schematic candidates PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` without pull resistors or bridge authority.
+- [x] Verify those three physical pin mappings and active-low electrical behavior on the board.
+- [ ] **Deferred:** Implement timer capture, pulse-rate validation, and step/direction/enable operating semantics.
+- [x] Confirm the SSD1306-compatible 72-by-40 display profile on the fitted panel.
+- [x] Add an active, bounded I2C1 transport and host-tested configurable SSD1306-compatible display layer.
+- [x] Add an active, bounded PA1/PA2/PA3 polling ADC transport and host-tested raw-sample contract.
 - [x] Add an active, bounded SPI1 transport and host-tested MT6816 coherent-burst decoder with foreground diagnostics.
-- [x] Add an active, receive-first USART1 transport with circular RX DMA, bounded foreground draining, DMA TX, line-complete PA8 turnaround, and schema-3 diagnostics.
-- [ ] Identify and read the magnetic encoder over SPI.
-- [ ] Characterize encoder noise, wraparound, direction, and zero-offset behavior.
-- [ ] Bring up RS-485 receive/transmit and direction control in loopback or with an external adapter.
-- [ ] Sample bus voltage and both current-sense outputs with the bridge disabled.
-- [ ] Measure current-sense zero offsets, noise, ADC reference behavior, and amplifier settling.
-- [ ] Determine the safe polarity and reset state of every gate-control and enable signal.
+- [x] Add an active, receive-first USART1 transport with circular RX DMA, bounded foreground draining, DMA TX, and line-complete PC13 turnaround.
+- [x] Read the fitted magnetic encoder through the MT6816-compatible SPI protocol.
+- [x] Verify stable rest readings, consistent shaft response, and repeatable once-per-revolution wraparound.
+- [ ] Quantify encoder noise and determine mechanical/electrical zero offset.
+- [x] Bring up RS-485 receive/transmit and direction control with an external adapter.
+- [x] Sample bus voltage and both current-sense outputs with the bridge disabled.
+- [x] Measure one-board zero-current offsets and short-term raw ADC noise at 12 V input.
+- [x] Encode the schematic-derived current-sense and bus-divider conversion formulas.
+- [ ] Measure ADC reference accuracy, amplifier settling, gain/sign, clipping, and supply-range behavior.
+- [x] Retire the post-peripheral permanent no-drive invariant after completing passive input validation; retain the reset-safe initial board-state gate.
 
-Go criterion: all control-relevant inputs are understood and repeatable, and the bridge remains disabled through resets, debugger attachment, and firmware faults.
+Go criterion: all passive inputs required by the first RS-485-controlled bridge
+tests are understood and repeatable, and the step/direction/enable pin mapping
+has been checked. Gate-control polarity, reset/fault waveforms, and hardware
+inhibit behavior move into Phase 4 because they cannot be established without
+driving the bridge interface. Deferred step/direction capture and operating
+semantics are not a gate for Phase 4.
 
 ## Phase 4 — Power-stage timing without a motor
 
 Goal: validate the output waveform before energy is applied to a winding.
 
-- [ ] Map the four bridge-control pins to available timer channels and synchronize the timers if more than one timer is required.
-- [ ] Confirm the EG3013 input truth table and dead-time behavior from datasheets and measurements.
-- [ ] Generate a low-duty test pattern while observing driver and MOSFET gate waveforms.
-- [ ] Verify there is no shoot-through command during startup, shutdown, timer updates, or debugger halts.
-- [ ] Implement a single, immediate bridge-disable path used by every fault.
+- [x] Remove the post-peripheral invariant that permanently required PA6/PA7/PB0/PB1 to remain non-driving, while retaining reset-safe startup verification.
+- [x] Add a minimal button-held bridge-characterization backend with explicit all-low initialization and one common deterministic zero-vector path.
+- [ ] Scope PA6/PA7/PB0/PB1 and any candidate inhibit signal through power-on, reset, debugger halt, watchdog reset, and ordinary firmware startup.
+- [x] Map PA6/PA7/PB0/PB1 to TIM3 channels 1-4 on AF2 using the Nations 2.3.0 four-channel PWM example; no timer synchronization is required.
+- [x] Confirm from the EG3013 documentation that HIN is active-high, LIN is active-low, and nominal dead time is 120 ns; record the tied-input topology and undefined floating state.
+- [x] Generate a button-held 500 Hz single-leg GPIO test pattern. With a 12 V bus and no motor, bench DMM measurements show 0 V differential across both phases in `ZERO` and approximately 6 V average across a selected phase during `RUN`; scoped waveform and dead-time measurements remain pending.
+- [x] Verify ordinary 500 Hz bridge switching produces no detectable increase in supply current, supporting adequate fixed EG3013 dead time and no gross cross-conduction. Startup, reset, watchdog, and debugger-halt transitions remain separate measurements.
+- [x] Replace the foreground-timed pattern with edge-aligned 20 kHz, 50% TIM3 PWM using preloaded compare registers. Bench testing confirms A1/A2/B1/B2 selection drives the expected phase and polarity while the other phase remains at zero, proving all four TIM3 AF2 outputs on the tested board.
+- [x] Trigger a two-rank `currentB`/`currentA` ADC sequence from every TIM3 update and capture it on circular DMA channel 1; bench validation confirms stable target A/B acquisition without DMA errors.
+- [x] Route every running software panic to the all-low zero vector; a true all-FET-off hardware path remains unresolved.
 - [ ] Confirm current-limit and bus-voltage trip handling with injected test signals where possible.
-- [ ] Verify bootstrap refresh and minimum/maximum duty-cycle constraints.
+- [ ] Verify bootstrap refresh and minimum/maximum duty-cycle constraints for the timer-PWM implementation.
 
 Go criterion: scoped gate and bridge-node waveforms remain safe under normal operation, reset, watchdog, breakpoint, and deliberately injected faults.
 
@@ -105,8 +123,8 @@ Go criterion: scoped gate and bridge-node waveforms remain safe under normal ope
 Goal: regulate winding current before attempting position control.
 
 - [ ] Trigger ADC conversions at deterministic quiet points in the PWM cycle.
-- [ ] Calibrate PA1/PA2 offsets at every safe startup.
-- [ ] Convert ADC readings to amperes from measured shunt and amplifier gain.
+- [x] Calibrate PA1/PA2 offsets independently at every safe startup using 32 bridge-zeroed snapshots.
+- [x] Convert ADC readings to signed milliamperes from the 20 mOhm shunt and 6.65 amplifier gain; nominal 3.3 V reference is used until reference accuracy is measured.
 - [ ] Implement hard clamps independent of requested current.
 - [ ] Implement the A/B winding current controllers and anti-windup behavior.
 - [ ] Test first into a non-motor load or at very low bus voltage when practical.
@@ -139,7 +157,7 @@ Go criterion: controlled moves and disturbances remain stable, faults shut down 
   control-lease, and motion-completion semantics.
 - [x] Retain Modbus RTU as an optional standards-oriented integration profile.
 - [x] Implement portable step/direction behavior and edge-rate limits.
-- [ ] Map step/direction capture to the verified timer and physical pins.
+- [ ] **Deferred:** Map step/direction capture to verified timer and physical pins.
 - [ ] Define configuration, status, telemetry, and fault registers or messages.
 - [ ] Add protocol fuzz and malformed-frame tests.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.

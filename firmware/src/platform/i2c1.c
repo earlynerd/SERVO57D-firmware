@@ -23,6 +23,9 @@ enum
     I2C_GPIO_AF7 = (7u << (I2C_GPIO_SCL_PIN * 4u)) |
                    (7u << (I2C_GPIO_SDA_PIN * 4u)),
     I2C_OWN_ADDRESS_7BIT_MODE = 0x4000u,
+    I2C_FAST_MODE_DUTY_DIVISOR = 3u,
+    I2C_FAST_MODE_RISE_TIME_NS = 300u,
+    NANOSECONDS_PER_MICROSECOND = 1000u,
     I2C_ERROR_MASK = I2C_STS1_BUSERR | I2C_STS1_ARLOST |
                      I2C_STS1_ACKFAIL | I2C_STS1_OVERRUN |
                      I2C_STS1_TIMOUT,
@@ -98,6 +101,9 @@ bool i2c1_init(uint32_t peripheral_clock_hz)
 {
     uint32_t frequency_mhz;
     uint32_t clock_control;
+    uint32_t actual_clock_hz;
+    const uint32_t target_denominator =
+        I2C_FAST_MODE_DUTY_DIVISOR * I2C1_TARGET_CLOCK_HZ;
 
     s_i2c1_initialized = false;
 
@@ -109,17 +115,29 @@ bool i2c1_init(uint32_t peripheral_clock_hz)
     }
 
     frequency_mhz = peripheral_clock_hz / 1000000u;
-    clock_control = peripheral_clock_hz / (2u * I2C1_STANDARD_SPEED_HZ);
-    if (clock_control < 4u)
+    /* Choose the closest divider to the bench-proven 333.3 kHz rate. Both
+       the old 4 MHz PCLK and the production 16 MHz PCLK divide exactly
+       enough for CCR=4 and CCR=16 respectively. */
+    clock_control =
+        (peripheral_clock_hz + (target_denominator / 2u)) /
+        target_denominator;
+    if (clock_control == 0u)
     {
-        clock_control = 4u;
+        clock_control = 1u;
     }
     if (clock_control > I2C_CLKCTRL_CLKCTRL)
     {
         return false;
     }
+    actual_clock_hz = peripheral_clock_hz /
+                      (I2C_FAST_MODE_DUTY_DIVISOR * clock_control);
+    if (actual_clock_hz > I2C1_FAST_MODE_LIMIT_HZ)
+    {
+        return false;
+    }
 
-    RCC->APB2PCLKEN |= RCC_APB2PCLKEN_IOPAEN;
+    RCC->APB2PCLKEN |= RCC_APB2PCLKEN_AFIOEN |
+                       RCC_APB2PCLKEN_IOPAEN;
     RCC->APB1PCLKEN |= RCC_APB1PCLKEN_I2C1EN;
     __DSB();
 
@@ -139,8 +157,10 @@ bool i2c1_init(uint32_t peripheral_clock_hz)
 
     I2C1->CTRL1 = 0u;
     I2C1->CTRL2 = (uint16_t)frequency_mhz;
-    I2C1->CLKCTRL = (uint16_t)clock_control;
-    I2C1->TMRISE = (uint16_t)(frequency_mhz + 1u);
+    I2C1->CLKCTRL = (uint16_t)(I2C_CLKCTRL_FSMODE | clock_control);
+    I2C1->TMRISE = (uint16_t)(
+        ((frequency_mhz * I2C_FAST_MODE_RISE_TIME_NS) /
+         NANOSECONDS_PER_MICROSECOND) + 1u);
     I2C1->OADDR1 = (uint16_t)I2C_OWN_ADDRESS_7BIT_MODE;
     I2C1->CTRL1 = I2C_CTRL1_EN;
 

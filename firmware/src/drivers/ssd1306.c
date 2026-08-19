@@ -10,7 +10,8 @@ enum
     SSD1306_DATA_CONTROL = 0x40u,
     SSD1306_RAM_COLUMNS = 128u,
     SSD1306_RAM_PAGES = 8u,
-    SSD1306_DATA_CHUNK_BYTES = 16u
+    /* One control byte plus 31 data bytes fits the I2C1 32-byte bound. */
+    SSD1306_DATA_CHUNK_BYTES = 31u
 };
 
 const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D_CANDIDATE = {
@@ -99,23 +100,16 @@ i2c_status_t ssd1306_initialize(const i2c_bus_t* bus,
                       sizeof(sequence));
 }
 
-i2c_status_t ssd1306_write_frame(const i2c_bus_t* bus,
-                                 const ssd1306_panel_config_t* config,
-                                 const uint8_t* pixels,
-                                 size_t length)
+static i2c_status_t write_pages(const i2c_bus_t* bus,
+                                const ssd1306_panel_config_t* config,
+                                uint8_t first_page,
+                                uint8_t page_count,
+                                const uint8_t* pixels,
+                                size_t length)
 {
     uint8_t packet[SSD1306_DATA_CHUNK_BYTES + 1u];
-    const size_t expected_length =
-        (config == NULL) ? 0u :
-        (size_t)config->width * ((size_t)config->height / 8u);
     size_t offset = 0u;
     i2c_status_t result;
-
-    if (!bus_is_valid(bus) || !ssd1306_config_is_valid(config) ||
-        (pixels == NULL) || (length != expected_length))
-    {
-        return I2C_STATUS_INVALID_ARGUMENT;
-    }
 
     const uint8_t window[] = {
         SSD1306_COMMAND_CONTROL,
@@ -123,8 +117,8 @@ i2c_status_t ssd1306_write_frame(const i2c_bus_t* bus,
         config->column_offset,
         (uint8_t)(config->column_offset + config->width - 1u),
         0x22u,
-        config->page_offset,
-        (uint8_t)(config->page_offset + (config->height / 8u) - 1u),
+        (uint8_t)(config->page_offset + first_page),
+        (uint8_t)(config->page_offset + first_page + page_count - 1u),
     };
 
     result = bus->write(bus->context,
@@ -158,4 +152,49 @@ i2c_status_t ssd1306_write_frame(const i2c_bus_t* bus,
     }
 
     return I2C_STATUS_OK;
+}
+
+i2c_status_t ssd1306_write_pages(const i2c_bus_t* bus,
+                                 const ssd1306_panel_config_t* config,
+                                 uint8_t first_page,
+                                 uint8_t page_count,
+                                 const uint8_t* pixels,
+                                 size_t length)
+{
+    const uint8_t visible_pages =
+        (config == NULL) ? 0u : (uint8_t)(config->height / 8u);
+    const size_t expected_length =
+        (config == NULL) ? 0u : (size_t)config->width * page_count;
+
+    if (!bus_is_valid(bus) || !ssd1306_config_is_valid(config) ||
+        (pixels == NULL) || (page_count == 0u) ||
+        (first_page >= visible_pages) ||
+        ((uint16_t)first_page + page_count > visible_pages) ||
+        (length != expected_length))
+    {
+        return I2C_STATUS_INVALID_ARGUMENT;
+    }
+
+    return write_pages(bus,
+                       config,
+                       first_page,
+                       page_count,
+                       pixels,
+                       length);
+}
+
+i2c_status_t ssd1306_write_frame(const i2c_bus_t* bus,
+                                 const ssd1306_panel_config_t* config,
+                                 const uint8_t* pixels,
+                                 size_t length)
+{
+    const uint8_t page_count =
+        (config == NULL) ? 0u : (uint8_t)(config->height / 8u);
+
+    return ssd1306_write_pages(bus,
+                               config,
+                               0u,
+                               page_count,
+                               pixels,
+                               length);
 }

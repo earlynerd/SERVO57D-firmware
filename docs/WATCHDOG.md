@@ -1,10 +1,10 @@
 # Independent Watchdog Policy
 
-Status: implemented in the bridge-safe image and host-tested at the policy layer, but not yet verified on an N32L406CBL7 board. This watchdog does not authorize bridge operation and is not the emergency bridge-off mechanism.
+Status: implemented in the bridge-characterization image and host-tested at the policy layer, but not yet verified on an N32L406CBL7 board. This watchdog does not authorize bridge operation and is not the fast bridge-state mechanism.
 
 ## Hardware configuration
 
-The bridge-safe image uses the independent watchdog (IWDG), not the window watchdog. IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and remains independent of the 4 MHz MSI system clock.
+The characterization image uses the independent watchdog (IWDG), not the window watchdog. IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and remains independent of the 64 MHz PLL system clock.
 
 | Setting | Value | Nominal result |
 | --- | ---: | ---: |
@@ -30,17 +30,17 @@ Any bounded-wait or verification failure enters the common panic path. If option
 
 There is deliberately no public raw-feed function. The cooperative foreground loop owns the sole supervisor API, and the hardware reload key is private to `watchdog.c`.
 
-For the current bridge-safe image, a service is permitted only when:
+For the current characterization image, a service is permitted only when:
 
 - the application remains in `APP_STATE_DIAGNOSTIC`;
 - the foreground loop has returned within 250 ms of its preceding poll; and
 - the 1 kHz timebase advances far enough to reach the next 100 ms service point.
 
-An unhealthy state or foreground deadline miss latches policy failure. The main loop then enters `platform_panic()`, which disables interrupts and stops servicing IWDG. A stalled SysTick also prevents the service deadline from becoming due, so IWDG eventually resets the MCU.
+An unhealthy state or foreground deadline miss latches policy failure. The main loop then enters `platform_panic()`, which disables interrupts, commands all four bridge inputs low, and stops servicing IWDG. A stalled SysTick also prevents the service deadline from becoming due, so IWDG eventually resets the MCU.
 
 Interrupt handlers, including SysTick and the future current-control path, must never reload IWDG. This prevents one still-running interrupt from hiding a dead foreground or another failed execution domain.
 
-Before a `RUN` state is implemented, the foreground supervisor must require explicit liveness evidence from the control-deadline guardian, accepted current-sample epochs, and any other safety-critical owner. IWDG remains a final recovery layer; a missed fast-loop deadline must disable the bridge immediately rather than wait for reset.
+Before motor-control `RUN` exists, the foreground supervisor must require explicit liveness evidence from the control-deadline guardian, accepted current-sample epochs, and any other safety-critical owner. IWDG remains a final recovery layer; a missed fast-loop deadline must command the proven deterministic bridge state immediately rather than wait for reset.
 
 ## Reset diagnostics
 
@@ -50,9 +50,13 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-The bridge-safe image sets `DBG_CTRL.IWDG_STOP`, pausing IWDG while the Cortex-M4 core is halted. This preserves first-board SWD recovery, and it is safe only because PA6, PA7, PB0, PB1, and provisional PB7 `nEN` remain input/no-pull and no bridge-control API exists.
-
-This exception must be removed before any image can energize the bridge. A future bridge-capable build must demonstrate a hardware-safe output state during debugger halt and must not depend on a paused watchdog. `platform_panic()` is a running instruction loop rather than a debug halt, so IWDG continues and resets after a panic.
+Firmware 0.14.0 clears both `DBG_CTRL.IWDG_STOP` and `DBG_CTRL.TIM3_STOP`;
+IWDG and active TIM3 PWM continue while the Cortex-M4 is halted. A halt
+therefore preserves the last timer command until the nominal
+one-second watchdog reset returns the MCU pins to reset state. The tied HIN/LIN
+inputs make that high-impedance reset interval electrically undefined, so the
+actual gate waveforms must be measured. `platform_panic()` is a running path
+and commands the all-low vector before waiting for IWDG reset.
 
 ## Bench validation gate
 
@@ -62,7 +66,7 @@ With the motor disconnected and a current-limited supply:
 - measure the real watchdog reset interval over supply and temperature conditions available during bring-up;
 - prove a running-but-unserviced image resets and reports `IWDGRSTF` on the next boot;
 - prove normal heartbeat operation does not reset over an extended run;
-- halt and resume under SWD to verify the passive-only debug pause;
+- halt under SWD and verify watchdog reset timing plus all four gate-command and gate-output waveforms;
 - repeat power-cycle, external reset, software panic, and watchdog reset while monitoring all bridge-control pins.
 
 Until these checks pass, the watchdog is software-complete but hardware-unverified.

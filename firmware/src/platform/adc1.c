@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mks57d/dma_channels.h"
 #include "n32l40x.h"
 
 enum
@@ -21,9 +22,29 @@ enum
     ADC_SOFTWARE_START = ADC_CTRL2_EXTRTRIG | ADC_CTRL2_SWSTRRCH,
     ADC_POLL_BUDGET = 20000u,
     ADC_LDO_CONTROL_OFFSET = 0x60u,
-    ADC_LDO_ENABLE_VALUE = 0x28u
+    ADC_LDO_ENABLE_VALUE = 0x28u,
+    ADC_CURRENT_DMA_BUFFER_LENGTH = 64u,
+    ADC_CURRENT_SEQUENCE_LENGTH = 2u,
+    ADC_CURRENT_SEQUENCE_LENGTH_ENCODING =
+        ADC_CURRENT_SEQUENCE_LENGTH - 1u,
+    ADC_TIM3_TRGO_SELECT = ADC_CTRL2_EXTRSEL_2,
+    DMA_REQUEST_ADC = 0u,
+    DMA_CURRENT_CONFIGURATION = DMA_CHCFG1_CIRC |
+                                DMA_CHCFG1_MINC |
+                                DMA_CHCFG1_PSIZE_0 |
+                                DMA_CHCFG1_MSIZE_0 |
+                                DMA_CHCFG1_PRIOLVL_1,
+    DMA_CHANNEL1_ALL_INTERRUPT_FLAGS =
+        DMA_INTCLR_CGLBF1 | DMA_INTCLR_CTXCF1 |
+        DMA_INTCLR_CHTXF1 | DMA_INTCLR_CERRF1,
+    ADC_SNAPSHOT_RETRY_LIMIT = 8u
 };
 
+_Static_assert(DMA_CHANNEL_ADC_CURRENT == 1u,
+               "ADC current acquisition owns DMA channel 1");
+_Static_assert((ADC_CURRENT_DMA_BUFFER_LENGTH %
+                ADC_CURRENT_SEQUENCE_LENGTH) == 0u,
+               "DMA buffer must contain complete ADC sequences");
 typedef struct
 {
     uint8_t divisor;
@@ -43,7 +64,10 @@ static const adc_clock_divider_t ADC_CLOCK_DIVIDERS[] = {
 };
 
 static bool s_adc1_initialized;
+static bool s_synchronous_current_started;
 static uint32_t s_capture_index;
+static volatile uint16_t
+    s_current_dma_buffer[ADC_CURRENT_DMA_BUFFER_LENGTH];
 
 static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
 {
@@ -170,6 +194,7 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     }
 
     s_adc1_initialized = false;
+    s_synchronous_current_started = false;
     s_capture_index = 0u;
 
     RCC->CTRL |= RCC_CTRL_HSIEN;
@@ -254,6 +279,10 @@ adc1_status_t adc1_read_passive(adc_sample_t* output)
     {
         return ADC1_STATUS_NOT_READY;
     }
+    if (s_synchronous_current_started)
+    {
+        return ADC1_STATUS_BUSY;
+    }
 
     result = convert_channel(ADC1_CURRENT_B_CHANNEL, &current_b_raw);
     if (result != ADC1_STATUS_OK)
@@ -283,4 +312,155 @@ adc1_status_t adc1_read_passive(adc_sample_t* output)
 
     s_capture_index = capture_index;
     return ADC1_STATUS_OK;
+}
+
+adc1_status_t adc1_start_pwm_synchronized_current(void)
+{
+    if (!s_adc1_initialized)
+    {
+        return ADC1_STATUS_NOT_READY;
+    }
+    if (s_synchronous_current_started)
+    {
+        return ADC1_STATUS_OK;
+    }
+    if ((ADC->STS & ADC_STS_STR) != 0u)
+    {
+        return ADC1_STATUS_BUSY;
+    }
+
+    RCC->AHBPCLKEN |= RCC_AHBPCLKEN_DMAEN;
+    __DSB();
+
+    if ((DMA_CH1->CHCFG & DMA_CHCFG1_CHEN) != 0u)
+    {
+        return ADC1_STATUS_BUSY;
+    }
+
+    /*
+     * Configure and arm the complete current-acquisition path before TIM3 is
+     * started. This preserves the manufacturer-proven DMA initialization
+     * order while restoring the target two-rank external-triggered sequence.
+     */
+    ADC->CTRL2 = 0u;
+    DMA_CH1->CHCFG = 0u;
+    DMA_CH1->TXNUM = 0u;
+    DMA_CH1->PADDR = 0u;
+    DMA_CH1->MADDR = 0u;
+    DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
+    DMA_CH1->PADDR = (uint32_t)(uintptr_t)&ADC->DAT;
+    DMA_CH1->MADDR =
+        (uint32_t)(uintptr_t)&s_current_dma_buffer[0];
+    DMA_CH1->TXNUM = ADC_CURRENT_DMA_BUFFER_LENGTH;
+    DMA_CH1->CHSEL = DMA_REQUEST_ADC;
+    DMA_CH1->CHCFG = DMA_CURRENT_CONFIGURATION;
+    DMA_CH1->CHCFG |= DMA_CHCFG1_CHEN;
+
+    ADC->CTRL1 = ADC_CTRL1_SCANMD;
+    ADC->CTRL2 = ADC_TIM3_TRGO_SELECT;
+    ADC->RSEQ1 = (ADC->RSEQ1 & ~ADC_RSEQ1_LEN) |
+                 ((uint32_t)ADC_CURRENT_SEQUENCE_LENGTH_ENCODING << 20u);
+    ADC->RSEQ3 =
+        ((uint32_t)ADC1_CURRENT_B_CHANNEL & ADC_RSEQ3_SEQ1) |
+        (((uint32_t)ADC1_CURRENT_A_CHANNEL << 5u) & ADC_RSEQ3_SEQ2);
+    ADC->SAMPT2 = (ADC->SAMPT2 &
+                   ~(ADC_SAMPT2_SAMP2 | ADC_SAMPT2_SAMP3)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (2u * 3u)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (3u * 3u));
+    ADC->STS = 0u;
+
+    ADC->CTRL2 |= ADC_CTRL2_ON;
+    if (!wait_for_mask(&ADC->CTRL3, ADC_CTRL3_READY, true))
+    {
+        return ADC1_STATUS_POWER_TIMEOUT;
+    }
+    ADC->CTRL2 |= ADC_CTRL2_ENCAL;
+    if (!wait_for_mask(&ADC->CTRL2, ADC_CTRL2_ENCAL, false))
+    {
+        return ADC1_STATUS_CALIBRATION_TIMEOUT;
+    }
+
+    ADC->CTRL2 |= ADC_CTRL2_ENDMA | ADC_CTRL2_EXTRTRIG;
+    __DSB();
+
+    s_synchronous_current_started =
+        ((DMA_CH1->CHCFG & DMA_CHCFG1_CHEN) != 0u) &&
+        (DMA_CH1->CHSEL == DMA_REQUEST_ADC) &&
+        ((ADC->CTRL2 & (ADC_CTRL2_ENDMA | ADC_CTRL2_EXTRTRIG |
+                        ADC_CTRL2_EXTRSEL)) ==
+         (ADC_CTRL2_ENDMA | ADC_CTRL2_EXTRTRIG |
+          ADC_TIM3_TRGO_SELECT));
+    return s_synchronous_current_started ? ADC1_STATUS_OK :
+                                           ADC1_STATUS_NOT_READY;
+}
+
+adc1_status_t adc1_read_synchronized_current(
+    adc1_current_snapshot_t* output)
+{
+    uint32_t attempt;
+
+    if (output == NULL)
+    {
+        return ADC1_STATUS_INVALID_ARGUMENT;
+    }
+    if (!s_synchronous_current_started)
+    {
+        return ADC1_STATUS_NOT_READY;
+    }
+    if ((DMA->INTSTS & DMA_INTSTS_ERRF1) != 0u)
+    {
+        return ADC1_STATUS_DMA_ERROR;
+    }
+    for (attempt = 0u; attempt < ADC_SNAPSHOT_RETRY_LIMIT; ++attempt)
+    {
+        const uint32_t remaining_before = DMA_CH1->TXNUM;
+        const bool wrapped =
+            (DMA->INTSTS & DMA_INTSTS_TXCF1) != 0u;
+        uint32_t completed;
+        uint32_t pair_start;
+        uint16_t current_b_raw;
+        uint16_t current_a_raw;
+        uint32_t remaining_after;
+
+        if (remaining_before > ADC_CURRENT_DMA_BUFFER_LENGTH)
+        {
+            return ADC1_STATUS_DMA_ERROR;
+        }
+
+        completed = ADC_CURRENT_DMA_BUFFER_LENGTH - remaining_before;
+        completed &= ~((uint32_t)1u);
+        if (completed >= ADC_CURRENT_SEQUENCE_LENGTH)
+        {
+            pair_start = completed - ADC_CURRENT_SEQUENCE_LENGTH;
+        }
+        else if (wrapped)
+        {
+            pair_start = ADC_CURRENT_DMA_BUFFER_LENGTH -
+                         ADC_CURRENT_SEQUENCE_LENGTH;
+        }
+        else
+        {
+            return ADC1_STATUS_NO_SAMPLE;
+        }
+
+        __DMB();
+        current_b_raw = s_current_dma_buffer[pair_start];
+        current_a_raw = s_current_dma_buffer[pair_start + 1u];
+        __DMB();
+        remaining_after = DMA_CH1->TXNUM;
+        if (remaining_before == remaining_after)
+        {
+            if ((current_b_raw > ADC_SAMPLE_RAW_MAX) ||
+                (current_a_raw > ADC_SAMPLE_RAW_MAX))
+            {
+                return ADC1_STATUS_DATA_OUT_OF_RANGE;
+            }
+
+            output->current_a_raw = current_a_raw;
+            output->current_b_raw = current_b_raw;
+            return ADC1_STATUS_OK;
+        }
+    }
+
+    return ADC1_STATUS_BUSY;
 }

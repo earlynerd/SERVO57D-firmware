@@ -1,28 +1,47 @@
-# Clock Bring-up
+# Clock Configuration
 
-## First-image policy
+## Production clock tree
 
-The first hardware image verifies and retains the reset-default 4 MHz MSI clock. It uses bounded waits and readback checks, configures AHB/APB prescalers to divide by one, and leaves the voltage range, cache controls, HSI, HSE, and PLL untouched.
+Firmware 0.15.0 promotes the board from the reset-default 4 MHz MSI to the
+N32L406's documented 64 MHz maximum. Both published SERVO57D schematics and
+the physical board identify an 8 MHz crystal, so the selected path is HSE
+undivided into PLL times eight. This configuration is bench-proven.
 
-This conservative policy avoids relying on the SDK's generic system-clock source. That source contains voltage-mode operations that do not clearly match N32L40x User Manual V2.6 and permits frequencies above the N32L406's documented 64 MHz maximum. The vendor RCC example also applies a silicon-identifier workaround when selecting HSI or HSE directly, so even an apparently simple move to 16 MHz HSI deserves hardware validation.
+| Domain | Frequency | Derivation |
+| --- | ---: | --- |
+| SYSCLK / HCLK / Cortex-M4 | 64 MHz | 8 MHz HSE x8, AHB /1 |
+| PCLK2 | 32 MHz | HCLK /2 |
+| SPI1, USART1 | 32 MHz | APB2 peripherals |
+| PCLK1 | 16 MHz | HCLK /4 |
+| I2C1 | 16 MHz | APB1 peripheral |
+| TIM3 | 32 MHz | PCLK1 x2 because the APB1 prescaler is not /1 |
+| ADC synchronous sample clock | 2 MHz | HCLK /32 |
+| ADC timing clock | 1 MHz | 16 MHz HSI /16 |
 
-If reset state, readiness, source selection, or calculated frequency is unexpected, startup records diagnostic registers and enters the common panic path. `SystemCoreClockUpdate` intentionally treats PLL as unsupported until the 64 MHz path below is implemented and tested.
+TIM3 uses 1600 edge-aligned counts per 20 kHz period. SPI1 remains at 500 kHz,
+USART1 remains at 115200 baud, and I2C1 deliberately selects the same
+approximately 333.3 kHz rate already proven with the OLED.
 
-## Deferred 64 MHz plan
+## Startup and failure contract
 
-Both available SERVO57D schematics show an 8 MHz crystal. The preferred eventual configuration is therefore HSE 8 MHz multiplied by 8. HSI divided by 2 and multiplied by 8 is a possible fallback, but its accuracy and the documented silicon workaround must be considered.
+`platform_clock_init()` begins while MSI is still the active source and:
 
-The implementation should proceed as a separately reviewed change:
+1. verifies reset MSI state and readiness;
+2. configures AHB /1, APB2 /2, and APB1 /4 before increasing SYSCLK;
+3. configures one Flash wait state, as required for 32-64 MHz HCLK;
+4. enables HSE and waits with a bounded timeout;
+5. while PLL is disabled, selects HSE undivided and the x8 multiplier;
+6. enables PLL and waits with a bounded timeout;
+7. switches SYSCLK to PLL and waits for hardware source-status confirmation;
+8. decodes `SystemCoreClock` from register state and verifies every source,
+   prescaler, Flash-latency, APB-clock, and timer-clock result.
 
-1. Begin on MSI and preserve it as the fallback clock.
-2. Enable the chosen source and wait with a bounded timeout.
-3. Before increasing HCLK, set Flash latency to one wait state, AHB to divide by one, APB2 to divide by two, and APB1 to divide by four.
-4. With PLL disabled, select HSE or HSI/2 and the ×8 multiplier.
-5. Enable PLL and wait with a bounded timeout.
-6. Switch the system clock to PLL and verify the selected-source status with a bounded timeout.
-7. Calculate and verify 64 MHz from register readback; on any failure, remain on or return to MSI and panic safely.
-8. Validate SysTick timing, peripheral clocks, and the actual frequency on hardware before making 64 MHz the default.
+Any failure occurs before bridge initialization, records the observed clock
+registers, and enters the common panic path. The code does not copy the SDK's
+options above 64 MHz. It leaves the reset main-regulator state unchanged; the
+manual's MR 1.0 V sequence is a low-power transition and is not required for
+the 64 MHz run configuration.
 
-Do not copy the SDK's 108 MHz options; they exceed the N32L406 rating. Do not route MCO to PA8 for clock measurement on this board: PA8 is provisionally assigned to the isolated `nDIR` input. Use timing measurements or a board-safe observation point instead.
-
-The required main-regulator voltage-range sequence remains unresolved because the vendor implementation and current user manual do not agree clearly enough. That question must be settled against the exact silicon revision and measured behavior before the PLL path is enabled.
+Do not route MCO to PA8 for measurement because PA8 is the bench-proven
+isolated `nDIR` input. Clock acceptance instead uses the mandatory clock-source
+readback plus normal heartbeat, OLED, encoder, ADC, and communications behavior.

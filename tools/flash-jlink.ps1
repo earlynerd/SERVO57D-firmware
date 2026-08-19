@@ -232,7 +232,6 @@ try {
 
     Write-Host ''
     Write-Host 'Firmware programmed, independently verified, reset, and started.'
-    Write-Host 'The blue status LED should resume its normal heartbeat after startup.'
 }
 finally {
     Pop-Location

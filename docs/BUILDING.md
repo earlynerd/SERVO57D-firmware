@@ -72,8 +72,9 @@ probe serial number can be selected with `-ProbeSerial`.
 Keep the motor disconnected and use a current-limited supply. The script first
 requires a valid RDP L0 option-byte state; it does not release read protection,
 erase option bytes, or configure the power bridge.
-The stock OLED display remains off because the first image does not initialize
-it; successful execution should instead produce the PD0 status heartbeat.
+Successful execution produces the PD0 heartbeat, initializes the fitted OLED,
+and begins passive encoder, ADC, and user-input observation. None of these operations
+authorizes or configures bridge output.
 
 ## Host tests
 
@@ -93,26 +94,31 @@ ctest --preset host-debug
 
 ## Current image behavior
 
-This is a bridge-safe diagnostic image, not motor-driving firmware. It:
+This is a bridge-characterization image, not motor-driving firmware. It:
 
-1. Verifies and retains the reset-default 4 MHz MSI clock with bounded readiness/source checks.
+1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
 3. Initializes the full SRAM2 bank with stores, clears its parity-error status, and does not allocate from it.
-4. Keeps PA6, PA7, PB0, PB1, and provisional PB7 `nEN` input/no-pull while low-energy peripheral pins are configured.
+4. Verifies PA6, PA7, PB0, PB1, and PB7 begin input/no-pull in the reset-safe board state. This is an initial-state gate, not a permanent reservation of the bridge pins.
 5. Configures the active-high PD0 status LED output.
 6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15.
 7. Enters `APP_STATE_DIAGNOSTIC` and toggles the LED every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
-9. Runs and publishes a seven-gate boot self-test, then rechecks bridge pins after GPIOA/GPIOB are enabled for communications and SPI1.
+9. Runs and publishes a seven-gate boot self-test, then firmware 0.15.0 preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and performs bounded foreground MT6816 burst reads every 10 ms after a 20 ms power-up delay.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
 12. Parses native v1 COBS/CRC frames in foreground and replies only to valid address-1 ping, identity, and capability requests.
-13. Publishes firmware `0.4.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, and native-protocol counters through the 184-byte schema-4 `g_diagnostics` RAM record.
-14. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes.
-15. Latches a panic code in `.noinit` RAM and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current characterizer.
+14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. Each 20 kHz TIM3 update triggers one sequence into the 64-halfword ring; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
+15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
+16. Keeps the retained bridge characterizer in `ZERO`; button-driven `RUN` is suppressed until a bounded current-loop backend owns bridge authority.
+17. Continues encoder and RS-485 foreground processing while the OLED updates both current measurements at 5 Hz.
+18. Publishes firmware `0.15.0`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, and native-protocol counters through the 184-byte schema-4 `g_diagnostics` RAM record.
+19. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
+20. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
-Do not flash even this image until the purchased board revision and
-PD0/PB3-PB7/PA8-PA10 assignments have been checked. There is intentionally no
-flash command yet;
-the pyOCD target and destructive-unlock procedure must be proven on the actual
-board first.
+The earlier passive image has been exercised on the tested board. Firmware
+0.15.0 holds the bridge interface at the all-low vector and suppresses `RUN`.
+The timer AF mapping, carrier behavior, and target synchronous A/B acquisition
+are bench-proven; current-loop integration is next.
+Use the guarded wrapper for the same board/probe setup.

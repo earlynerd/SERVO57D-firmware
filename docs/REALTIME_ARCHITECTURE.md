@@ -20,7 +20,7 @@ The initial motor-control implementation will remain bare-metal:
 - Hardware peripherals schedule PWM edges and ADC conversions. Software delay loops must never define control timing.
 - An RTOS may be reconsidered only after measured scheduling requirements justify its additional memory, timing, and fault surface.
 
-There is one normal writer for each real-time data object. The safety subsystem is the intentional exception: it may preempt any owner to force a terminal disabled state, after which ordinary writers are prohibited from re-enabling outputs.
+There is one normal writer for each real-time data object. The safety subsystem is the intentional exception: it may preempt any owner to force the characterized terminal bridge state, after which ordinary writers are prohibited from changing outputs.
 
 ## NVIC policy
 
@@ -34,7 +34,7 @@ The numeric assignments below reserve gaps for sources discovered during bring-u
 
 | Priority | Class | Candidate sources | Required behavior |
 | ---: | --- | --- | --- |
-| 0 | Emergency fault | Comparator trip, RAM parity, power-stage fault | Hardware should already be safe where possible; force the common bridge-off primitive, latch the source, and never return to `RUN` |
+| 0 | Emergency fault | Comparator trip, RAM parity, power-stage fault | Hardware should already be bounded where possible; force the common bridge-fault primitive, latch the source, and never return to `RUN` |
 | 1 | Control deadline guardian | Selected PWM-period/update event | Detect an incomplete preceding fast loop or missing sample and disable immediately; do no control math |
 | 2 | Fast current control | ADC sequence complete or its DMA completion | Validate the new sample, execute the bounded current loop, and stage the next PWM preload values |
 | 4 | Rotor feedback capture | Encoder SPI/DMA completion | Validate and publish a timestamped angle snapshot; never run position or current control here |
@@ -43,7 +43,7 @@ The numeric assignments below reserve gaps for sources discovered during bring-u
 | 12 | Optional slow-loop release | Dedicated scheduler timer, if measurements justify it | Set a due flag or run a strictly bounded slow-control step |
 | 15 | Timekeeping/deferred work | SysTick and optional PendSV | Maintain coarse time and release lowest-priority foreground work |
 
-NMI and fault exceptions retain their architectural priorities. Core faults and unexpected interrupts continue to converge on the project panic path. Once a bridge backend exists, that path must invoke the same idempotent bridge-off primitive before recording diagnostics and halting.
+NMI and fault exceptions retain their architectural priorities. Core faults and unexpected interrupts continue to converge on the project panic path. The active bridge backend invokes the same idempotent all-low fault primitive before recording diagnostics and halting.
 
 If fault and normal-completion flags share an IRQ, the handler checks the fault flags first. For example, an ADC analog-watchdog condition must be handled before an end-of-conversion condition in the shared ADC vector.
 
@@ -60,7 +60,7 @@ Every ISR must meet these rules:
 - Measure worst-case execution using the Cortex-M DWT cycle counter once the final clock is enabled.
 - Maintain per-source counts for invocation, error, overrun, and maximum observed duration.
 
-`PRIMASK` is reserved for reset, panic, and the final bridge-off sequence. Ordinary critical sections use `BASEPRI` so priority-zero fault handling remains available. Critical sections must cover only a few bounded loads/stores; they are not a substitute for clear data ownership.
+`PRIMASK` is reserved for reset, panic, and the final bridge-fault sequence. Ordinary critical sections use `BASEPRI` so priority-zero fault handling remains available. Critical sections must cover only a few bounded loads/stores; they are not a substitute for clear data ownership.
 
 ## Shared-data ownership
 
@@ -76,7 +76,7 @@ Every ISR must meet these rules:
 | Configuration | Foreground configuration service | Control initialization | Immutable while running; changes require a safe-state transaction |
 | Debugger diagnostic record | Foreground diagnostics service | Debugger and future telemetry service | Versioned sequence-numbered snapshot; readers accept matching even sequences |
 | RS-485 RX circular bytes | DMA channel 4 | Foreground transport consumer | Monotonic produced/consumed counts; cursor laps discard and account the oldest bytes |
-| RS-485 TX staging frame | Foreground transport API | DMA channel 5, then USART1 shifter | Fixed buffer is immutable while busy; USART TXC releases PA8 and ownership |
+| RS-485 TX staging frame | Foreground transport API | DMA channel 5, then USART1 shifter | Fixed buffer is immutable while busy; USART TXC releases PC13 and ownership |
 
 Volatile qualification alone is not a synchronization mechanism. Multiword structures use a sequence counter or buffer handoff, and monotonic fault bits use an actually atomic operation or separate writer-owned slots.
 
@@ -133,7 +133,7 @@ mapping and every final channel assignment remain bench-verification items.
   are measured.
 - **USART1/RS-485:** RX and TX DMA eliminate per-byte interrupt work. DMA owns
   byte movement only; framing, CRC, address checks, command validation, timeout
-  policy, and PA8 direction turnaround remain explicit software behavior.
+  policy, and PC13 direction turnaround remain explicit software behavior.
 - **TIM3 PWM:** the timer can accept a DMA burst into consecutive compare
   registers, but the initial backend writes four validated preload registers
   directly. Four stores are inexpensive, make buffer ownership obvious, and
@@ -150,7 +150,7 @@ mapping and every final channel assignment remain bench-verification items.
   setup plus SRAM contention can exceed the cost of a few CPU loads and stores.
 
 DMA transfer errors are handled according to the channel's safety role. A
-current-sample or future PWM-transfer error invokes the common bridge-off path.
+current-sample or future PWM-transfer error invokes the common bridge-fault path.
 A communications or display error invalidates that transaction and is reported
 without retrying in an unbounded ISR. No ISR silently clears, rearms, and
 continues a safety-critical channel after an unexplained transfer error.
@@ -174,7 +174,7 @@ The selected rates must be derived from measured ADC settling, current-loop plan
 ## Processor and cycle budget
 
 Motor-control timing is budgeted in core cycles, not average foreground load.
-The current bridge-safe image remains at 4 MHz; the examples below apply only after
+The current bridge-characterization image remains at 4 MHz; the examples below apply only after
 64 MHz clock operation has passed its hardware gate:
 
 | Candidate event rate | Core cycles between events at 64 MHz |
@@ -246,13 +246,13 @@ The intended common control domain is stationary `alpha/beta` current transforme
 | Electrical angle | Mechanical encoder angle mapped through measured stepper geometry and alignment | Mechanical encoder angle multiplied by measured pole-pair count and corrected by alignment |
 | Current regulation | Common Park transform and bounded `d/q` PI controllers | Common Park transform and bounded `d/q` PI controllers |
 | Voltage command | Common inverse Park transform to stationary voltage | Common inverse Park transform to stationary voltage |
-| Modulation | Two bipolar H-bridges | Three-leg modulation/SVPWM with the unused fourth leg held in its proven disabled state |
+| Modulation | Two bipolar H-bridges | Three-leg modulation/SVPWM with any unused leg held in a topology-specific characterized state |
 
 ### Portable implementation status
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-exact Arm target, and deliberately excluded from the passive firmware image:
+exact Arm target, and deliberately excluded from the bridge-characterization image:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -295,7 +295,7 @@ For each accepted sample period, the fast loop performs one bounded pass:
 9. Validate every duty against independent minimum, maximum, and topology constraints.
 10. Write only preload registers and mark the control epoch complete.
 
-Any invalid sample, stale encoder, nonfinite value, arithmetic overflow, late completion, or invalid duty invokes the common bridge-off path instead of reusing the previous active command.
+Any invalid sample, stale encoder, nonfinite value, arithmetic overflow, late completion, or invalid duty invokes the common bridge-fault path instead of reusing the previous active command.
 
 ### Outer loops
 
@@ -311,7 +311,11 @@ Following error, velocity, acceleration, current, voltage request, and duty cycl
 
 ## PWM and ADC scheduling
 
-The published schematic and the Delsian CAN-board project provide strong evidence that PA6, PA7, PB0, and PB1 can operate as TIM3 channels 1–4. This remains provisional until the purchased RS-485 board and alternate-function behavior are verified.
+The Nations 2.3.0 four-channel PWM example maps PA6, PA7, PB0, and PB1 to
+TIM3 channels 1-4 on AF2, matching the published schematic and the Delsian
+CAN-board project. Firmware 0.14.0 implements that exact mapping with an
+edge-aligned 20 kHz carrier; all four alternate-function outputs are proven on
+the purchased RS-485 board.
 
 N32L40x User Manual V2.6 documents the relevant internal triggers:
 
@@ -322,9 +326,12 @@ N32L40x User Manual V2.6 documents the relevant internal triggers:
 
 Because TIM3 channel 4 is also needed for PB1 bridge control, `TIM3_CC4` would place ADC timing at a duty-dependent bridge compare event. A center-aligned `TIM3 update -> TRGO` configuration can produce two triggers per complete carrier cycle. Neither path may be assumed to provide one fixed quiet sample per PWM period.
 
-Candidate timing strategies are therefore:
+Timing strategies are therefore:
 
-1. Begin with edge-aligned TIM3 PWM and one unambiguous update/sample opportunity per carrier period.
+1. **Implemented for characterization:** edge-aligned TIM3 PWM with update as
+   `TRGO`, triggering a two-rank `currentB`/`currentA` regular sequence captured
+   by circular DMA channel 1 once per carrier period. This is deterministic but
+   not yet proven quiet because sampling begins at the switching boundary.
 2. Synchronize an otherwise pinless auxiliary timer to the PWM timebase and use its fixed compare/TRGO event to trigger the ADC.
 3. Intentionally sample both halves of a center-aligned cycle and design the control rate, publication, and symmetry checks around both samples.
 
@@ -335,7 +342,7 @@ Selection requires register-level timing review followed by oscilloscope measure
 If the chosen timing design provides one explicit control-period boundary, a higher-priority guardian may supervise the fast loop:
 
 1. At the period boundary, verify that the preceding control epoch completed.
-2. If not, invoke the bridge-off path and latch a control-overrun fault.
+2. If not, invoke the bridge-fault path and latch a control-overrun fault.
 3. Arm the expected sample sequence for the new period.
 4. The ADC completion ISR consumes that sequence, runs one fast step, stages preload values, and marks completion.
 
@@ -343,17 +350,17 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 ## Watchdog supervision
 
-The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or `bridge_emergency_off()`. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
+The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or the immediate bridge fault primitive. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-The bridge-safe image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
+The bridge-characterization image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
 
 Before `RUN` exists, the supervisor's health input must aggregate explicit progress evidence from every safety-critical execution owner, including the completed control epoch supervised by the higher-priority deadline guardian. Watchdog reset is too slow to be a safe response to an active bridge fault, missed current sample, invalid duty request, or stale encoder.
 
-The current bridge-safe image pauses IWDG when the debugger halts the core because no bridge output can be enabled. That debug exemption is prohibited in a bridge-capable image; debugger halt must then produce and preserve the proven hardware-safe output state.
+The bridge-characterization image does not pause IWDG when the debugger halts the core. A sustained halt therefore causes an IWDG reset after approximately one second; reset returns the four MCU bridge pins to high impedance, whose effect on the tied EG3013 inputs is not yet defined and must be captured on the bench.
 
 ## Fault and shutdown architecture
 
-`bridge_emergency_off()` will be the single project-owned immediate shutdown primitive once the power-stage truth table is proven. It must be:
+`board_bridge_force_low_zero()` is the characterization image's single project-owned immediate fault primitive. It commands all four legs low, producing a zero differential winding-voltage vector while leaving the low-side FETs selected. It is not an all-FET-off state. The eventual motor-control fault primitive must be:
 
 - Idempotent and safe from any exception or interrupt context.
 - Independent of clocks or services that a fault may have corrupted.
@@ -363,7 +370,7 @@ The current bridge-safe image pauses IWDG when the debugger halts the core becau
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 
-Debugger halt, watchdog reset, clock failure, malformed communications, stale encoder data, control overrun, and invalid configuration must all converge on the same disabled outcome. Breakpoints while the bridge is active remain prohibited until debugger-freeze behavior and shutdown are explicitly verified.
+Debugger halt, watchdog reset, clock failure, malformed communications, stale encoder data, control overrun, and invalid configuration must each converge on a characterized deterministic outcome. This board exposes no defined software-commanded all-FET-off state, so reset and high-impedance behavior require explicit measurement. Breakpoints while the bridge is active remain prohibited until the halt/reset transition has been captured.
 
 ## Numerical policy
 

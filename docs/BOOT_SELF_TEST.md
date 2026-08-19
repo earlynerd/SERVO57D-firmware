@@ -1,6 +1,9 @@
 # Safe Bring-up Boot Self-Test
 
-Status: implemented and host-tested at the ledger layer, but not yet observed on physical hardware. Passing these software checks does not prove the schematic pin map or electrical bridge state.
+Status: implemented and host-tested at the ledger layer. The image proceeds
+through these gates on the bench-proven board, but the masks have not yet been
+correlated through a debugger with physical bridge-pin waveforms. Passing the
+software checks does not prove the external electrical bridge state.
 
 ## Contract
 
@@ -19,29 +22,28 @@ A failed check is removed from `passed`, added to `failed`, and cannot be restor
 | 0 | Early memory | SRAM2 parity initialization completed and the early platform state is ready |
 | 1 | Clock | Reset-default 4 MHz MSI and bus/flash settings passed bounded verification |
 | 2 | Interrupt policy | PRIGROUP read back as four preemption bits/no subpriorities |
-| 3 | Safe board I/O | Before peripheral initialization, GPIOA/GPIOB remain clock-gated; active-high PD0 is the only configured output |
+| 3 | Safe board I/O | Before peripheral initialization, GPIOA remains clock-gated; PB2 holds the display in reset, PD0 drives the status LED, and bridge-related GPIOB pins remain high impedance |
 | 4 | Timebase | 1 kHz SysTick configured with priority 15 under the expected grouping |
 | 5 | Application state | The reset-safe state accepted only the passive-initialization transition into diagnostics |
 | 6 | Watchdog | LSI and IWDG setup synchronized, verified, and started successfully |
 
 Early-memory failure cannot safely initialize the diagnostic record because SRAM invariants are not established. It still enters the common panic path and remains debugger-visible through the platform status and panic code. Every later pass or failure is published immediately.
 
-## Board safety invariants
+## Reset-safe board gate
 
 `board_passive_invariants_hold()` performs read-only checks after `board_init_passive()`:
 
 - GPIOA is disabled at this early gate, so PA6/PA7 could not yet have been configured;
-- GPIOB is disabled before SPI activation, so PB0/PB1/PB7 remain untouched;
+- GPIOB is enabled only to hold PB2 display reset; PB0/PB1/PB7 read back
+  high impedance with no pulls;
 - GPIOD is enabled and PD0 reads back as an output.
 
-After non-fatal SPI1 and RS-485 initialization,
-`board_bridge_invariants_hold()` checks the safety boundary again. PA6/PA7,
-PB0/PB1 bridge controls, PB7 `nEN`, and PB9 `KEY_MENU` must all read as
-input/no-pull even though GPIOA is active for PA8-PA10 and GPIOB is active for
-PB3-PB6. A failure latches the same board gate and enters the common panic
-path.
-
-This is a construction check against accidental firmware edits, not proof that the purchased board uses those pins or that the external gate-driver state is safe. Oscilloscope observation and continuity checks remain mandatory.
+This check applies only to the reset-safe state before peripheral and future
+bridge initialization. Firmware 0.14.0 subsequently preloads PA6/PA7/PB0/PB1
+low before configuring TIM3 channels 1-4 on AF2. Because each signal drives
+tied active-high HIN and active-low LIN inputs, this commands all four low-side
+FETs and creates a zero-voltage vector; it is not an all-FET-off state. This
+boot gate does not validate external gate-driver behavior.
 
 ## Diagnostic publication
 
@@ -53,7 +55,7 @@ can watch boot progress bit by bit or identify the last failed gate.
 
 The foreground passes health to the watchdog supervisor only while the application remains in diagnostics and `boot_self_test_ready()` remains true. A ledger failure therefore cannot be hidden by continued foreground execution or SysTick activity.
 
-The IWDG is still a recovery layer rather than the immediate safety response. Once bridge operation exists, hardware and the common bridge-off primitive must act before any watchdog timeout.
+The IWDG is still a recovery layer rather than the immediate safety response. Hardware and the common characterized bridge-fault primitive must act before any watchdog timeout.
 
 ## Bench validation
 

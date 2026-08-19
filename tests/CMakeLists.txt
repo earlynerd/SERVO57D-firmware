@@ -10,10 +10,18 @@ add_executable(host_unit_tests
     ../firmware/src/control/motion_profile.c
     ../firmware/src/control/pi_controller.c
     ../firmware/src/control/servo_core.c
+    ../firmware/src/drivers/adc_calibration.c
+    ../firmware/src/drivers/adc_display.c
     ../firmware/src/drivers/adc_sample.c
+    ../firmware/src/drivers/bridge_characterizer.c
+    ../firmware/src/drivers/bridge_display.c
     ../firmware/src/drivers/dma_ring.c
+    ../firmware/src/drivers/encoder_display.c
+    ../firmware/src/drivers/input_display.c
     ../firmware/src/drivers/mt6816.c
+    ../firmware/src/drivers/pulse_input_display.c
     ../firmware/src/drivers/ssd1306.c
+    ../firmware/src/drivers/user_inputs.c
     ../firmware/src/protocol/native_protocol.c
     ../firmware/src/safety/boot_self_test.c
     ../firmware/src/safety/fault_latch.c

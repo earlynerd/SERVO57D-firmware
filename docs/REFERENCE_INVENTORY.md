@@ -85,9 +85,10 @@ repository.
   assets, or external PDFs are imported.
 
 The project-owned I2C transport, display protocol layer, passive ADC layer, SPI
-transport, and MT6816 decoder are clean-sheet implementations. The candidate
-display profile, ADC timing, and encoder electrical behavior remain provisional
-until confirmed on the purchased RS-485 board.
+transport, and MT6816 decoder are clean-sheet implementations. The fitted
+display profile, passive ADC acquisition, and encoder motion/wrap behavior are
+bench-proven; exact part identity, dynamic ADC behavior, and control-rate
+encoder signal integrity remain open.
 
 ## Publication checklist
 
