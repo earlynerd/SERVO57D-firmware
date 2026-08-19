@@ -7,7 +7,7 @@
 #include "mks57d/bridge_characterizer.h"
 
 /* Establish and verify the reset-safe board state before peripheral and
- * explicitly gated bridge-characterization initialization. */
+ * current-loop bridge initialization. */
 void board_init_passive(void);
 bool board_passive_invariants_hold(void);
 bool board_bridge_characterizer_init(uint32_t timer_clock_hz);

@@ -1,6 +1,10 @@
 # Real-Time and Control Architecture
 
-Status: this document defines the intended execution model and ownership boundaries. It does not authorize bridge operation. Interrupt sources, loop rates, PWM alignment, ADC trigger placement, comparator shutdown, and numerical representation remain subject to the corresponding hardware gates in `PLAN.md`.
+Status: firmware 0.17.8 implements the fast-path portion of this architecture:
+edge-aligned 20 kHz PWM, TIM2-relative 30%-carrier ADC start, DMA-completion
+fixed-point current control, and a carrier deadline guardian. The path is
+bench-proven with encoder-observed motor rotation. This document also defines
+the next alignment, velocity, and position layers.
 
 ## Goals
 
@@ -13,7 +17,7 @@ Status: this document defines the intended execution model and ownership boundar
 
 ## Execution model
 
-The initial motor-control implementation will remain bare-metal:
+The motor-control implementation remains bare-metal:
 
 - Interrupts own hardware event capture, immediate fault response, and the fast current-control deadline.
 - A cooperative foreground loop owns state transitions, complete-frame parsing, configuration, diagnostics, and other non-real-time work.
@@ -157,25 +161,30 @@ continues a safety-critical channel after an unexplained transfer error.
 
 ## Time domains
 
-Rates are initial hypotheses, not requirements.
+The current backend rates are measured operating choices; outer-loop rates are
+initial targets.
 
 | Domain | Candidate rate | Trigger/owner | Output |
 | --- | ---: | --- | --- |
-| PWM carrier | Approximately 20 kHz | Hardware timer | Bridge waveform and internal sampling events |
-| Fast current loop | Once per selected current sample | ADC sequence completion | Validated voltage/duty request for the next update |
-| Encoder acquisition | Approximately 5–10 kHz | Timer-released SPI/DMA transaction | Timestamped mechanical-angle snapshot |
+| PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
+| Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
+| Encoder acquisition | 100 Hz now; higher for servo control | Foreground now; timer-released SPI/DMA later | Timestamped mechanical-angle snapshot |
 | Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded `Id`/`Iq` request |
 | Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
-The selected rates must be derived from measured ADC settling, current-loop plant response, encoder transaction time and noise, CPU budget, and switching losses. The current non-control MT6816 reader runs at 100 Hz; it does not claim the candidate 5-10 kHz rotor-feedback timing.
+The active 20 kHz rate has completed roughly 160,000 recent fault-free loop
+samples. Encoder acquisition runs at 100 Hz and was sufficient to verify the
+5.97 RPM rotation milestone. Servo-loop rates will be selected from measured
+plant response, transaction time, noise, CPU budget, and switching losses.
 
 ## Processor and cycle budget
 
 Motor-control timing is budgeted in core cycles, not average foreground load.
-Firmware 0.17.3 runs the bench-proven 64 MHz clock tree. The examples below
-remain planning budgets until the control path is measured:
+Firmware 0.17.8 runs the bench-proven 64 MHz clock tree and a 20 kHz fast
+current path. The table gives the available cycle intervals; worst-case ISR
+instrumentation remains release work:
 
 | Candidate event rate | Core cycles between events at 64 MHz |
 | ---: | ---: |
@@ -202,9 +211,9 @@ Cycle-conservation rules for the hard-real-time path are:
   for every byte or ADC rank.
 - Do not call general-purpose transcendental, formatting, allocation, protocol,
   or Flash-service routines from the fast ISR.
-- Keep constant lookup tables in Flash. Compare measured Cortex-M4F
-  single-precision and explicitly saturated fixed-point implementations before
-  selecting the fast-loop numerical policy.
+- Keep constant lookup tables in Flash. The active phase loop uses explicitly
+  saturated fixed-point arithmetic; floating point remains available to slower
+  layers after measured timing review.
 - Prefer hardware CRC, timer input capture, comparator shutdown, and USART/SPI
   shift engines where their documented behavior satisfies the safety contract.
 - Record maximum observed cycles per ISR and fault on a missed control epoch;
@@ -252,7 +261,8 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-exact Arm target, and deliberately excluded from the bridge-characterization image:
+exact Arm target. The outer servo shell remains excluded from firmware 0.17.8
+while the proven phase-current backend is active:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -313,9 +323,10 @@ Following error, velocity, acceleration, current, voltage request, and duty cycl
 
 The Nations 2.3.0 four-channel PWM example maps PA6, PA7, PB0, and PB1 to
 TIM3 channels 1-4 on AF2, matching the published schematic and the Delsian
-CAN-board project. Firmware 0.17.3 retains that edge-aligned 20 kHz mapping and
-stages low-zero sign-magnitude current-loop duties; all four alternate-function outputs
-were proven on the purchased RS-485 board by the earlier bounded characterizer.
+CAN-board project. Firmware 0.17.8 uses that edge-aligned 20 kHz mapping and
+stages low-zero sign-magnitude current-loop duties. All four outputs, phase
+polarities, current quadrants, and attached-motor operation are proven on the
+purchased RS-485 board.
 
 N32L40x User Manual V2.6 documents the relevant internal triggers:
 
@@ -328,16 +339,19 @@ Because TIM3 channel 4 is also needed for PB1 bridge control, `TIM3_CC4` would p
 
 Timing strategies are therefore:
 
-1. **Implemented commissioning path:** edge-aligned TIM3 PWM with TIM2 reset
-   from update. TIM2 compare at 65% invokes a bounded ISR that software-starts
+1. **Active current-loop path:** edge-aligned TIM3 PWM with TIM2 reset
+   from update. TIM2 compare at 30% invokes a bounded ISR that software-starts
    the two-rank `currentB`/`currentA` regular sequence. This bypasses the
    unproven internal TIM2_CC2-to-ADC route while preserving timer-relative
    sampling.
-2. The direct TIM3-update trigger remains only a bench-proven passive
+2. The direct TIM3-update trigger remains a bench-proven passive
    acquisition fallback; it is not a quiet switched-current sampling point.
 3. Intentionally sample both halves of a center-aligned cycle and design the control rate, publication, and symmetry checks around both samples.
 
-Selection requires register-level timing review followed by oscilloscope measurements of PWM edges, amplifier settling, ADC trigger position, and interrupt latency. The timing backend must expose the same “sample accepted / preload next command” contract regardless of which strategy wins.
+The first strategy is selected and operating. Oscilloscope measurements of PWM
+edges, amplifier settling, trigger position, and interrupt latency will quantify
+its margin as the current and speed envelope expands. Any later timing backend
+keeps the same “sample accepted / preload next command” contract.
 
 ## Deadline supervision
 
@@ -354,15 +368,27 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or the immediate bridge fault primitive. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-The bridge-characterization image requests service every 100 ms with a nominal 1,000 ms IWDG timeout. A foreground polling gap above 250 ms, an application state other than diagnostics, or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) permanently refuses further service and enters the panic path. A stopped timebase also prevents scheduled service. These are initial bring-up values rather than final motor-control deadlines; see [Independent watchdog policy](WATCHDOG.md).
+Firmware 0.17.8 requests service every 100 ms with a nominal 1,000 ms IWDG
+timeout. A foreground polling gap above 250 ms, an invalid application state,
+or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) refuses further
+service and enters the panic path. A stopped timebase also prevents scheduled
+service; see [Independent watchdog policy](WATCHDOG.md).
 
-Before `RUN` exists, the supervisor's health input must aggregate explicit progress evidence from every safety-critical execution owner, including the completed control epoch supervised by the higher-priority deadline guardian. Watchdog reset is too slow to be a safe response to an active bridge fault, missed current sample, invalid duty request, or stale encoder.
+During `RUN`, the control deadline guardian and accepted sample epochs provide
+fast-domain progress evidence. Watchdog reset remains the slower recovery path;
+the current backend handles an active bridge fault, missed sample, or invalid
+duty immediately.
 
-The bridge-characterization image does not pause IWDG when the debugger halts the core. A sustained halt therefore causes an IWDG reset after approximately one second; reset returns the four MCU bridge pins to high impedance, whose effect on the tied EG3013 inputs is not yet defined and must be captured on the bench.
+IWDG is not paused when the debugger halts the core. A sustained halt therefore
+causes a reset after approximately one second. The reset-time tied-EG3013
+waveform remains an explicit characterization item.
 
 ## Fault and shutdown architecture
 
-`board_bridge_force_low_zero()` is the characterization image's single project-owned immediate fault primitive. It commands all four legs low, producing a zero differential winding-voltage vector while leaving the low-side FETs selected. It is not an all-FET-off state. The eventual motor-control fault primitive must be:
+`board_bridge_force_low_zero()` is the current backend's single project-owned
+immediate fault primitive. It commands all four legs low, producing a zero
+differential winding-voltage vector while leaving the low-side FETs selected.
+It is not an all-FET-off state. The primitive is:
 
 - Idempotent and safe from any exception or interrupt context.
 - Independent of clocks or services that a fault may have corrupted.
@@ -372,22 +398,25 @@ The bridge-characterization image does not pause IWDG when the debugger halts th
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 
-Debugger halt, watchdog reset, clock failure, malformed communications, stale encoder data, control overrun, and invalid configuration must each converge on a characterized deterministic outcome. This board exposes no defined software-commanded all-FET-off state, so reset and high-impedance behavior require explicit measurement. Breakpoints while the bridge is active remain prohibited until the halt/reset transition has been captured.
+Debugger halt, watchdog reset, clock failure, malformed communications, stale
+encoder data, control overrun, and invalid configuration each need a defined
+outcome. The running fault paths converge on all-low. Reset and high-impedance
+waveforms still need measurement because the board exposes no
+software-commanded all-FET-off state. A debugger halt interrupts active control
+and should be used only when that interruption is part of the test.
 
 ## Numerical policy
 
-The passive firmware currently uses the soft floating-point ABI. Floating-point control code must not enter the fast ISR under that configuration.
-
-Before integrating the current loop, compare:
-
-- Cortex-M4F single-precision code built with an explicit FPU/ABI configuration.
-- A fixed-point implementation with defined saturation and overflow behavior.
-
-Whichever implementation is selected must pass the same host vectors, saturation tests, invalid-input tests, and replay traces. Higher-priority fault and deadline handlers must not use the FPU. Fast-math transformations that weaken NaN, infinity, or ordering behavior are not enabled without a separate review.
+The active phase-current loop uses fixed-point arithmetic with defined
+saturation and overflow behavior and passes its host vectors. Portable outer
+control currently uses the soft floating-point ABI outside the fast ISR.
+Higher-priority fault and deadline handlers do not use the FPU. A future
+hard-float build must preserve the same saturation, invalid-input, and replay
+tests.
 
 ## Verification strategy
 
-Before bridge operation, the architecture should have:
+Verification for the active backend and next control layers includes:
 
 - Host tests for transforms, angle wrapping, PI anti-windup, modulation bounds, trajectory limits, stale-data handling, and configuration validation.
 - A deterministic software plant/replay harness for stepper and three-phase current-loop test vectors.
@@ -400,13 +429,15 @@ Before bridge operation, the architecture should have:
 
 | Decision | Evidence needed |
 | --- | --- |
-| Edge- versus center-aligned PWM | EG3013 behavior, switching waveform, current ripple, and timer/ADC timing measurements |
-| One versus two current samples per carrier | Amplifier settling, ADC timing, CPU budget, and control stability |
-| TIM3-only versus synchronized auxiliary timer | Internal trigger mapping verified on silicon and scoped trigger timing |
-| Exact PWM and loop rates | Measured plant, switching losses, noise, and worst-case execution time |
+| Whether center-aligned PWM would improve the existing edge-aligned backend | Switching waveform, current ripple, and timer/ADC timing measurements |
+| Whether more than one current sample per carrier is useful | Amplifier settling, ADC timing, CPU budget, and control stability |
+| Whether to replace the synchronized TIM2 software-start path | Scoped trigger timing and a demonstrated benefit |
+| Expanded PWM and loop-rate envelope | Measured plant, switching losses, noise, and worst-case execution time |
 | Comparator-based hardware trip | Comparator routing, thresholds, bipolar-current coverage, and resulting gate-driver state |
-| Floating-point versus fixed-point fast loop | On-target numerical equivalence and worst-case cycle measurements |
+| Fixed-point tuning and optional future hard-float comparison | On-target numerical equivalence and worst-case cycle measurements |
 | Encoder acquisition rate and prediction horizon | Fitted sensor identity, SPI timing, noise, and latency |
 | Step/direction capture peripheral | Physical pin alternate functions and maximum required input rate |
 
-Until these decisions are closed, project-owned control code may implement and test pure algorithms and interfaces, but it must not configure the bridge pins or expose an enable operation.
+These decisions guide hardening and the broader operating envelope. They do not
+block the proven low-current backend or the next alignment, velocity, and
+position milestones.

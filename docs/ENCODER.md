@@ -1,9 +1,9 @@
 # MT6816 Encoder Bring-up
 
-Status: implemented as an active, bounded foreground reader, covered by
-host-side protocol tests, and exercised successfully on the purchased board.
-Position is stable at rest, follows shaft motion consistently, and wraps at the
-same point once per revolution.
+Status: firmware 0.17.8 continuously reads the encoder at 100 Hz in foreground,
+including during current-loop operation, and exposes it through diagnostics and
+native protocol 1.2. Position is stable at rest, follows shaft motion, wraps
+once per revolution, and has verified commanded motor rotation.
 
 ## Evidence and confidence
 
@@ -53,7 +53,7 @@ It ranges from 0 through 16383. No floating-point degree conversion,
 direction inversion, unwrapping, velocity estimate, electrical alignment, or
 zero offset is applied yet.
 
-## Foreground and safety behavior
+## Foreground behavior
 
 Encoder initialization and acquisition are active in normal boot, but an SPI
 or parity failure does not fail the boot ledger or stop watchdog service. The
@@ -61,11 +61,10 @@ foreground records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
-SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.17.3
-later claims PB0/PB1 and PA6/PA7 for bridge characterization while separate
+SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.17.8
+later claims PB0/PB1 and PA6/PA7 for current-loop PWM while separate
 input monitoring reads PB7 `nEN` and configures PB8/PB9/PB12/PB13 and PA15 as
-pulled-up inputs. Encoder foreground acquisition pauses while the selected
-bridge leg is toggling.
+pulled-up inputs. Encoder acquisition continues throughout an active run.
 
 ## Diagnostic fields
 
@@ -77,13 +76,15 @@ transport values are defined in `mks57d/spi_bus.h`.
 
 ## Bench result and remaining validation
 
-The displayed raw position tracks shaft motion, remains stationary when the
-shaft is still, and rolls over repeatably at one mechanical position per
-revolution. This establishes a usable passive position signal and the expected
-14-bit cyclic behavior.
+The displayed and native-protocol raw position tracks shaft motion, remains
+stationary when the shaft is still, and rolls over repeatably at one mechanical
+position per revolution. During the accepted 300 mA, 5 Hz electrical,
+three-second run, angle moved smoothly from 9839 to 4993 over 2.973 seconds:
+-0.2958 revolution and -5.97 RPM. This agrees with the expected 6 RPM for the
+observed 50 electrical cycles per mechanical revolution.
 
 Remaining work is to record the fitted marking, quantify raw noise and
 repeatability, define the positive direction and zero convention, test the
-no-magnet flag, scope SPI timing, and observe bridge pins during debugger halt
-and resume. Only then should acquisition move into a timestamped
-rotor-feedback ISR or DMA path and increase toward the control-rate range.
+no-magnet flag, and measure SPI timing at higher acquisition rates. Alignment
+will establish the encoder-to-electrical-angle offset before the position and
+velocity loops use the signal.

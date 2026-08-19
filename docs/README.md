@@ -1,12 +1,12 @@
 # Documentation Index
 
-The [root README](../README.md) is the concise current-state and safety
+The [root README](../README.md) is the concise current-state and operating
 snapshot. Use this index to read only the material relevant to the task; the
 documents below are not a single prerequisite reading list.
 
 ## Planning and history
 
-- [Project plan](../PLAN.md) — go/no-go gates, scope, and implementation sequence; read for milestone or gate changes.
+- [Project plan](../PLAN.md) — capability milestones, scope, and implementation sequence.
 - [Decision log](../DECISIONS.md) — append-only structural history; read the latest entries for structural work and the full log only for audits or conflicts.
 - [Debug log](../DEBUG_LOG.md) — resolved and active bench problems; read when a reported hardware symptom may recur.
 
@@ -28,7 +28,7 @@ documents below are not a single prerequisite reading list.
 - [ADC](ADC.md) — synchronous acquisition, scaling, bench results, and remaining calibration.
 - [MT6816 encoder](ENCODER.md) — SPI transaction, validation, diagnostics, and bench proof.
 - [USART1 / RS-485](RS485.md) — DMA transport, direction turnaround, and bench proof.
-- [Bench bring-up](BRINGUP.md) — staged hardware procedure and abort conditions; required before bench tests.
+- [Bench bring-up](BRINGUP.md) — procedures for new hardware characterization, current operation, and closed-loop integration.
 
 ## Build and provenance
 

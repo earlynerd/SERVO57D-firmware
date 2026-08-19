@@ -153,7 +153,7 @@ try {
     if (-not $Yes) {
         Write-Host ''
         Write-Host 'Dry run only. No target was accessed.'
-        Write-Host 'With the motor disconnected and a current-limited supply, rerun with -Yes to program, verify, reset, and start the firmware.'
+        Write-Host 'With a current-limited supply appropriate for the intended run, rerun with -Yes to program, verify, reset, and start the firmware.'
         exit 0
     }
 

@@ -14,9 +14,9 @@ Primary schematic reference: Makerbase `MKS SERVO57D_485 V1.1_001`. Purchased bo
 
 ## Working pin map
 
-This table combines the published schematic with bench findings. The passive
-input mappings described below are bench-proven on the tested board; bridge
-controls and isolated outputs remain provisional until electrical tests.
+This table combines the published schematic with bench findings. Inputs,
+current sensing, and all four bridge controls are bench-proven on the tested
+board; isolated outputs remain provisional.
 
 | MCU pin | Schematic signal | Intended use |
 | --- | --- | --- |
@@ -70,7 +70,7 @@ On the tested board, the physical button order is:
 All three buttons and both isolated M_IN1/M_IN2 inputs have been observed to
 change their corresponding active-low OLED state independently.
 
-Firmware 0.17.3 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
+Firmware 0.17.8 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
 high-impedance inputs without MCU pull resistors. The OLED exposes their
 debounced raw electrical levels as `S D E`. This is only a pin and polarity
 check: it does not count step pulses or assign motion or bridge-enable
@@ -145,7 +145,9 @@ rechecked on other revisions. See [USART1 / RS-485 bring-up](RS485.md).
 
 ## Programming interface
 
-J4 exposes target 3.3 V, GND, SWCLK, and SWDIO. It does not expose NRST. A temporary lead to MCU NRST should be considered for reliable connect-under-reset recovery.
+J4 exposes target 3.3 V, GND, SWCLK, and SWDIO. It does not expose NRST. Normal
+J-Link programming works through SWD without NRST; a temporary reset lead is
+only useful if connect-under-reset recovery is specifically needed.
 
 With a raw Pico CMSIS-DAP probe, power the Pico from USB and the controller from its normal supply, and share ground. Do not connect the two regulated 3.3 V outputs together.
 
@@ -153,7 +155,6 @@ With a raw Pico CMSIS-DAP probe, power the Pico from USB and the controller from
 
 - Exact PCB revision and whether the published schematic matches it.
 - Fitted encoder marking, four-wire SPI/OTP mode, and magnet orientation.
-- Alternate-function/timer mapping of PA6, PA7, PB0, and PB1.
 - Scoped EG3013 propagation delays, nominal 120 ns dead time, and bootstrap constraints. Documentation establishes HIN active-high and LIN active-low.
 - `nEN` polarity and whether it disables every gate driver independently of PWM pins.
 - Current-amplifier bandwidth, gain/sign tolerance, clipping limits, and settling.
@@ -184,3 +185,10 @@ The retained bridge characterizer replaced the foreground pattern with edge-alig
 expected selected-phase magnitude and polarity while the unselected phase
 remained at zero. This bench-proves TIM3 channels 1-4 on AF2 for PA6, PA7,
 PB0, and PB1 on the tested board.
+
+Firmware 0.17.8 closes the next hardware milestone: the two-rank A/B ADC path,
+20 kHz DMA-completion PI loop, phase-specific current signs, low-zero
+modulation, all four current quadrants, and continuous encoder observation are
+bench-proven with an attached motor. The accepted 300 mA, 5 Hz electrical run
+completed 59,905 current samples and produced smooth encoder-observed motion at
+5.97 RPM with no current-loop, encoder, SPI, or reset fault.

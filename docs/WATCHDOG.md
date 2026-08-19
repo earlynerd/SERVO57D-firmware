@@ -1,10 +1,15 @@
 # Independent Watchdog Policy
 
-Status: implemented in the bridge-characterization image and host-tested at the policy layer, but not yet verified on an N32L406CBL7 board. This watchdog does not authorize bridge operation and is not the fast bridge-state mechanism.
+Status: implemented and active in firmware 0.17.8. Normal current-loop runs
+complete without watchdog or reset faults. Exact reset timing and bridge-pin
+waveforms during debugger halt remain characterization items; IWDG is a recovery
+layer, while the current-loop deadline path owns the immediate all-low response.
 
 ## Hardware configuration
 
-The characterization image uses the independent watchdog (IWDG), not the window watchdog. IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and remains independent of the 64 MHz PLL system clock.
+The firmware uses the independent watchdog (IWDG), not the window watchdog.
+IWDG is clocked from the nominal 40 kHz low-speed internal oscillator and
+remains independent of the 64 MHz PLL system clock.
 
 | Setting | Value | Nominal result |
 | --- | ---: | ---: |
@@ -30,7 +35,7 @@ Any bounded-wait or verification failure enters the common panic path. If option
 
 There is deliberately no public raw-feed function. The cooperative foreground loop owns the sole supervisor API, and the hardware reload key is private to `watchdog.c`.
 
-For the current characterization image, a service is permitted only when:
+Watchdog service is permitted only when:
 
 - the application remains in `APP_STATE_DIAGNOSTIC`;
 - the foreground loop has returned within 250 ms of its preceding poll; and
@@ -38,9 +43,14 @@ For the current characterization image, a service is permitted only when:
 
 An unhealthy state or foreground deadline miss latches policy failure. The main loop then enters `platform_panic()`, which disables interrupts, commands all four bridge inputs low, and stops servicing IWDG. A stalled SysTick also prevents the service deadline from becoming due, so IWDG eventually resets the MCU.
 
-Interrupt handlers, including SysTick and the future current-control path, must never reload IWDG. This prevents one still-running interrupt from hiding a dead foreground or another failed execution domain.
+Interrupt handlers, including SysTick and the active current-control path, do
+not reload IWDG. This prevents one still-running interrupt from hiding a dead
+foreground or another failed execution domain.
 
-Before motor-control `RUN` exists, the foreground supervisor must require explicit liveness evidence from the control-deadline guardian, accepted current-sample epochs, and any other safety-critical owner. IWDG remains a final recovery layer; a missed fast-loop deadline must command the proven deterministic bridge state immediately rather than wait for reset.
+During `RUN`, the current-loop deadline guardian and accepted-sample epochs
+provide the fast-domain liveness evidence. IWDG remains a final recovery layer;
+a missed fast-loop deadline commands the deterministic all-low vector without
+waiting for reset.
 
 ## Reset diagnostics
 
@@ -50,7 +60,7 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-Firmware 0.17.3 clears `DBG_CTRL.IWDG_STOP`, `DBG_CTRL.TIM2_STOP`, and
+Firmware 0.17.8 clears `DBG_CTRL.IWDG_STOP`, `DBG_CTRL.TIM2_STOP`, and
 `DBG_CTRL.TIM3_STOP`; IWDG and both active timers continue while the Cortex-M4 is halted. A halt
 therefore preserves the last timer command until the nominal
 one-second watchdog reset returns the MCU pins to reset state. The tied HIN/LIN
@@ -58,9 +68,10 @@ inputs make that high-impedance reset interval electrically undefined, so the
 actual gate waveforms must be measured. `platform_panic()` is a running path
 and commands the all-low vector before waiting for IWDG reset.
 
-## Bench validation gate
+## Bench characterization
 
-With the motor disconnected and a current-limited supply:
+With a current-limited supply and instrumentation appropriate to the waveform
+being measured:
 
 - confirm LSI readiness and the programmed IWDG prescaler/reload fields;
 - measure the real watchdog reset interval over supply and temperature conditions available during bring-up;
@@ -69,4 +80,5 @@ With the motor disconnected and a current-limited supply:
 - halt under SWD and verify watchdog reset timing plus all four gate-command and gate-output waveforms;
 - repeat power-cycle, external reset, software panic, and watchdog reset while monitoring all bridge-control pins.
 
-Until these checks pass, the watchdog is software-complete but hardware-unverified.
+These measurements close release characterization; they do not invalidate the
+bounded motor operation already demonstrated on the tested board.

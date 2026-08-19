@@ -1,20 +1,21 @@
 # ADC Bring-up
 
-Status: firmware 0.17.3 uses TIM2 compare at 65% of each 20 kHz carrier to
+Status: firmware 0.17.8 uses TIM2 compare at 30% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.
 ADC/DMA configuration and arming still finish before the PWM timers start.
 Firmware averages 32 bridge-zeroed startup snapshots for independent A/B
 offsets, then the OLED shows both signed currents as compact `A+#####mA` and
-`B+#####mA` rows. Switched-current sign and control timing are implemented but
-not yet bench-proven. The
+`B+#####mA` rows. Switched-current sign and timing are bench-proven through
+approximately 160,000 fault-free current-loop samples at nominal 150 mA and
+300 mA, including encoder-confirmed motor rotation. The
 fixed-destination and single-channel ring diagnostics both produced stable
 2039-2044 PA2 readings, proving the basic request, channel, addresses, widths,
 memory increment, and ring size. The host-tested conversion module supplies
 the active engineering-unit display using nominal reference scaling.
 
-## Provisional signal contract
+## Signal contract
 
 | Sample field | Board net | MCU pin | ADC channel | Confidence and evidence |
 | --- | --- | --- | ---: | --- |
@@ -28,8 +29,9 @@ the schematic order above, stores only right-aligned 12-bit values, and adds a
 wrapping capture index. Construction rejects any raw value above 4095 and does
 not modify the destination on failure.
 
-Channel identity, target synchronous acquisition, and basic operation agree with the tested board. Actual ADC
-reference, gain/sign tolerance, bandwidth, clipping, amplifier settling, and
+Channel identity, target synchronous acquisition, current signs, and dynamic
+operation agree with the tested board. Actual ADC
+reference, gain tolerance, bandwidth, clipping, amplifier settling, and
 divider tolerance remain hardware measurements. Displayed milliamperes are
 zero-calibrated but remain nominal-scale measurements, not yet protection-grade limits.
 
@@ -48,7 +50,7 @@ The current amplifier's mid-rail bias has unity gain; 6.65 is the differential
 shunt-voltage gain, not 7.65. The bus divider is 15.4 kOhm above 1 kOhm. At a
 nominal 3.3 V reference these factors are approximately 6.06 mA per current
 count and 13.22 mV per bus-voltage count. `adc_sample_convert()` accepts the
-ADC reference and independent A/B zero counts at runtime. Firmware 0.14.0 uses
+ADC reference and independent A/B zero counts at runtime. Firmware 0.17.8 uses
 the nominal 3.3 V reference and measures each zero from 32 synchronized samples
 over approximately 320 ms while bridge authority remains inhibited.
 
@@ -153,24 +155,24 @@ with no commanded current they dither near 0 mA and remain within approximately
 +/-12 mA. At 6.06 mA/count this is a roughly two-count residual, consistent
 with the observed ADC quantization/noise floor.
 
-Firmware 0.17.3 retains the proven ADC/DMA-before-TIM3 initialization order but
+Firmware 0.17.8 retains the proven ADC/DMA-before-TIM3 initialization order but
 does not reuse the carrier-boundary trigger for switched-current regulation.
-TIM2 is reset by TIM3 update, compares at 65% of the carrier, and its short ISR
+TIM2 is reset by TIM3 update, compares at 30% of the carrier, and its short ISR
 sets the ADC software-start bit. The current channels use 7.5-cycle apertures
 at the retained 2 MHz ADC clock. Low-zero sign-magnitude modulation confines
 the loop's switching edges to the first 10% of the period under the current
-phase-voltage bound, so the first aperture begins at least 55% of a period
-after the latest permitted edge; the second aperture ends before the next
-carrier boundary. DMA completion executes the fixed-point A/B PI controllers,
+phase-voltage bound, so sampling begins after the latest permitted PWM edge
+and leaves most of the carrier for conversion plus control before the next
+preload boundary. DMA completion executes the fixed-point A/B PI controllers,
 stages the selected-leg duties, and publishes a new output generation.
 The TIM3 update guardian allows one empty update for this pipelined result and
 faults on a second consecutive update without a new output.
 
-Remaining analog work is to measure the actual ADC reference, verify gain and
-sign with applied current, characterize amplifier settling/bandwidth and
-clipping, and repeat across bus voltage. Switching-correlated offset or noise
-must be measured when the current loop drives PWM. The 65%-phase trigger must
-be scoped to quantify switching-edge contamination, ISR latency, and
+Remaining analog work is to measure the actual ADC reference, characterize
+gain tolerance, amplifier settling/bandwidth and clipping, and repeat across
+bus voltage. Switching-correlated offset or noise should be quantified beyond
+the successful low-current operating point. The 30%-phase trigger should be
+scoped to quantify switching-edge contamination, ISR latency, and
 conversion/control completion relative to the following preload boundary.
 Analog-watchdog thresholds and restoring periodic `vBus` acquisition also
 remain later work.
@@ -183,8 +185,7 @@ conversion sequencing are high-confidence user-manual requirements. The ADC
 analog-LDO write is medium-confidence because it is present in Nations' driver
 but undocumented in the user manual. The resistor-derived scaling, passive
 readings, synchronous two-channel path, per-channel startup zero calibration,
-and nominal milliamp display have bench support; reference accuracy and dynamic
-behavior remain unmeasured. Overall confidence is high for acquisition and
-relative current measurement, but intentionally insufficient for protection
-thresholds until reference/gain tolerance and switched-current behavior are
-measured.
+nominal milliamp display, dynamic sign, closed-loop tracking, and motor rotation
+have bench support. Overall confidence is high for acquisition and relative
+current regulation. Absolute amperes and release-grade protection thresholds
+still require reference and gain calibration.

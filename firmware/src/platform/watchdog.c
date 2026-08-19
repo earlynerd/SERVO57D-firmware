@@ -78,7 +78,7 @@ watchdog_status_t watchdog_supervisor_start(watchdog_supervisor_t *supervisor,
         return WATCHDOG_STATUS_REGISTER_VERIFY_ERROR;
     }
 
-    /* A halted characterization image must still reset. Reset returns the MCU
+    /* A halted current-loop image must still reset. Reset returns the MCU
        pins to their hardware state; normal firmware faults first command the
        deterministic all-low bridge vector through the common panic path. */
     DBG->CTRL &= ~((uint32_t)DBG_CTRL_IWDG_STOP);

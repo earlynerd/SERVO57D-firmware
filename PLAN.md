@@ -1,6 +1,9 @@
 # Project Plan
 
-This plan is organized around go/no-go gates. Completing a phase authorizes investigation of the next phase; it does not automatically authorize energizing the power stage.
+This plan is organized around measured capability milestones. The tested board
+has passed current-regulated motor rotation; completed milestones are normal
+development foundations rather than restrictions that must be repeated for
+every firmware iteration.
 
 ## Phase 0 — Repository and evidence base
 
@@ -17,9 +20,9 @@ Status: substantially complete.
 
 Exit criterion: the public repository can explain where every dependency came from without relying on undocumented binary blobs.
 
-## Phase 1 — Establish destructive debug access
+## Phase 1 — Establish replacement-firmware access
 
-Goal: prove that a retail controller can accept replacement firmware.
+Goal: prove that a retail controller can repeatedly accept project-owned firmware.
 
 - [ ] Photograph both sides of each board and record its exact revision and component markings.
 - [ ] Build a Raspberry Pi Pico CMSIS-DAP v1/HID probe.
@@ -32,9 +35,8 @@ Goal: prove that a retail controller can accept replacement firmware.
 - [ ] Power-cycle and confirm repeatable SWD attachment.
 - [ ] Program and verify a minimal image using both the Nations tool and pyOCD/CMSIS-Pack path.
 
-Go criterion: at least one board can be repeatedly erased, programmed, reset, and debugged.
-
-No-go criterion: all available boards are irreversibly L2-protected, or reliable reset/debug access cannot be established without unacceptable board modification.
+Milestone result: achieved. The tested board is repeatedly built, flashed,
+reset, and operated with project-owned firmware through the J-Link workflow.
 
 ## Phase 2 — Minimal board-support package
 
@@ -51,9 +53,9 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Implement the schematic-correct PD0 LED heartbeat without changing bridge-control or `nEN` pins from their safe state.
 - [x] Add a versioned debugger-readable RAM diagnostic channel independent of the on-wire protocol.
 - [x] Document reproducible firmware and host-test build commands.
-- [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
+- [x] Document the bench-proven guarded J-Link build, program, verify, reset, and start workflow.
 
-Software status: firmware 0.17.3 builds, runs from the bench-proven 8 MHz HSE
+Software status: firmware 0.17.8 builds, runs from the bench-proven 8 MHz HSE
 through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
 samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
 native commissioning protocol over RS-485. The 240-byte schema-5 RAM diagnostic
@@ -61,13 +63,14 @@ record remains ABI-checked. The 20 kHz TIM3 backend preloads and returns to the
 all-low vector. After zero calibration, a hold-to-run commissioning path can
 grant authority to a bounded fixed-point A/B current loop with low-zero
 sign-magnitude modulation, raw-count overcurrent trips, and a timer deadline
-guardian. Display operation, encoder motion, RS-485
-command/response, and stable bridge-disabled ADC readings are bench-proven.
-Reset waveforms, SRAM2 and IWDG details, debugger-visible diagnostics,
-exception behavior, and physical bridge safety still require explicit hardware
-validation.
+guardian. Display operation, continuous encoder telemetry, RS-485
+command/response, current regulation, all four bridge polarities, and
+encoder-confirmed 5.97 RPM motor rotation are bench-proven. Reset/halt
+waveforms, SRAM2 and IWDG details, absolute current calibration, the broader
+speed/current/thermal envelope, and production fault coverage remain open.
 
-Go criterion: a clean checkout builds, flashes, boots, and reports its version from a defined board state.
+Milestone result: achieved. A clean checkout builds, flashes, boots, and
+reports its version from a defined board state.
 
 ## Phase 3 — Passive peripheral bring-up
 
@@ -94,16 +97,14 @@ Goal: understand every input without commanding motor current.
 - [ ] Measure ADC reference accuracy, amplifier settling, gain/sign, clipping, and supply-range behavior.
 - [x] Retire the post-peripheral permanent no-drive invariant after completing passive input validation; retain the reset-safe initial board-state gate.
 
-Go criterion: all passive inputs required by the first RS-485-controlled bridge
-tests are understood and repeatable, and the step/direction/enable pin mapping
-has been checked. Gate-control polarity, reset/fault waveforms, and hardware
-inhibit behavior move into Phase 4 because they cannot be established without
-driving the bridge interface. Deferred step/direction capture and operating
-semantics are not a gate for Phase 4.
+Milestone result: achieved. All inputs required by RS-485 current operation are
+understood and repeatable, the step/direction/enable pin mapping is checked,
+and subsequent phases have proven gate-control polarity and current response.
+Timer capture and step/direction operating semantics remain a separate feature.
 
-## Phase 4 — Power-stage timing without a motor
+## Phase 4 — Power-stage characterization
 
-Goal: validate the output waveform before energy is applied to a winding.
+Goal: establish the bridge mapping, modulation, timing, and common fault state.
 
 - [x] Remove the post-peripheral invariant that permanently required PA6/PA7/PB0/PB1 to remain non-driving, while retaining reset-safe startup verification.
 - [x] Add a minimal button-held bridge-characterization backend with explicit all-low initialization and one common deterministic zero-vector path.
@@ -118,38 +119,48 @@ Goal: validate the output waveform before energy is applied to a winding.
 - [ ] Confirm current-limit and bus-voltage trip handling with injected test signals where possible.
 - [ ] Verify bootstrap refresh and minimum/maximum duty-cycle constraints for the timer-PWM implementation.
 
-Go criterion: scoped gate and bridge-node waveforms remain safe under normal operation, reset, watchdog, breakpoint, and deliberately injected faults.
+Milestone result: functional bridge mapping, 20 kHz PWM, all-low fault control,
+and ordinary switching are proven on the tested board. The remaining scope,
+bootstrap, reset/halt, and injected-fault measurements are hardening work and
+do not block the measured low-current operating envelope.
 
 ## Phase 5 — Two-phase current regulation
 
 Goal: regulate winding current before attempting position control.
 
-- [ ] Bench-validate the 65%-phase TIM2 compare-ISR trigger under switched current and quantify switching-edge contamination on both phases.
+- [x] Bench-validate the 30%-phase TIM2 compare-ISR path under switched current through sustained fault-free loop operation.
+- [ ] Quantify switching-edge contamination and ISR/preload timing on an oscilloscope.
 - [x] Calibrate PA1/PA2 offsets independently at every safe startup using 32 bridge-zeroed snapshots.
 - [x] Convert ADC readings to signed milliamperes from the 20 mOhm shunt and 6.65 amplifier gain; nominal 3.3 V reference is used until reference accuracy is measured.
 - [x] Implement independent requested-current, raw overcurrent, phase-voltage, and absolute-duty bounds.
 - [x] Implement fixed-point A/B winding PI controllers with conditional anti-windup and low-zero sign-magnitude modulation.
 - [x] Run the controller from every completed two-rank DMA sequence and latch ADC, invalid-output, PWM-write, and missed-update faults to the common all-low bridge path.
-- [ ] Test first into a non-motor load or at very low bus voltage when practical.
-- [ ] Verify sine/cosine current commands at progressively higher current.
+- [x] Verify sine/cosine current commands in all quadrants at nominal 150 mA and 300 mA.
+- [x] Drive the attached motor from a rotating current vector and confirm motion independently with the encoder.
 - [ ] Characterize current-loop bandwidth, noise, saturation, and thermal behavior.
 
-Go criterion: both winding currents track bounded references stably across electrical angle and expected supply voltage.
+Milestone result: achieved at the present 12 V, nominal 300 mA, 5 Hz electrical
+test point. Both winding currents track across electrical angle and the rotor
+follows at -5.97 RPM versus 6.00 RPM expected. Current-loop characterization
+continues while encoder alignment and outer-loop integration begin.
 
 ## Phase 6 — Encoder alignment and servo control
 
 Goal: close the mechanical loop incrementally.
 
 - [ ] Determine encoder-to-electrical-angle alignment and motor pole/step geometry.
+- [x] Confirm 50 electrical cycles per mechanical revolution from the measured 5 Hz / 5.97 RPM relationship.
 - [ ] Add a controlled alignment/calibration procedure.
-- [ ] Implement robust angle unwrapping and velocity estimation.
-- [ ] Add a bounded torque/current command layer.
+- [ ] Integrate the existing host-tested angle unwrapping and velocity estimator with the on-board encoder at the selected control rate.
+- [ ] Connect the existing bounded torque/current command layer to the proven phase-current backend.
 - [ ] Close the velocity loop at low gains and limited current.
 - [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
 - [ ] Persist calibration using a versioned, CRC-protected configuration record.
 
-Go criterion: controlled moves and disturbances remain stable, faults shut down safely, and power cycling preserves valid calibration without preserving unsafe state.
+Milestone target: controlled moves and disturbances remain stable, faults
+return the bridge to its defined state, and power cycling preserves valid
+calibration without preserving active authority.
 
 ## Phase 7 — User interfaces and protocol
 
@@ -191,18 +202,23 @@ open.
 
 ## Candidate reuse strategy
 
-The Nations SDK should supply low-level MCU support. Existing motor-control projects, including SimpleFOC, may be useful as references or sources of tested control math, but integration should be evaluated only after the board timers, ADC timing, current sensing, and shutdown behavior are proven. The two-phase bridge and N32-specific peripheral layer are sufficiently specialized that forcing an early framework integration could obscure the highest-risk work.
+The Nations SDK supplies low-level MCU support. Existing motor-control projects,
+including SimpleFOC, may be useful as references or sources of tested control
+math. Any reuse should sit above the now-proven project-owned timer, ADC,
+current-loop, modulation, and shutdown backend; replacing that backend with a
+generic hardware abstraction would discard the board-specific work already
+validated.
 
 ## Principal risks
 
-| Risk | Mitigation or decision gate |
+| Risk | Mitigation or engineering response |
 | --- | --- |
 | Retail MCU is RDP L2 | Determine protection before investing in firmware architecture |
 | No NRST on the programming header | Add a temporary reset lead and design firmware to preserve SWD recovery |
 | Schematic differs from purchased revision | Photograph, trace, and continuity-check actual hardware |
 | TIM3 mapping or its ADC-trigger timing cannot provide deterministic sampling | Verify alternate functions and evaluate edge-aligned, dual-sample, or synchronized auxiliary-timer strategies |
 | Current measurement is too noisy or poorly timed | Timer-synchronous sampling, offset calibration, scope measurements |
-| Gate-driver behavior is incompletely documented | Bench validation before motor connection |
+| Gate-driver behavior is incompletely documented | Continue waveform/bootstrap characterization while expanding the measured motor operating envelope |
 | 128 KiB flash / 24 KiB SRAM becomes restrictive | Begin bare-metal and measure resource use continuously |
 | Public protocol compatibility expands scope | Isolate Modbus RTU and Makerbase compatibility behind optional adapters to one command service |
 | Third-party material cannot be redistributed | Publish source URLs/manifests; keep local caches ignored |

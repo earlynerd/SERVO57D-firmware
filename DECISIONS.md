@@ -473,3 +473,10 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Firmware 0.17.7 proved approximately 100,000 fault-free current-loop updates and a rotating current vector, but the RS-485 record could not establish that the rotor followed because encoder data existed only in debugger RAM. Commissioning telemetry must distinguish electrical commutation from mechanical motion without requiring a person at the shaft.
 - **Supersedes:** The commissioning console's current-only observability boundary in “Add a duration-bounded RS-485 current-loop commissioning console.” Existing command encodings and the full schema-2 current status remain unchanged.
 - **Affects:** foreground encoder scheduling, command service, native command `0x0105`, protocol minor version 1.2, `tools/mks57d_rs485.py`, firmware version 0.17.8
+
+## 2026-08-19 — Promote current-regulated motor operation to a development foundation
+
+- **Decision:** Treat firmware 0.17.8's bounded motor-connected current loop as the tested board's normal development foundation. Motor-disconnected waveform staging remains appropriate for a new board revision or changed bridge/timing backend, but it is no longer a prerequisite for every firmware iteration. The next functional milestone is encoder/electrical alignment followed by velocity and position control.
+- **Why:** At 12 V and nominal 300 mA, the 20 kHz loop completed 59,905 fault-free samples while the encoder moved monotonically at -5.97 RPM versus 6.00 RPM expected. Current sign, four-leg modulation, ADC timing, RS-485 observability, and rotor following are now hardware evidence rather than feasibility assumptions.
+- **Supersedes:** The project-wide no-motor and uncommissioned-current-loop posture retained in early bring-up documentation. Independent current, voltage, duty, duration, deadline, encoder-health, and all-low fault bounds remain active.
+- **Affects:** `AGENTS.md`, `README.md`, `PLAN.md`, `docs/BRINGUP.md`, architecture and subsystem status documentation, future motor-control development scope

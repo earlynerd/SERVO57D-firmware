@@ -1,10 +1,10 @@
 # Command Protocol Architecture
 
-Status: the native v1 base frame, discovery service, and current-loop
-commissioning console are implemented and host-tested. The discovery slice is
-bench-proven; commissioning commands await a board test. Address provisioning,
-duplicate request handling, production control leases, Modbus RTU, and
-Makerbase compatibility remain future work.
+Status: native protocol 1.2, discovery, boot and encoder telemetry, and the
+current-loop console are implemented, host-tested, and bench-proven. The
+console has configured, started, observed, and stopped encoder-verified motor
+runs. Address provisioning, duplicate request handling, motion control leases,
+Modbus RTU, and Makerbase compatibility remain future work.
 
 ## Decision
 
@@ -99,12 +99,12 @@ from causing reply storms.
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema `u8`, encoder status `u8`, SPI status `u8`, raw angle `u16`, flags `u8`, sample count `u32`, error count `u32`, last-attempt milliseconds `u32` |
 
 The product ID is `0x4D4B5335` (`MKS5`). The current identity reports firmware
-0.17.3 and protocol 1.1. The capability bitmap uses the same stable bit
+0.17.8 and protocol 1.2. The capability bitmap uses the same stable bit
 definitions as the debugger diagnostic record, including the native-protocol
 capability.
 
-The commissioning commands are a feasibility-image service, not the
-production motion protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
+The current-loop commands are the present low-level motor-operation service;
+they are not yet a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-50 ADC counts and frequency to
 1-20000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
 `2=B1`, and `3=B2`, with a duration from 100 to 60000 ms. It is unavailable
@@ -163,7 +163,7 @@ the complete successful response payload is 64 bytes.
 
 | Bit | Capability |
 | ---: | --- |
-| 0 | Bring-up/characterization image |
+| 0 | Board bring-up and characterization services |
 | 1 | Status LED |
 | 2 | Foreground-supervised IWDG |
 | 3 | Reset-cause capture |
@@ -174,7 +174,7 @@ the complete successful response payload is 64 bytes.
 | 8 | SSD1306-compatible I2C display |
 | 9 | Raw ADC acquisition, including timer-synchronous current capture |
 | 10 | Debounced passive-input monitor |
-| 11 | Manually gated TIM3 bridge-PWM characterizer |
+| 11 | TIM3 bridge PWM and bounded current-loop operation |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -278,24 +278,24 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target but remain excluded from the passive bring-up image.
+target but the outer motion shell remains excluded from firmware 0.17.8.
 
 ## Implementation sequence
 
 1. **Complete:** define host-testable command request, response, error,
    capability, and dispatcher types with no wire-format dependency.
-2. **In progress:** the COBS/CRC native v1 framer, discovery commands, and
-   current-loop commissioning console are implemented. General application,
-   encoder, and production motion status plus broader fuzz coverage remain.
+2. **In progress:** the COBS/CRC native v1 framer, discovery commands, boot and
+   encoder telemetry, and current-loop console are implemented and bench-proven.
+   General application and motion status plus broader fuzz coverage remain.
 3. Add the Modbus RTU adapter and project-owned register map to the same
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
    conformance tests from public manual examples.
 5. **Application prerequisite complete:** the portable application shell,
    limits, command arbiter, retry history, lease, safe-stop, and completion
-   behavior exist and have end-to-end simulated-plant tests. Add native motion
-   wire mappings only after the hardware control state has a proven disable
-   path; homing remains deferred until alignment behavior exists.
+   behavior exist and have end-to-end simulated-plant tests. The hardware
+   current-control state is now proven; add alignment, then native velocity and
+   position wire mappings. Homing remains deferred until alignment exists.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

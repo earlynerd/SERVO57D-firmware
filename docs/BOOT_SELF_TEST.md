@@ -1,9 +1,8 @@
-# Safe Bring-up Boot Self-Test
+# Boot Self-Test
 
-Status: implemented and host-tested at the ledger layer. The image proceeds
-through these gates on the bench-proven board, but the masks have not yet been
-correlated through a debugger with physical bridge-pin waveforms. Passing the
-software checks does not prove the external electrical bridge state.
+Status: implemented, host-tested, and exercised on the bench-proven board. The
+ledger establishes firmware startup invariants; reset and halt waveforms remain
+separate electrical characterization.
 
 ## Contract
 
@@ -38,8 +37,8 @@ Early-memory failure cannot safely initialize the diagnostic record because SRAM
   high impedance with no pulls;
 - GPIOD is enabled and PD0 reads back as an output.
 
-This check applies only to the reset-safe state before peripheral and future
-bridge initialization. Firmware 0.17.3 subsequently preloads PA6/PA7/PB0/PB1
+This check applies only to the reset-safe state before peripheral and bridge
+initialization. Firmware 0.17.8 subsequently preloads PA6/PA7/PB0/PB1
 low before configuring TIM3 channels 1-4 on AF2. Because each signal drives
 tied active-high HIN and active-low LIN inputs, this commands all four low-side
 FETs and creates a zero-voltage vector; it is not an all-FET-off state. This
@@ -59,7 +58,7 @@ The IWDG is still a recovery layer rather than the immediate safety response. Ha
 
 ## Bench validation
 
-During first safe bring-up:
+For a new board revision or startup-path change:
 
 - verify `self_test_required == self_test_passed == 0x7F` and `self_test_failed == 0`;
 - single-step or use controlled bench-only fault injection to observe individual gate publication;
