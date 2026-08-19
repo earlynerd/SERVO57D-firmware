@@ -21,7 +21,8 @@ typedef enum
     COMMAND_OPERATION_START_CURRENT_TEST,
     COMMAND_OPERATION_STOP_CURRENT_TEST,
     COMMAND_OPERATION_GET_BOOT_STATUS,
-    COMMAND_OPERATION_GET_ENCODER_STATUS
+    COMMAND_OPERATION_GET_ENCODER_STATUS,
+    COMMAND_OPERATION_GET_CURRENT_TRACE
 } command_operation_t;
 
 typedef enum
@@ -108,6 +109,20 @@ typedef struct
     uint32_t last_attempt_millis;
 } command_encoder_status_t;
 
+typedef struct
+{
+    uint8_t schema_version;
+    uint16_t captured_sample_count;
+    uint16_t sample_index;
+    uint32_t loop_sample_count;
+    int16_t current_a_reference_counts;
+    int16_t current_b_reference_counts;
+    int16_t current_a_measured_counts;
+    int16_t current_b_measured_counts;
+    int16_t phase_a_voltage_permille;
+    int16_t phase_b_voltage_permille;
+} command_current_trace_sample_t;
+
 typedef command_status_t (*command_commissioning_get_status_fn)(
     void* context,
     command_commissioning_status_t* status);
@@ -126,6 +141,10 @@ typedef command_status_t (*command_commissioning_get_boot_status_fn)(
 typedef command_status_t (*command_commissioning_get_encoder_status_fn)(
     void* context,
     command_encoder_status_t* status);
+typedef command_status_t (*command_commissioning_get_current_trace_fn)(
+    void* context,
+    uint16_t sample_index,
+    command_current_trace_sample_t* sample);
 
 typedef struct
 {
@@ -136,6 +155,7 @@ typedef struct
     command_commissioning_stop_fn stop;
     command_commissioning_get_boot_status_fn get_boot_status;
     command_commissioning_get_encoder_status_fn get_encoder_status;
+    command_commissioning_get_current_trace_fn get_current_trace;
 } command_commissioning_api_t;
 
 typedef struct
@@ -166,7 +186,8 @@ typedef enum
     COMMAND_RESPONSE_COMMISSIONING_STATUS,
     COMMAND_RESPONSE_CURRENT_TEST_CONFIG,
     COMMAND_RESPONSE_BOOT_STATUS,
-    COMMAND_RESPONSE_ENCODER_STATUS
+    COMMAND_RESPONSE_ENCODER_STATUS,
+    COMMAND_RESPONSE_CURRENT_TRACE
 } command_response_kind_t;
 
 typedef struct
@@ -198,6 +219,7 @@ typedef struct
         command_current_test_config_t current_test_config;
         command_boot_status_t boot_status;
         command_encoder_status_t encoder_status;
+        command_current_trace_sample_t current_trace;
     } data;
 } command_response_t;
 

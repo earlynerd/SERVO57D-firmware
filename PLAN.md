@@ -5,6 +5,12 @@ has passed current-regulated motor rotation; completed milestones are normal
 development foundations rather than restrictions that must be repeated for
 every firmware iteration.
 
+The product ambition is a high-performance motor drive with responsive current,
+velocity, and position control. Commissioning limits are temporary measured
+envelopes, not product targets: expand useful voltage, current, speed, and motion
+while retaining independent bounds, explicit authority, deterministic timing,
+and immediate fault convergence.
+
 ## Phase 0 — Repository and evidence base
 
 Status: substantially complete.
@@ -55,7 +61,7 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [x] Document the bench-proven guarded J-Link build, program, verify, reset, and start workflow.
 
-Software status: firmware 0.17.8 builds, runs from the bench-proven 8 MHz HSE
+Software status: firmware 0.18.2 builds, runs from the bench-proven 8 MHz HSE
 through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
 samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
 native commissioning protocol over RS-485. The 240-byte schema-5 RAM diagnostic
@@ -65,9 +71,11 @@ grant authority to a bounded fixed-point A/B current loop with low-zero
 sign-magnitude modulation, raw-count overcurrent trips, and a timer deadline
 guardian. Display operation, continuous encoder telemetry, RS-485
 command/response, current regulation, all four bridge polarities, and
-encoder-confirmed 5.97 RPM motor rotation are bench-proven. Reset/halt
-waveforms, SRAM2 and IWDG details, absolute current calibration, the broader
-speed/current/thermal envelope, and production fault coverage remain open.
+encoder-confirmed 5.97 RPM motor rotation are bench-proven. The tested board's
+3.3 V ADC reference, 6.65 current-sense gain, and 6.059 mA/count conversion are
+verified. Reset/halt waveforms, SRAM2 and IWDG details, production current-sense
+tolerance, the broader speed/current/thermal envelope, and production fault
+coverage remain open.
 
 Milestone result: achieved. A clean checkout builds, flashes, boots, and
 reports its version from a defined board state.
@@ -94,7 +102,8 @@ Goal: understand every input without commanding motor current.
 - [x] Sample bus voltage and both current-sense outputs with the bridge disabled.
 - [x] Measure one-board zero-current offsets and short-term raw ADC noise at 12 V input.
 - [x] Encode the schematic-derived current-sense and bus-divider conversion formulas.
-- [ ] Measure ADC reference accuracy, amplifier settling, gain/sign, clipping, and supply-range behavior.
+- [x] Measure the tested board's 3.3 V ADC reference and verify the 6.65 current-sense gain/sign.
+- [ ] Characterize amplifier settling, clipping, supply-range behavior, and temperature/unit-to-unit tolerance.
 - [x] Retire the post-peripheral permanent no-drive invariant after completing passive input validation; retain the reset-safe initial board-state gate.
 
 Milestone result: achieved. All inputs required by RS-485 current operation are
@@ -128,21 +137,26 @@ do not block the measured low-current operating envelope.
 
 Goal: regulate winding current before attempting position control.
 
-- [x] Bench-validate the 30%-phase TIM2 compare-ISR path under switched current through sustained fault-free loop operation.
+- [x] Bench-validate the 80%-phase TIM2 compare-ISR path with a 16 MHz ADC under switched current through sustained fault-free loop operation.
 - [ ] Quantify switching-edge contamination and ISR/preload timing on an oscilloscope.
 - [x] Calibrate PA1/PA2 offsets independently at every safe startup using 32 bridge-zeroed snapshots.
-- [x] Convert ADC readings to signed milliamperes from the 20 mOhm shunt and 6.65 amplifier gain; nominal 3.3 V reference is used until reference accuracy is measured.
+- [x] Convert ADC readings to signed milliamperes from the measured 3.3 V reference, 20 mOhm shunts, and verified 6.65 amplifier gain (6.059 mA/count on the tested board).
 - [x] Implement independent requested-current, raw overcurrent, phase-voltage, and absolute-duty bounds.
 - [x] Implement fixed-point A/B winding PI controllers with conditional anti-windup and low-zero sign-magnitude modulation.
 - [x] Run the controller from every completed two-rank DMA sequence and latch ADC, invalid-output, PWM-write, and missed-update faults to the common all-low bridge path.
-- [x] Verify sine/cosine current commands in all quadrants at nominal 150 mA and 300 mA.
+- [x] Verify sine/cosine current commands in all quadrants at 151.5 mA and 303 mA.
 - [x] Drive the attached motor from a rotating current vector and confirm motion independently with the encoder.
-- [ ] Characterize current-loop bandwidth, noise, saturation, and thermal behavior.
+- [x] Capture 20 kHz startup traces and characterize the 303 mA rotating-vector loop from 5-20 Hz with Kp=2.
+- [x] Expand the tested motor envelope to 757 mA / 20 electrical Hz for five seconds with encoder tracking and no fault.
+- [x] Add a one-command bounded move, telemetry capture, analysis, and plot-report workflow with inactive-configuration restoration.
+- [ ] Complete scope-based bandwidth/noise work and characterize higher-current and enclosed thermal behavior.
 
-Milestone result: achieved at the present 12 V, nominal 300 mA, 5 Hz electrical
-test point. Both winding currents track across electrical angle and the rotor
-follows at -5.97 RPM versus 6.00 RPM expected. Current-loop characterization
-continues while encoder alignment and outer-loop integration begin.
+Milestone result: achieved through the present 12 V, 757 mA / 20 Hz operating point. Both
+winding currents track across electrical angle and the rotor follows at
+-23.7 RPM versus 24.0 RPM expected. Firmware 0.18.2 Kp=2 used 25.2% peak
+phase-voltage effort against the 70% ceiling. The 1 A / 50 Hz endpoints remain
+available but unqualified. Scope and enclosed-thermal characterization continue
+while encoder alignment and outer-loop integration begin.
 
 ## Phase 6 — Encoder alignment and servo control
 
@@ -174,6 +188,7 @@ calibration without preserving active authority.
 - [ ] **Deferred:** Map step/direction capture to verified timer and physical pins.
 - [ ] Define configuration, status, telemetry, and fault registers or messages.
 - [ ] Add protocol fuzz and malformed-frame tests.
+- [x] Add a host-side bounded move/capture/analysis/report workflow for commissioning and loop tuning.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
 - [x] Treat useful publicly documented Makerbase commands as optional compatibility aliases rather than the canonical API.
 

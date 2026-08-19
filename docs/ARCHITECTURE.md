@@ -1,12 +1,12 @@
 # Firmware Architecture
 
-Status: firmware 0.17.8 implements the reset-safe foundation, continuous
+Status: firmware 0.18.2 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native commissioning protocol, and a 20 kHz fixed-point A/B current
-loop. Low-zero sign-magnitude modulation, 30%-carrier sampling, raw overcurrent
+loop. Low-zero sign-magnitude modulation, 80%-carrier sampling, raw overcurrent
 trips, and the carrier deadline guardian are bench-proven with an attached
-motor. An encoder-observed 300 mA, 5 Hz electrical run produced smooth motion
-at 5.97 RPM without a current-loop, encoder, SPI, or reset fault.
+motor. An encoder-observed 757 mA, 20 Hz electrical run produced smooth motion
+at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault.
 
 ## Design priorities
 

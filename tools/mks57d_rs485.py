@@ -25,6 +25,7 @@ COMMAND_START_CURRENT_TEST = 0x0102
 COMMAND_STOP_CURRENT_TEST = 0x0103
 COMMAND_GET_BOOT_STATUS = 0x0104
 COMMAND_GET_ENCODER_STATUS = 0x0105
+COMMAND_GET_CURRENT_TRACE = 0x0106
 
 STATUS_NAMES = {
     0: "ok",
@@ -119,6 +120,7 @@ SPI_STATUS_NAMES = {
 }
 
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
+CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -386,6 +388,56 @@ def query_encoder(client: Client) -> dict[str, Any]:
     }
 
 
+def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:
+    body = client.transact(
+        COMMAND_GET_CURRENT_TRACE,
+        struct.pack(">H", index),
+    )
+    if len(body) != CURRENT_TRACE_BODY.size:
+        raise ProtocolError("current-trace response has an unexpected length")
+    (
+        schema,
+        captured_sample_count,
+        sample_index,
+        loop_sample_count,
+        reference_a,
+        reference_b,
+        measured_a,
+        measured_b,
+        voltage_a,
+        voltage_b,
+    ) = CURRENT_TRACE_BODY.unpack(body)
+    if sample_index != index:
+        raise ProtocolError("current-trace response index does not match request")
+    return {
+        "schema": schema,
+        "captured_sample_count": captured_sample_count,
+        "sample_index": sample_index,
+        "loop_sample_count": loop_sample_count,
+        "reference_counts": {"a": reference_a, "b": reference_b},
+        "measured_counts": {"a": measured_a, "b": measured_b},
+        "phase_voltage_permille": {"a": voltage_a, "b": voltage_b},
+    }
+
+
+def read_current_trace(client: Client) -> list[dict[str, Any]]:
+    first = query_current_trace_sample(client, 0)
+    samples = [first]
+    expected_count = first["captured_sample_count"]
+    for index in range(1, expected_count):
+        sample = query_current_trace_sample(client, index)
+        if sample["captured_sample_count"] != expected_count:
+            raise ProtocolError("current-trace sample count changed while reading")
+        samples.append(sample)
+    first_loop_sample = samples[0]["loop_sample_count"]
+    for sample in samples:
+        sample["time_seconds"] = round(
+            (sample["loop_sample_count"] - first_loop_sample) / 20000.0,
+            7,
+        )
+    return samples
+
+
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True), flush=True)
 
@@ -402,6 +454,10 @@ def make_parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="read one commissioning snapshot")
     commands.add_parser("boot", help="read reset cause, panic, and uptime")
     commands.add_parser("encoder", help="read live encoder position and health")
+    trace = commands.add_parser(
+        "trace", help="read the completed 20 kHz current-loop startup trace"
+    )
+    trace.add_argument("--output", help="write JSON lines to this path")
 
     configure = commands.add_parser("configure", help="set test demand")
     configure.add_argument("--counts", type=int, required=True)
@@ -506,6 +562,22 @@ def main() -> int:
             )
         elif args.command == "encoder":
             print_json(query_encoder(client))
+        elif args.command == "trace":
+            samples = read_current_trace(client)
+            if args.output:
+                with open(args.output, "w", encoding="utf-8") as stream:
+                    for sample in samples:
+                        stream.write(json.dumps(sample, sort_keys=True) + "\n")
+                print_json(
+                    {
+                        "captured_sample_count": len(samples),
+                        "duration_seconds": samples[-1]["time_seconds"],
+                        "output": args.output,
+                    }
+                )
+            else:
+                for sample in samples:
+                    print(json.dumps(sample, sort_keys=True), flush=True)
         elif args.command == "configure":
             frequency_millihz = round(args.frequency_hz * 1000.0)
             body = client.transact(

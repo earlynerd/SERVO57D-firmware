@@ -6,6 +6,11 @@
 
 #include "mks57d/phase_current_loop.h"
 
+enum
+{
+    CURRENT_LOOP_BACKEND_TRACE_CAPACITY = 256u
+};
+
 typedef enum
 {
     CURRENT_LOOP_BACKEND_FAULT_NONE = 0u,
@@ -27,6 +32,17 @@ typedef struct
     bool active;
 } current_loop_backend_snapshot_t;
 
+typedef struct
+{
+    uint32_t loop_sample_count;
+    int16_t current_a_reference_counts;
+    int16_t current_b_reference_counts;
+    int16_t current_a_measured_counts;
+    int16_t current_b_measured_counts;
+    int16_t phase_a_voltage_permille;
+    int16_t phase_b_voltage_permille;
+} current_loop_backend_trace_sample_t;
+
 bool current_loop_backend_init(
     const phase_current_loop_config_t* config);
 bool current_loop_backend_set_reference_counts(
@@ -36,5 +52,9 @@ bool current_loop_backend_start(void);
 bool current_loop_backend_stop(void);
 void current_loop_backend_get_snapshot(
     current_loop_backend_snapshot_t* snapshot);
+uint16_t current_loop_backend_trace_count(void);
+bool current_loop_backend_trace_get(
+    uint16_t index,
+    current_loop_backend_trace_sample_t* sample);
 
 #endif

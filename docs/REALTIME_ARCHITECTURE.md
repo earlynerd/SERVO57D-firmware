@@ -1,7 +1,7 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.17.8 implements the fast-path portion of this architecture:
-edge-aligned 20 kHz PWM, TIM2-relative 30%-carrier ADC start, DMA-completion
+Status: firmware 0.18.2 implements the fast-path portion of this architecture:
+edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
 fixed-point current control, and a carrier deadline guardian. The path is
 bench-proven with encoder-observed motor rotation. This document also defines
 the next alignment, velocity, and position layers.

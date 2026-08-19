@@ -85,7 +85,7 @@ static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
 
     if ((register_value == NULL) ||
         (hclk_hz < 1000000u) ||
-        (hclk_hz > (ADC1_PASSIVE_MAX_CLOCK_HZ * 32u)))
+        (hclk_hz > (ADC1_MAX_CLOCK_HZ * 32u)))
     {
         return false;
     }
@@ -95,7 +95,7 @@ static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
                   sizeof(ADC_CLOCK_DIVIDERS[0]));
          ++index)
     {
-        if (hclk_hz <= (ADC1_PASSIVE_MAX_CLOCK_HZ *
+        if (hclk_hz <= (ADC1_MAX_CLOCK_HZ *
                         ADC_CLOCK_DIVIDERS[index].divisor))
         {
             *register_value = ADC_CLOCK_DIVIDERS[index].register_value;

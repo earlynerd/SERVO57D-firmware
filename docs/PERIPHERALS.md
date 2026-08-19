@@ -10,10 +10,10 @@ remain revision-specific until another board revision is checked.
 | Function | Candidate mapping | Confidence | Evidence and remaining proof |
 | --- | --- | --- | --- |
 | OLED bus | I2C1 AF7 on PA4/PA5 at 333.3 kHz; PB2 active-low reset; address `0x3C` | High; bench-proven on the fitted panel | The schematic shows external 4.7 kOhm pull-ups and no PB2 bias. The fitted display accepts the SSD1306-compatible 72-by-40 profile and sustained 50 Hz two-page updates. Exact controller marking remains unknown. |
-| Bus voltage | PA3 ADC input, 15.4 kOhm over 1 kOhm divider | High for routing and ratio; reference/tolerance unmeasured | At 12 V input the tested board reported 895 counts, nominally 11.83 V with a 3.3 V ADC reference. Actual reference and divider tolerance remain calibration inputs. |
-| Winding current | PA1 `currentB`, PA2 `currentA`; 20 mOhm shunts and 6.65 differential gain | High; bench-proven in the active loop | Phase A is positive for A- to A+ current and phase B for B+ to B-. Approximately 160,000 recent 20 kHz loop samples completed without a current fault. Absolute gain, clipping, bandwidth, and settling remain characterization items. |
+| Bus voltage | PA3 ADC input, 15.4 kOhm over 1 kOhm divider | High for routing and ratio; divider tolerance remains | At 12 V input the tested board reported 895 counts, about 11.83 V with the measured 3.3 V ADC reference. Divider tolerance remains a calibration input. |
+| Winding current | PA1 `currentB`, PA2 `currentA`; 20 mOhm shunts and 6.65 differential gain | High; bench-proven in the active loop | Phase A is positive for A- to A+ current and phase B for B+ to B-. The tested-board scale is 6.059 mA/count from the measured 3.3 V reference, verified 6.65 gain, and fitted shunts. Clipping, temperature/unit tolerance, bandwidth, and settling remain characterization items. |
 | Encoder | SPI1 on PB3 SCK, PB4 MISO, PB5 MOSI, PB6 software CS; MT6816-compatible protocol | High; bench-proven motion and wrap behavior | Position is stable at rest, follows shaft motion consistently, and wraps repeatably once per revolution. Exact marking, quantitative noise, zero alignment, and control-rate signal integrity remain open. |
-| Bridge waveform | TIM3 channels 1-4 on PA6, PA7, PB0, PB1 | High; all legs and motor rotation bench-proven | The AF2 mapping, all four output polarities, low-zero modulation, 30%-carrier current sampling, and encoder-observed rotation are proven on the tested board. Driver timing and expanded-envelope characterization remain. |
+| Bridge waveform | TIM3 channels 1-4 on PA6, PA7, PB0, PB1 | High; all legs and motor rotation bench-proven | The AF2 mapping, all four output polarities, low-zero modulation, 16 MHz ADC with 80%-carrier current sampling, and encoder-observed rotation through 757 mA / 20 Hz are proven on the tested board. Driver timing and expanded-envelope characterization remain. |
 | RS-485 | USART1 AF4 on PA9/PA10 with PC13 direction control; DMA channels 4/5 | High; command/response bench-proven | The working connector is `485_A2`/`485_B2`, contrary to the apparent published connector routing. Reset-time bus state and exact direction timing still require scope measurements. |
 | Passive inputs | PB8 Enter, PB9 Menu, PA15 Next, PB13 M_IN1, PB12 M_IN2, PA0 `nSTP`, PA8 `nDIR`, PB7 `nEN` | High; all bench-proven active-low | Static OLED monitoring confirms each physical input independently. Step pulse capture, rate limits, and operating semantics remain deferred. |
 
@@ -62,9 +62,10 @@ ADC work has two layers:
   at 30% of the TIM3 carrier and DMA completion. Missing, duplicate, clipped,
   and late sequences are fault inputs.
 
-Current control uses nominal schematic-derived scaling and measured startup
-zeros. Precision amperes and volts require measured ADC reference and
-versioned per-channel calibration.
+Current control uses the tested board's measured 3.3 V reference,
+schematic-and-board-verified 6.65 current-sense gain, and measured startup
+zeros. Production units still require versioned per-channel calibration and
+tolerance limits.
 
 ### 3. Encoder SPI
 

@@ -78,6 +78,7 @@ typedef struct
 {
     command_commissioning_status_t status;
     command_encoder_status_t encoder_status;
+    command_current_trace_sample_t current_trace;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -87,6 +88,8 @@ typedef struct
     size_t stop_calls;
     size_t boot_status_calls;
     size_t encoder_status_calls;
+    size_t current_trace_calls;
+    uint16_t requested_trace_index;
 } mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
@@ -338,6 +341,19 @@ static command_status_t mock_commissioning_get_encoder_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_commissioning_get_current_trace(
+    void* context,
+    uint16_t sample_index,
+    command_current_trace_sample_t* sample)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->current_trace_calls;
+    mock->requested_trace_index = sample_index;
+    *sample = mock->current_trace;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -375,6 +391,7 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .stop = mock_commissioning_stop,
             .get_boot_status = mock_commissioning_get_boot_status,
             .get_encoder_status = mock_commissioning_get_encoder_status,
+            .get_current_trace = mock_commissioning_get_current_trace,
         },
     };
 
@@ -786,12 +803,12 @@ static void test_adc_channel_and_sample_order_contract(void)
     volatile unsigned int current_b_channel = ADC1_CURRENT_B_CHANNEL;
     volatile unsigned int current_a_channel = ADC1_CURRENT_A_CHANNEL;
     volatile unsigned int vbus_channel = ADC1_VBUS_CHANNEL;
-    volatile unsigned int max_clock_hz = ADC1_PASSIVE_MAX_CLOCK_HZ;
+    volatile unsigned int max_clock_hz = ADC1_MAX_CLOCK_HZ;
 
     EXPECT_TRUE(current_b_channel == 2u);
     EXPECT_TRUE(current_a_channel == 3u);
     EXPECT_TRUE(vbus_channel == 4u);
-    EXPECT_TRUE(max_clock_hz == 2000000u);
+    EXPECT_TRUE(max_clock_hz == 16000000u);
 
     EXPECT_TRUE(adc_sample_build(&sample,
                                  101u,
@@ -1591,6 +1608,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     static const uint8_t start_payload[] = {
         0x02u, 0x00u, 0x00u, 0x13u, 0x88u
     };
+    static const uint8_t trace_payload[] = {0x00u, 0x2Au};
     uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
     native_protocol_server_t server;
     mock_protocol_tx_t transmit = {.accept = true};
@@ -1636,6 +1654,18 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .sample_count = 0x01020304u,
             .error_count = 0x05060708u,
             .last_attempt_millis = 0x090A0B0Cu,
+        },
+        .current_trace = {
+            .schema_version = 1u,
+            .captured_sample_count = 256u,
+            .sample_index = 42u,
+            .loop_sample_count = 0x01020304u,
+            .current_a_reference_counts = -50,
+            .current_b_reference_counts = 49,
+            .current_a_measured_counts = -48,
+            .current_b_measured_counts = 47,
+            .phase_a_voltage_permille = -100,
+            .phase_b_voltage_permille = 99,
         },
     };
     native_protocol_frame_t response;
@@ -1787,6 +1817,36 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[14] == 0x08u);
     EXPECT_TRUE(response.payload[15] == 0x09u);
     EXPECT_TRUE(response.payload[18] == 0x0Cu);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        26u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_CURRENT_TRACE,
+        trace_payload,
+        sizeof(trace_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.current_trace_calls == 1u);
+    EXPECT_TRUE(commissioning.requested_trace_index == 42u);
+    EXPECT_TRUE(response.payload_length == 22u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 0x01u);
+    EXPECT_TRUE(response.payload[3] == 0x00u);
+    EXPECT_TRUE(response.payload[4] == 0u);
+    EXPECT_TRUE(response.payload[5] == 42u);
+    EXPECT_TRUE(response.payload[6] == 0x01u);
+    EXPECT_TRUE(response.payload[9] == 0x04u);
+    EXPECT_TRUE(response.payload[10] == 0xFFu);
+    EXPECT_TRUE(response.payload[11] == 0xCEu);
+    EXPECT_TRUE(response.payload[20] == 0u);
+    EXPECT_TRUE(response.payload[21] == 99u);
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)

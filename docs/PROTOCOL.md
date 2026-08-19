@@ -97,16 +97,18 @@ from causing reply storms.
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema `u8`, encoder status `u8`, SPI status `u8`, raw angle `u16`, flags `u8`, sample count `u32`, error count `u32`, last-attempt milliseconds `u32` |
+| `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema `u8`, captured count `u16`, echoed index `u16`, loop sample count `u32`, A/B references `i16`, A/B measurements `i16`, A/B voltage commands `i16` |
 
-The product ID is `0x4D4B5335` (`MKS5`). The current identity reports firmware
-0.17.8 and protocol 1.2. The capability bitmap uses the same stable bit
-definitions as the debugger diagnostic record, including the native-protocol
-capability.
+The product ID is `0x4D4B5335` (`MKS5`). The bench-proven image reports firmware
+0.18.2 and protocol 1.3. It adds the bounded current trace validated through
+complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
+capability bitmap uses the same stable bit definitions as the debugger
+diagnostic record, including the native-protocol capability.
 
 The current-loop commands are the present low-level motor-operation service;
 they are not yet a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
-inactive. Amplitude is currently bounded to 1-50 ADC counts and frequency to
-1-20000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
+inactive. Amplitude is currently bounded to 1-165 ADC counts and frequency to
+1-50000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
 `2=B1`, and `3=B2`, with a duration from 100 to 60000 ms. It is unavailable
 until ADC zero calibration and current-loop initialization complete, or while
 authority is already active, a fault is latched, or raw Menu is asserted.
@@ -125,6 +127,14 @@ encoder and SPI status, sensor flags, accepted-sample count, error count, and
 last-attempt time. The host commissioning console queries it alongside each
 current-loop snapshot so rotor displacement can be separated from successful
 stator-current commutation.
+
+`GET_CURRENT_TRACE` is available only after current-loop authority has ended.
+Each start clears a fixed 256-entry buffer, then the DMA-completion ISR records
+the first 12.8 ms of 20 kHz loop sample number, references, measurements, and
+voltage commands. The request reads one indexed entry; every response reports
+the fixed captured count so the host can reject a trace that changes while it
+is being transferred. Trace capture does not alter current reference, voltage,
+duty, duration, deadline, fault, or bridge-authority limits.
 
 `GET_COMMISSIONING_STATUS` returns the following schema-2 body after the common
 status byte. All multi-byte fields are big-endian; signed fields use two's

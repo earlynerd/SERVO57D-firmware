@@ -205,3 +205,32 @@
 - **Class:** motor-rotation-bench-validation
 - **Recently-touched?** yes
 - **Status:** Resolved and bench-confirmed on firmware 0.17.8. Measured motion was -0.2958 revolution at -5.97 RPM versus the 6.00 RPM expected for a 5 Hz vector and 50 electrical cycles per mechanical revolution. The current loop completed 59,905 samples without a control fault or reset.
+
+## 2026-08-19 — Free-rotor motion distorted single-phase current-step tuning
+
+- **Observation:** A 50-count B1 startup trace appeared to have 38% overshoot, 12.46-count tail RMS error, and 23 counts of cross-axis current, while the preceding A1 trace settled with 4% overshoot and 0.73-count tail RMS error.
+- **Root cause:** `firmware/src/main.c:94-106` selects a static single-phase vector and `firmware/src/control/rotating_current_test.c:83-89` holds it during the 0.001 Hz test. With the rotor free, that vector produces torque; encoder motion and back-EMF changed both measured axes during the 12.8 ms record. A polarity-balanced 25-count repeat moved the fast response between A/B according to torque direction instead of following one ADC channel.
+- **Fix:** Treat the four-polarity free-rotor traces as disturbance-response data rather than an independent phase-step plant test; make only one bounded proportional-gain change and repeat the same comparison before accepting it.
+- **Class:** current-loop-test-mechanical-contamination
+- **Recently-touched?** no — the new trace records the staged controller result after `firmware/src/platform/current_loop_backend.c:103` and did not cause a deadline fault.
+- **Time to fix:** approximately 35 minutes of code audit and bounded bench traces.
+
+## 2026-08-19 — Kp=2 rotating-vector tuning passed the bounded sweep
+
+- **Observation:** Doubling proportional gain did not consistently improve the mechanically contaminated A1/A2/B1/B2 free-rotor startup traces, but the representative rotating-vector loop remained stable and slightly improved at 5 Hz.
+- **Root cause:** No firmware defect remained. Static single-phase steps accelerated the free rotor, so their apparent rise and tail metrics included rotor motion and back-EMF. The 303 mA rotating-vector sweep better represents the intended current-loop workload. Its 20 Hz degradation coincided with the unchanged 100-permille voltage ceiling rather than instability or excess PI gain.
+- **Fix:** Accept firmware 0.18.1 `Kp=2`, retain `Ki=1/64` per 20 kHz step and all existing bounds, and document 5-10 Hz as the well-controlled commissioning band, 15 Hz as a degraded edge, and 20 Hz as voltage-headroom limited. Restore the inactive volatile test configuration to the firmware default of 25 counts at 0.5 Hz after testing.
+- **Class:** current-loop-tuning-validation
+- **Recently-touched?** yes — only `firmware/src/main.c` changed the loop behavior; the trace, PWM, sampling, and fault paths were unchanged from the validated 0.18.0 image.
+- **Status:** Resolved and bench-proven on firmware 0.18.1. All startup traces and 5/10/15/20 Hz runs completed without a control, ADC, encoder, reset, or protocol fault; only 20 Hz briefly reached the phase-voltage ceiling.
+- **Time to fix:** approximately 50 minutes of code audit, bounded bench sweeps, and analysis.
+
+## 2026-08-19 — Conservative commissioning ceilings limited visible motion
+
+- **Observation:** The motor had only been seen moving slowly, and the active default after tuning was 151.5 mA at 0.5 electrical Hz (approximately 0.6 RPM). The user requested faster, larger motion at up to 1 A and established high-performance motor drive as the project target.
+- **Root cause:** `firmware/src/main.c:567-572` retained commissioning-era 303 mA, 10%-bus voltage, and 20 Hz ceilings. The voltage ceiling was coupled to `firmware/include/mks57d/tim2_current_trigger.h:10`, where the 30%-carrier sample deliberately followed every permitted PWM edge; simply raising duty would move the asymmetric-shunt measurement outside its guaranteed zero-vector window.
+- **Fix under test:** Firmware 0.18.2 raises the reference/trip to 1.00/1.21 A, ADC clock to 16 MHz, zero-vector sample to 80% of the carrier, phase voltage to 70% of the bus, and test frequency to 50 electrical Hz. This preserves 5 microseconds from the latest permitted PWM edge to sampling and approximately 7 microseconds for conversion-complete control/preload work.
+- **Class:** commissioning-envelope-overconstraint
+- **Recently-touched?** yes — the limiting constants and current-trace tuning image were the current working-tree focus.
+- **Status:** Resolved and bench-confirmed on firmware 0.18.2. Identity, boot, and status were clean after flash; a 303 mA step completed with 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. Staged 454 mA / 10 Hz and 606 mA / 15 Hz runs tracked -12 and -18 RPM without faults. A visible 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 mechanical revolutions versus 2.00 commanded, with zero current-loop, ADC, encoder, reset, or protocol faults. Peak observed phase-voltage effort was 25.2% of the bus, leaving substantial headroom below the 70% ceiling.
+- **Time to fix:** approximately 55 minutes of code/timing audit, implementation, build validation, bounded bench expansion, and analysis.

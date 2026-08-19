@@ -341,6 +341,9 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_ENCODER_STATUS:
             *operation = COMMAND_OPERATION_GET_ENCODER_STATUS;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_CURRENT_TRACE:
+            *operation = COMMAND_OPERATION_GET_CURRENT_TRACE;
+            return true;
         default:
             return false;
     }
@@ -531,6 +534,34 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                         last_attempt_millis);
                 payload_length = 19u;
                 break;
+
+            case COMMAND_RESPONSE_CURRENT_TRACE:
+            {
+                const command_current_trace_sample_t* trace =
+                    &command_response->data.current_trace;
+
+                response_frame->payload[1] = trace->schema_version;
+                write_u16_be(&response_frame->payload[2],
+                             trace->captured_sample_count);
+                write_u16_be(&response_frame->payload[4],
+                             trace->sample_index);
+                write_u32_be(&response_frame->payload[6],
+                             trace->loop_sample_count);
+                write_u16_be(&response_frame->payload[10],
+                             (uint16_t)trace->current_a_reference_counts);
+                write_u16_be(&response_frame->payload[12],
+                             (uint16_t)trace->current_b_reference_counts);
+                write_u16_be(&response_frame->payload[14],
+                             (uint16_t)trace->current_a_measured_counts);
+                write_u16_be(&response_frame->payload[16],
+                             (uint16_t)trace->current_b_measured_counts);
+                write_u16_be(&response_frame->payload[18],
+                             (uint16_t)trace->phase_a_voltage_permille);
+                write_u16_be(&response_frame->payload[20],
+                             (uint16_t)trace->phase_b_voltage_permille);
+                payload_length = 22u;
+                break;
+            }
 
             case COMMAND_RESPONSE_NONE:
                 payload_length = 1u;

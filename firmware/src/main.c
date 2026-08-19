@@ -58,8 +58,9 @@ enum
 {
     COMMISSIONING_STATUS_SCHEMA_VERSION = 2u,
     ENCODER_STATUS_SCHEMA_VERSION = 1u,
+    CURRENT_TRACE_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
-    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 20000u,
+    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 50000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 100u,
     CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u
 };
@@ -362,6 +363,48 @@ static command_status_t commissioning_get_encoder_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t commissioning_get_current_trace(
+    void* context,
+    uint16_t sample_index,
+    command_current_trace_sample_t* sample)
+{
+    current_loop_backend_snapshot_t loop = {0};
+    current_loop_backend_trace_sample_t trace;
+    uint16_t captured_sample_count;
+
+    if ((context == NULL) || (sample == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    current_loop_backend_get_snapshot(&loop);
+    if (loop.active)
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    captured_sample_count = current_loop_backend_trace_count();
+    if (sample_index >= captured_sample_count)
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    if (!current_loop_backend_trace_get(sample_index, &trace))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    sample->schema_version = CURRENT_TRACE_SCHEMA_VERSION;
+    sample->captured_sample_count = captured_sample_count;
+    sample->sample_index = sample_index;
+    sample->loop_sample_count = trace.loop_sample_count;
+    sample->current_a_reference_counts = trace.current_a_reference_counts;
+    sample->current_b_reference_counts = trace.current_b_reference_counts;
+    sample->current_a_measured_counts = trace.current_a_measured_counts;
+    sample->current_b_measured_counts = trace.current_b_measured_counts;
+    sample->phase_a_voltage_permille = trace.phase_a_voltage_permille;
+    sample->phase_b_voltage_permille = trace.phase_b_voltage_permille;
+    return COMMAND_STATUS_OK;
+}
+
 static void wait_milliseconds(uint32_t duration)
 {
     const uint32_t start = timebase_millis();
@@ -521,9 +564,9 @@ int main(void)
         CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
         DISPLAY_REFRESH_PERIOD_MS = 200u,
         RS485_FOREGROUND_DRAIN_BYTES = 64u,
-        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS = 50u,
-        CURRENT_LOOP_HARD_LIMIT_COUNTS = 100u,
-        CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE = 100u,
+        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS = 165u,
+        CURRENT_LOOP_HARD_LIMIT_COUNTS = 200u,
+        CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE = 700u,
         CURRENT_LOOP_DUTY_MARGIN_PERMILLE = 200u,
         CURRENT_TEST_AMPLITUDE_COUNTS = 25u,
         CURRENT_TEST_FREQUENCY_MILLIHZ = 500u
@@ -534,10 +577,16 @@ int main(void)
     _Static_assert(CURRENT_LOOP_REFERENCE_LIMIT_COUNTS <
                        CURRENT_LOOP_HARD_LIMIT_COUNTS,
                    "requested current must remain below the raw trip");
+    _Static_assert((CURRENT_LOOP_HARD_LIMIT_COUNTS * 5u) >=
+                       (CURRENT_LOOP_REFERENCE_LIMIT_COUNTS * 6u),
+                   "raw trip must remain at least 20 percent above demand");
     _Static_assert(CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE <=
                        (1000u -
                         CURRENT_LOOP_DUTY_MARGIN_PERMILLE),
                    "phase voltage limit violates the active duty margin");
+    _Static_assert((CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE + 100u) <=
+                       TIM2_CURRENT_TRIGGER_PHASE_PERMILLE,
+                   "phase voltage must leave a 5 us ADC quiet interval");
     app_state_t state = APP_STATE_RESET_SAFE;
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
@@ -558,7 +607,7 @@ int main(void)
         .reference_limit_counts = CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
         .hard_current_limit_counts = CURRENT_LOOP_HARD_LIMIT_COUNTS,
         .proportional_gain_q16_per_count =
-            (int32_t)PHASE_CURRENT_LOOP_Q16_ONE,
+            2 * (int32_t)PHASE_CURRENT_LOOP_Q16_ONE,
         .integral_gain_q16_per_count_per_step =
             (int32_t)PHASE_CURRENT_LOOP_Q16_ONE / 64,
         .phase_voltage_limit_permille =
@@ -633,6 +682,7 @@ int main(void)
             .stop = commissioning_stop,
             .get_boot_status = commissioning_get_boot_status,
             .get_encoder_status = commissioning_get_encoder_status,
+            .get_current_trace = commissioning_get_current_trace,
         },
     };
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mks57d_open_firmware VERSION 0.17.8 LANGUAGES C)
+project(mks57d_open_firmware VERSION 0.18.2 LANGUAGES C)
 
 option(MKS57D_BUILD_FIRMWARE "Build the N32L406 firmware image" OFF)
 option(MKS57D_BUILD_TESTS "Build host-side unit tests" OFF)

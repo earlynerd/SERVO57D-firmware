@@ -28,6 +28,9 @@ static volatile bool s_initialized;
 static volatile bool s_active;
 static bool s_guardian_primed;
 static phase_current_loop_output_t s_latest_output;
+static current_loop_backend_trace_sample_t
+    s_trace[CURRENT_LOOP_BACKEND_TRACE_CAPACITY];
+static volatile uint16_t s_trace_count;
 
 static uint32_t control_critical_enter(void)
 {
@@ -104,6 +107,26 @@ static void adc_current_event(adc1_status_t status,
     }
 
     s_latest_output = output;
+    if (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY)
+    {
+        const uint16_t trace_index = s_trace_count;
+
+        s_trace[trace_index].loop_sample_count = s_sample_count + 1u;
+        s_trace[trace_index].current_a_reference_counts =
+            s_last_reference_a_counts;
+        s_trace[trace_index].current_b_reference_counts =
+            s_last_reference_b_counts;
+        s_trace[trace_index].current_a_measured_counts =
+            output.current_a_measured_counts;
+        s_trace[trace_index].current_b_measured_counts =
+            output.current_b_measured_counts;
+        s_trace[trace_index].phase_a_voltage_permille =
+            output.phase_a_voltage_permille;
+        s_trace[trace_index].phase_b_voltage_permille =
+            output.phase_b_voltage_permille;
+        __DMB();
+        s_trace_count = trace_index + 1u;
+    }
     __DMB();
     ++s_sample_count;
     ++s_output_generation;
@@ -156,6 +179,7 @@ bool current_loop_backend_init(
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
+    s_trace_count = 0u;
     s_active = false;
     s_initialized = false;
 
@@ -230,6 +254,7 @@ bool current_loop_backend_start(void)
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
+    s_trace_count = 0u;
     if (!phase_current_loop_start(&s_loop))
     {
         s_fault_flags |= CURRENT_LOOP_BACKEND_FAULT_INTERNAL;
@@ -305,4 +330,35 @@ void current_loop_backend_get_snapshot(
     snapshot->initialized = s_initialized;
     snapshot->active = s_active;
     control_critical_exit(previous);
+}
+
+uint16_t current_loop_backend_trace_count(void)
+{
+    uint32_t previous = control_critical_enter();
+    const uint16_t count = s_trace_count;
+
+    control_critical_exit(previous);
+    return count;
+}
+
+bool current_loop_backend_trace_get(
+    uint16_t index,
+    current_loop_backend_trace_sample_t* sample)
+{
+    uint32_t previous;
+
+    if ((sample == NULL) || !s_initialized)
+    {
+        return false;
+    }
+
+    previous = control_critical_enter();
+    if (s_active || (index >= s_trace_count))
+    {
+        control_critical_exit(previous);
+        return false;
+    }
+    *sample = s_trace[index];
+    control_critical_exit(previous);
+    return true;
 }

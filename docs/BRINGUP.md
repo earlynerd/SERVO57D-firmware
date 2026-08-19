@@ -92,14 +92,29 @@ the already-tested board.
 
 ## Stage 6 — Current-regulated motor operation
 
-Firmware 0.17.8 operates an attached two-phase stepper through independent
+Firmware 0.18.2 operates an attached two-phase stepper through independent
 20 kHz winding-current loops. Local Enter remains hold-to-run; release or Menu
 commands `ZERO`. RS-485 provides configurable current amplitude, electrical
 frequency, initial phase, run duration, STOP, and live current plus encoder
 telemetry. Timeout, Menu, transport failure, or STOP ends authority.
 
 Use a current-limited bench supply and connect the motor normally. The accepted
-run used `COM14`; replace it with the port reported by `list` when necessary:
+run used `COM14`; replace it with the port reported by `list` when necessary.
+For ordinary tuning, run the complete move, capture, analysis, and plotting loop
+with one command:
+
+```powershell
+py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
+```
+
+The command reports live current, voltage effort, and encoder angle; STOP is
+sent on Ctrl+C. It then saves `telemetry.jsonl`, `trace.jsonl`, `summary.json`,
+and a self-contained `report.html` under ignored `scratch/motor-runs/`, opens
+the report, and restores the prior inactive test configuration. Use
+`--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
+saved report without touching the motor.
+
+Use the lower-level console when inspecting individual protocol operations:
 
 ```powershell
 py tools/mks57d_rs485.py list
@@ -111,10 +126,11 @@ py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
 ```
 
-`run` streams current-loop and encoder snapshots until authority ends. At the
-tested 12 V / 50-count point, current is nominally 300 mA, the motor rotates at
+The lower-level `run` streams current-loop and encoder snapshots until authority ends. At the
+tested 12 V / 50-count point, current is 303 mA from the measured
+6.059 mA/count scale, the motor rotates at
 about 6 RPM, and the current loop should complete about 20,000 samples per
-second without a fault. The accepted firmware 0.17.8 run produced 59,905 loop
+second without a fault. The original accepted firmware 0.17.8 run produced 59,905 loop
 samples and -5.97 RPM measured by the encoder over three seconds.
 
 Use the telemetry to evaluate each run directly:
@@ -131,13 +147,31 @@ Use the telemetry to evaluate each run directly:
 5. After timeout or STOP, authority flags clear and the hardware returns to
    the all-low zero vector.
 
-The current interface accepts 1-50 counts, 0.001-20 Hz, and 0.1-60 second
+The current interface accepts 1-165 counts, 0.001-50 Hz, and 0.1-60 second
 runs. Expand current, speed, bus voltage, and duration deliberately while
 recording encoder tracking, current error, duty, supply current, and
 temperature. An explicit `stop` command is available from another terminal or
 after an interrupted watch.
 
-Firmware 0.17.8 displays a current-loop shutdown as persistent `F####`. The
+`motor_test.py --rpm` is only a convenient positive speed-magnitude conversion
+for this open-loop rotating vector. It does not yet regulate mechanical speed,
+select direction, or command position; use encoder agreement and the generated
+plots as the acceptance evidence until the aligned outer loops exist.
+
+Firmware 0.18.2 uses `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 mA startup
+step has 6.53 ms rise time and 8% overshoot. The tested motor tracked 606 mA /
+15 Hz at -17.78 RPM and completed 1.97 revolutions during a five-second 757 mA /
+20 Hz run, with zero faults and 25.2% peak voltage effort. Operation through
+757 mA / 20 Hz is accepted on this motor; stage the untested 1 A / 50 Hz endpoints
+separately. The 256-sample startup trace is available after a run with
+`trace`; analyze saved JSON lines with `tools/analyze_current_trace.py`.
+
+The tuning sweep is not an enclosed thermal qualification. Before permanently
+closing the housing, repeat the longest intended bounded duty cycle while
+recording supply current and board, driver, and motor temperature, then inspect
+the idle `status` and reset record again.
+
+Firmware 0.18.2 displays a current-loop shutdown as persistent `F####`. The
 number is the one-based fault-bit position: `F0002`/`F0003` are A/B raw
 overcurrent, `F0017` ADC/DMA, `F0018` PWM, `F0019` deadline, and `F0020`
 internal backend failure.

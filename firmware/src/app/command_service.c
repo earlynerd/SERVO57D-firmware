@@ -208,6 +208,27 @@ void command_service_dispatch(const command_service_context_t* context,
             }
             return;
 
+        case COMMAND_OPERATION_GET_CURRENT_TRACE:
+            if (request->payload_length != 2u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->commissioning.get_current_trace == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->commissioning.get_current_trace(
+                context->commissioning.context,
+                read_u16_be(request->payload),
+                &response->data.current_trace);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_CURRENT_TRACE;
+            }
+            return;
+
         default:
             response->status = COMMAND_STATUS_UNKNOWN_COMMAND;
             return;

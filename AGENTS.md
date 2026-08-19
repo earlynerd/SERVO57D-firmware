@@ -18,10 +18,13 @@ truth when documents conflict.
 ## Project state
 
 This is an active clean-sheet firmware project for an N32L406CBL7-based
-Makerbase MKS SERVO57D RS-485 controller. Firmware 0.17.8 has a bench-proven
-20 kHz two-phase current loop and encoder-confirmed low-speed motor rotation.
-The next objective is to turn that current-regulated drive into aligned
-velocity and position control.
+Makerbase MKS SERVO57D RS-485 controller. Firmware 0.18.2 has a bench-proven
+20 kHz two-phase current loop and encoder-confirmed operation through 757 mA and
+20 electrical Hz on the tested motor. The product ambition is a high-performance
+motor drive: expand useful current, voltage, speed, and motion from measurements
+rather than treating low commissioning ceilings as permanent design targets.
+The next objective is to turn the current-regulated drive into aligned velocity
+and position control.
 
 ## Working rules
 

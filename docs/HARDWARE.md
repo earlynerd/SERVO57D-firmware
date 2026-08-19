@@ -103,11 +103,12 @@ current flows from A- to A+ and positive A voltage must drive `phaseA2`.
 measured B current flows from B+ to B- and positive B voltage drives
 `phaseB1`.
 
-The `vBus` divider uses 15.4 kOhm above 1 kOhm, for a 16.4 ratio. At a nominal
-3.3 V ADC reference, one current count is about 6.06 mA, one bus-voltage count
+The `vBus` divider uses 15.4 kOhm above 1 kOhm, for a 16.4 ratio. With the
+tested board's measured 3.3 V ADC reference, verified 6.65 current-sense gain,
+and fitted 20 mOhm shunts, one current count is 6.059 mA. One bus-voltage count
 is about 13.22 mV, and the observed raw value 895 corresponds to about 11.83 V.
-Runtime conversion must use the measured ADC reference and channel-specific
-zero counts rather than these nominal values.
+Runtime conversion uses this measured reference plus channel-specific startup
+zero counts.
 
 Although the N32L406 contains two configurable op-amps, the PCB routing does not support using both for these current channels:
 

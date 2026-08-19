@@ -4,6 +4,10 @@ The [root README](../README.md) is the concise current-state and operating
 snapshot. Use this index to read only the material relevant to the task; the
 documents below are not a single prerequisite reading list.
 
+The project direction is a high-performance motor drive with evidence-based
+current, voltage, speed, thermal, and motion envelopes. Low commissioning limits
+are staging points, not the steady-state product ambition.
+
 ## Planning and history
 
 - [Project plan](../PLAN.md) — capability milestones, scope, and implementation sequence.
