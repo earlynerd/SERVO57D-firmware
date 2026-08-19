@@ -1,7 +1,8 @@
 # Firmware
 
-This directory contains a buildable N32L406CBL7 bridge-characterization image.
-It deliberately drives gate-control GPIO but is not motor-driving firmware.
+This directory contains a buildable N32L406CBL7 current-loop commissioning
+image. It deliberately drives gate-control GPIO through a bounded hold-to-run
+path but is not commissioned motor-driving firmware.
 Display, encoder, RS-485, and passive ADC behavior have been exercised on the
 tested board. The local, auxiliary, and isolated step/direction/enable input
 mappings are confirmed.
@@ -11,17 +12,25 @@ mappings are confirmed.
 - Startup verifies the reset-default 4 MHz MSI, then enables the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK. PCLK2 is 32 MHz, PCLK1 is 16 MHz, and TIM3 receives the doubled 32 MHz APB1 timer clock.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
-- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware 0.15.0 preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET. Firmware 0.15.0 suppresses bridge switching until a bounded current-loop backend owns bridge authority.
+- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware 0.17.3 preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
 - SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads every 10 ms in foreground; parity, no-magnet, over-speed, and transport state are published in diagnostics.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
-  ping, identity, and capability requests; no bytes are transmitted
-  automatically.
+  discovery and commissioning requests; no bytes are transmitted
+  automatically. Status and STOP remain available while a test is active.
 - A bounded 333.3 kHz I2C1 PA4/PA5 transport updates the fitted SSD1306-compatible 72-by-40 panel. The characterizer refreshes its two-page view at 5 Hz.
-- TIM3 update triggers a 20 kHz PA1/PA2 `currentB`/`currentA` ADC sequence captured by circular DMA channel 1. The OLED alternates stable raw A/B samples during `RUN`; synchronous capture must be healthy before PWM can start. Acquisition failure keeps diagnostics alive and appears as numeric status `A####`. The earlier PA3 `vBus` polling path is not active in this image.
+- TIM2 resets from each TIM3 update and raises a compare interrupt at 65% of
+  the carrier; that bounded ISR software-starts a 7.5-cycle PA1/PA2
+  `currentB`/`currentA` ADC sequence captured as one complete DMA pair. After
+  independent startup zero calibration, the OLED shows both signed currents
+  in milliamperes. Acquisition failure appears as numeric status `A####`; a
+  current-loop shutdown latches `F####`, where the number is the one-based
+  position of the first set fault bit. The earlier PA3 `vBus` polling path is
+  not active in this image.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
-- Next selects A1/A2/B1/B2 on the OLED. Holding Enter applies edge-aligned 20 kHz, 50% hardware PWM to the selected leg; raw Enter release or Menu returns all four commands low.
+- Earlier characterization builds used Next to select A1/A2/B1/B2 and Enter to apply edge-aligned 20 kHz, 50% hardware PWM. Firmware 0.17.3 uses Next to choose the rotating reference's initial phase and requires Enter to be released once, then held continuously, before the bounded current loop can run. Raw release or Menu returns to `ZERO`. The RS-485 commissioning adapter can instead configure the reference and start a 0.1-60 second run; timeout, Menu, transport failure, or STOP returns it to `ZERO`.
+- DMA completion runs fixed-point A/B PI controllers and stages low-zero sign-magnitude TIM3 preloads: a positive command switches leg 1, a negative command switches leg 2, and the other leg remains low. Raw overcurrent, invalid references or outputs, DMA/PWM failures, and two consecutive carrier updates without a new control output latch the common all-low fault path.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.
 - The firmware sets and verifies four NVIC preemption bits with no subpriorities; SysTick runs at priority 15.

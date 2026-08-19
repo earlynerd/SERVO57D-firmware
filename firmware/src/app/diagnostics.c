@@ -19,11 +19,12 @@
 
 enum
 {
-    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 184u,
+    DIAGNOSTICS_EXPECTED_RECORD_SIZE = 240u,
     DIAGNOSTICS_EXPECTED_SEQUENCE_OFFSET = 12u,
     DIAGNOSTICS_EXPECTED_ENCODER_OFFSET = 64u,
     DIAGNOSTICS_EXPECTED_RS485_OFFSET = 92u,
-    DIAGNOSTICS_EXPECTED_PROTOCOL_OFFSET = 136u
+    DIAGNOSTICS_EXPECTED_PROTOCOL_OFFSET = 136u,
+    DIAGNOSTICS_EXPECTED_CURRENT_LOOP_OFFSET = 184u
 };
 
 _Static_assert(sizeof(diagnostics_record_t) == DIAGNOSTICS_EXPECTED_RECORD_SIZE,
@@ -40,6 +41,9 @@ _Static_assert(offsetof(diagnostics_record_t, rs485_status) ==
 _Static_assert(offsetof(diagnostics_record_t, native_protocol_ready) ==
                    DIAGNOSTICS_EXPECTED_PROTOCOL_OFFSET,
                "diagnostics ABI schema-3 prefix changed");
+_Static_assert(offsetof(diagnostics_record_t, current_loop_ready) ==
+                   DIAGNOSTICS_EXPECTED_CURRENT_LOOP_OFFSET,
+               "diagnostics ABI schema-4 prefix changed");
 
 volatile diagnostics_record_t g_diagnostics;
 
@@ -117,6 +121,20 @@ void diagnostics_init(uint32_t app_state,
     g_diagnostics.native_protocol_broadcasts_dropped = 0u;
     g_diagnostics.native_protocol_unexpected_message_types = 0u;
     g_diagnostics.native_protocol_transmit_rejections = 0u;
+    g_diagnostics.current_loop_ready = 0u;
+    g_diagnostics.current_loop_active = 0u;
+    g_diagnostics.current_loop_fault_flags = 0u;
+    g_diagnostics.current_loop_sample_count = 0u;
+    g_diagnostics.current_loop_a_reference_counts = 0u;
+    g_diagnostics.current_loop_b_reference_counts = 0u;
+    g_diagnostics.current_loop_a_measured_counts = 0u;
+    g_diagnostics.current_loop_b_measured_counts = 0u;
+    g_diagnostics.current_loop_phase_a_voltage_permille = 0u;
+    g_diagnostics.current_loop_phase_b_voltage_permille = 0u;
+    g_diagnostics.current_loop_duty_a1_permille = 0u;
+    g_diagnostics.current_loop_duty_a2_permille = 0u;
+    g_diagnostics.current_loop_duty_b1_permille = 0u;
+    g_diagnostics.current_loop_duty_b2_permille = 0u;
 
     diagnostics_end_update(odd_sequence);
 
@@ -217,5 +235,43 @@ void diagnostics_publish_protocol(const diagnostics_protocol_t* protocol)
         protocol->unexpected_message_types;
     g_diagnostics.native_protocol_transmit_rejections =
         protocol->transmit_rejections;
+    diagnostics_end_update(odd_sequence);
+}
+
+void diagnostics_publish_current_loop(
+    const diagnostics_current_loop_t* current_loop)
+{
+    uint32_t odd_sequence;
+
+    if (current_loop == NULL)
+    {
+        return;
+    }
+
+    odd_sequence = diagnostics_begin_update();
+    g_diagnostics.current_loop_ready = current_loop->ready;
+    g_diagnostics.current_loop_active = current_loop->active;
+    g_diagnostics.current_loop_fault_flags = current_loop->fault_flags;
+    g_diagnostics.current_loop_sample_count = current_loop->sample_count;
+    g_diagnostics.current_loop_a_reference_counts =
+        current_loop->current_a_reference_counts;
+    g_diagnostics.current_loop_b_reference_counts =
+        current_loop->current_b_reference_counts;
+    g_diagnostics.current_loop_a_measured_counts =
+        current_loop->current_a_measured_counts;
+    g_diagnostics.current_loop_b_measured_counts =
+        current_loop->current_b_measured_counts;
+    g_diagnostics.current_loop_phase_a_voltage_permille =
+        current_loop->phase_a_voltage_permille;
+    g_diagnostics.current_loop_phase_b_voltage_permille =
+        current_loop->phase_b_voltage_permille;
+    g_diagnostics.current_loop_duty_a1_permille =
+        current_loop->duty_a1_permille;
+    g_diagnostics.current_loop_duty_a2_permille =
+        current_loop->duty_a2_permille;
+    g_diagnostics.current_loop_duty_b1_permille =
+        current_loop->duty_b1_permille;
+    g_diagnostics.current_loop_duty_b2_permille =
+        current_loop->duty_b2_permille;
     diagnostics_end_update(odd_sequence);
 }

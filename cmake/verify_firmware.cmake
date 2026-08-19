@@ -48,8 +48,10 @@ require_symbol(__StackLimit 20003800)
 require_symbol(__sram2_start__ 20006000)
 require_symbol(__sram2_end__ 20008000)
 require_defined_symbol(rs485_write)
+require_defined_symbol(DMA_Channel1_IRQHandler)
 require_defined_symbol(DMA_Channel4_IRQHandler)
 require_defined_symbol(DMA_Channel5_IRQHandler)
+require_defined_symbol(TIM3_IRQHandler)
 require_defined_symbol(USART1_IRQHandler)
 
 execute_process(
@@ -69,10 +71,10 @@ if(NOT diagnostics_symbol_match)
     message(FATAL_ERROR "Required firmware symbol is missing: g_diagnostics")
 endif()
 string(TOLOWER "${CMAKE_MATCH_2}" diagnostics_size)
-if(NOT diagnostics_size STREQUAL "000000b8" AND
-   NOT diagnostics_size STREQUAL "b8")
+if(NOT diagnostics_size STREQUAL "000000f0" AND
+   NOT diagnostics_size STREQUAL "f0")
     message(FATAL_ERROR
-        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0xb8")
+        "g_diagnostics is 0x${diagnostics_size} bytes; expected 0xf0")
 endif()
 
 execute_process(

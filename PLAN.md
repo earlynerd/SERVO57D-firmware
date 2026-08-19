@@ -53,13 +53,15 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [ ] Document flash commands after the pyOCD target and unlock path are proven on hardware.
 
-Software status: firmware 0.15.0 builds, runs from the bench-proven 8 MHz HSE
+Software status: firmware 0.17.3 builds, runs from the bench-proven 8 MHz HSE
 through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
 samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
-read-only native protocol over RS-485. The 184-byte schema-4 RAM diagnostic
-record remains ABI-checked. The retained 20 kHz TIM3 PWM characterizer
-preloads and returns to the all-low vector, but bridge switching remains
-inhibited until a bounded current-loop backend owns it. Display operation, encoder motion, RS-485
+native commissioning protocol over RS-485. The 240-byte schema-5 RAM diagnostic
+record remains ABI-checked. The 20 kHz TIM3 backend preloads and returns to the
+all-low vector. After zero calibration, a hold-to-run commissioning path can
+grant authority to a bounded fixed-point A/B current loop with low-zero
+sign-magnitude modulation, raw-count overcurrent trips, and a timer deadline
+guardian. Display operation, encoder motion, RS-485
 command/response, and stable bridge-disabled ADC readings are bench-proven.
 Reset waveforms, SRAM2 and IWDG details, debugger-visible diagnostics,
 exception behavior, and physical bridge safety still require explicit hardware
@@ -122,11 +124,12 @@ Go criterion: scoped gate and bridge-node waveforms remain safe under normal ope
 
 Goal: regulate winding current before attempting position control.
 
-- [ ] Trigger ADC conversions at deterministic quiet points in the PWM cycle.
+- [ ] Bench-validate the 65%-phase TIM2 compare-ISR trigger under switched current and quantify switching-edge contamination on both phases.
 - [x] Calibrate PA1/PA2 offsets independently at every safe startup using 32 bridge-zeroed snapshots.
 - [x] Convert ADC readings to signed milliamperes from the 20 mOhm shunt and 6.65 amplifier gain; nominal 3.3 V reference is used until reference accuracy is measured.
-- [ ] Implement hard clamps independent of requested current.
-- [ ] Implement the A/B winding current controllers and anti-windup behavior.
+- [x] Implement independent requested-current, raw overcurrent, phase-voltage, and absolute-duty bounds.
+- [x] Implement fixed-point A/B winding PI controllers with conditional anti-windup and low-zero sign-magnitude modulation.
+- [x] Run the controller from every completed two-rank DMA sequence and latch ADC, invalid-output, PWM-write, and missed-update faults to the common all-low bridge path.
 - [ ] Test first into a non-motor load or at very low bus voltage when practical.
 - [ ] Verify sine/cosine current commands at progressively higher current.
 - [ ] Characterize current-loop bandwidth, noise, saturation, and thermal behavior.

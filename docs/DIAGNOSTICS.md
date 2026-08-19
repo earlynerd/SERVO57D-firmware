@@ -6,30 +6,30 @@ post-link tests. The record has not yet been read from physical hardware.
 ## Purpose
 
 The first diagnostic channel is a structured RAM record exported as the ELF
-symbol `g_diagnostics`. It reports boot, active encoder, DMA-backed RS-485, and
-native-protocol state without emitting unsolicited serial traffic. Display and
-passive-ADC and user-input monitoring are advertised as capabilities, but their
-live state and samples are not fields in schema 4.
+symbol `g_diagnostics`. It reports boot, active encoder, DMA-backed RS-485,
+native-protocol, and current-loop state without emitting unsolicited serial
+traffic. Display and user-input monitoring are advertised as capabilities, but
+their live state is not included.
 
 The record is not assigned a fixed SRAM address. A debugger locates it through
 symbols in the matching `mks57d.elf`. Native commands may later expose selected
 diagnostic semantics, but no transport may expose the in-memory C layout as a
 wire payload.
 
-## Version 4 layout
+## Version 5 layout
 
-All fields are naturally aligned 32-bit unsigned values. Schema version 4 is
-184 bytes. The original 64-byte schema-1, 92-byte schema-2, and 136-byte
-schema-3 prefixes are unchanged; native-protocol fields are appended.
+All fields are naturally aligned 32-bit unsigned values. Schema version 5 is
+240 bytes. The original 64-byte schema-1, 92-byte schema-2, 136-byte schema-3,
+and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 
 | Offset | Field | Meaning |
 | ---: | --- | --- |
 | 0 | `magic` | `0x4D4B5335` record identifier |
-| 4 | `schema_version` | Record schema, currently `4` |
-| 8 | `record_size` | Total bytes available, currently `184` |
+| 4 | `schema_version` | Record schema, currently `5` |
+| 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.14.0` |
-| 20 | `capabilities` | Bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, and bridge-characterizer capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.17.3` |
+| 20 | `capabilities` | Bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, bridge-characterizer, and current-loop capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -70,6 +70,24 @@ schema-3 prefixes are unchanged; native-protocol fields are appended.
 | 172 | `native_protocol_broadcasts_dropped` | Valid broadcasts dropped because the first commands are not broadcast-safe |
 | 176 | `native_protocol_unexpected_message_types` | Responses or events observed by the request server and ignored |
 | 180 | `native_protocol_transmit_rejections` | Replies rejected because encoding or the bounded TX path was unavailable |
+| 184 | `current_loop_ready` | One after zero calibration and backend initialization |
+| 188 | `current_loop_active` | One while Enter-held bridge authority is active |
+| 192 | `current_loop_fault_flags` | Latched phase-loop and backend fault bitmap |
+| 196 | `current_loop_sample_count` | DMA samples accepted by the active loop |
+| 200 | `current_loop_a_reference_counts` | Signed A reference encoded in two's-complement 32-bit form |
+| 204 | `current_loop_b_reference_counts` | Signed B reference encoded in two's-complement 32-bit form |
+| 208 | `current_loop_a_measured_counts` | Latest signed A feedback relative to its zero |
+| 212 | `current_loop_b_measured_counts` | Latest signed B feedback relative to its zero |
+| 216 | `current_loop_phase_a_voltage_permille` | Latest signed A phase-voltage request |
+| 220 | `current_loop_phase_b_voltage_permille` | Latest signed B phase-voltage request |
+| 224 | `current_loop_duty_a1_permille` | Latest staged A1 duty |
+| 228 | `current_loop_duty_a2_permille` | Latest staged A2 duty |
+| 232 | `current_loop_duty_b1_permille` | Latest staged B1 duty |
+| 236 | `current_loop_duty_b2_permille` | Latest staged B2 duty |
+
+`current_loop_fault_flags` uses bits 0 invalid sample, 1 A overcurrent, 2 B
+overcurrent, 3 invalid reference, 4 invalid modulator output, 16 ADC/DMA, 17
+PWM backend, 18 missed control deadline, and 19 internal backend failure.
 
 The format is append-only within a schema: new fields may be appended and `record_size` increased, but existing fields must not be reordered or reinterpreted. An incompatible change increments `schema_version` and receives a separate consumer path.
 
@@ -79,7 +97,8 @@ The cooperative foreground loop is the sole writer. It publishes after every
 boot gate, immediately after watchdog initialization, after each 250 ms
 heartbeat, after each 10 ms encoder attempt, after RS-485 initialization or a
 transport failure, after each non-empty RS-485 foreground drain, and
-immediately before entering a watchdog-related panic.
+after each 10 ms current-loop snapshot, and immediately before entering a
+watchdog-related panic.
 
 A live reader should:
 
@@ -105,7 +124,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 During first safe bring-up:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.14.0`, schema is 4, and record size is 184;
+- confirm `firmware_version` decodes to `0.17.3`, schema is 5, and record size is 240;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
@@ -118,6 +137,9 @@ During first safe bring-up:
   agree with scoped PC13 and final-stop-bit timing;
 - send valid and deliberately malformed native frames and confirm response,
   COBS, length, CRC, address, broadcast, type, and TX-rejection counters;
+- during bounded current commissioning, confirm active, sample count,
+  references, measured currents, staged duties, and any latched fault agree
+  with the scoped signals;
 - leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.
 
 RS-485 command/response behavior is bench-proven, while the diagnostic record

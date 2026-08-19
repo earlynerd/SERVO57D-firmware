@@ -29,6 +29,8 @@
 #include "mks57d/native_protocol.h"
 #include "mks57d/motion_profile.h"
 #include "mks57d/pi_controller.h"
+#include "mks57d/phase_current_loop.h"
+#include "mks57d/rotating_current_test.h"
 #include "mks57d/pulse_input_display.h"
 #include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
@@ -71,6 +73,21 @@ typedef struct
     size_t length;
     uint8_t bytes[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
 } mock_protocol_tx_t;
+
+typedef struct
+{
+    command_commissioning_status_t status;
+    command_encoder_status_t encoder_status;
+    command_current_test_config_t requested_config;
+    uint8_t requested_leg;
+    uint32_t requested_duration_millis;
+    size_t status_calls;
+    size_t configure_calls;
+    size_t start_calls;
+    size_t stop_calls;
+    size_t boot_status_calls;
+    size_t encoder_status_calls;
+} mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
 {
@@ -251,6 +268,76 @@ static bool mock_protocol_send(void* context,
     return true;
 }
 
+static command_status_t mock_commissioning_get_status(
+    void* context,
+    command_commissioning_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->status_calls;
+    *status = mock->status;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_configure(
+    void* context,
+    const command_current_test_config_t* requested,
+    command_current_test_config_t* applied)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->configure_calls;
+    mock->requested_config = *requested;
+    *applied = *requested;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_start(
+    void* context,
+    uint8_t selected_leg,
+    uint32_t duration_millis)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->start_calls;
+    mock->requested_leg = selected_leg;
+    mock->requested_duration_millis = duration_millis;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_stop(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->stop_calls;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_get_boot_status(
+    void* context,
+    command_boot_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->boot_status_calls;
+    status->schema_version = 1u;
+    status->reset_flags = 0x28000000u;
+    status->retained_panic = 15u;
+    status->uptime_millis = 0x01020304u;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_get_encoder_status(
+    void* context,
+    command_encoder_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->encoder_status_calls;
+    *status = mock->encoder_status;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -262,6 +349,33 @@ static bool init_native_server(native_protocol_server_t* server,
         .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
         .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
         .capabilities = MOCK_PROTOCOL_CAPABILITIES,
+    };
+
+    return native_protocol_server_init(
+        server,
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        &context,
+        mock_protocol_send,
+        transmit);
+}
+
+static bool init_commissioning_server(native_protocol_server_t* server,
+                                      mock_protocol_tx_t* transmit,
+                                      mock_commissioning_t* commissioning)
+{
+    const command_service_context_t context = {
+        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
+        .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
+        .commissioning = {
+            .context = commissioning,
+            .get_status = mock_commissioning_get_status,
+            .configure = mock_commissioning_configure,
+            .start = mock_commissioning_start,
+            .stop = mock_commissioning_stop,
+            .get_boot_status = mock_commissioning_get_boot_status,
+            .get_encoder_status = mock_commissioning_get_encoder_status,
+        },
     };
 
     return native_protocol_server_init(
@@ -418,16 +532,19 @@ static void test_diagnostics_record_abi(void)
         offsetof(diagnostics_record_t, rs485_status);
     volatile size_t protocol_offset =
         offsetof(diagnostics_record_t, native_protocol_ready);
+    volatile size_t current_loop_offset =
+        offsetof(diagnostics_record_t, current_loop_ready);
     volatile uint32_t capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT;
 
     EXPECT_TRUE(magic == 0x4D4B5335u);
-    EXPECT_TRUE(schema == 4u);
-    EXPECT_TRUE(record_size == 184u);
+    EXPECT_TRUE(schema == 5u);
+    EXPECT_TRUE(record_size == 240u);
     EXPECT_TRUE(sequence_offset == 12u);
     EXPECT_TRUE(panic_offset == 48u);
     EXPECT_TRUE(encoder_offset == 64u);
     EXPECT_TRUE(rs485_offset == 92u);
     EXPECT_TRUE(protocol_offset == 136u);
+    EXPECT_TRUE(current_loop_offset == 184u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_NATIVE_PROTOCOL) != 0u);
     EXPECT_TRUE((capabilities &
@@ -436,6 +553,8 @@ static void test_diagnostics_record_abi(void)
                  DIAGNOSTICS_CAPABILITY_PASSIVE_ADC) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_USER_INPUTS) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_CURRENT_LOOP) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER) != 0u);
 }
@@ -846,6 +965,7 @@ static void test_adc_display_labels_channels_and_rejects_invalid_values(void)
     uint8_t current_a[ADC_DISPLAY_FRAME_BYTES];
     uint8_t current_b[ADC_DISPLAY_FRAME_BYTES];
     uint8_t vbus[ADC_DISPLAY_FRAME_BYTES];
+    uint8_t fault[ADC_DISPLAY_FRAME_BYTES];
     uint8_t invalid[ADC_DISPLAY_FRAME_BYTES];
     uint8_t out_of_range[ADC_DISPLAY_FRAME_BYTES];
 
@@ -879,6 +999,11 @@ static void test_adc_display_labels_channels_and_rejects_invalid_values(void)
                                    ADC_DISPLAY_VBUS,
                                    ADC_SAMPLE_RAW_MAX,
                                    true));
+    EXPECT_TRUE(adc_display_render(fault,
+                                   sizeof(fault),
+                                   ADC_DISPLAY_FAULT,
+                                   19u,
+                                   true));
     EXPECT_TRUE(adc_display_render(invalid,
                                    sizeof(invalid),
                                    ADC_DISPLAY_CURRENT_A,
@@ -892,6 +1017,8 @@ static void test_adc_display_labels_channels_and_rejects_invalid_values(void)
 
     EXPECT_TRUE(memcmp(current_a, current_b, sizeof(current_a)) != 0);
     EXPECT_TRUE(memcmp(current_a, vbus, sizeof(current_a)) != 0);
+    EXPECT_TRUE(memcmp(current_a, fault, sizeof(current_a)) != 0);
+    EXPECT_TRUE(memcmp(vbus, fault, sizeof(vbus)) != 0);
     EXPECT_TRUE(memcmp(invalid, out_of_range, sizeof(invalid)) == 0);
 }
 
@@ -1454,6 +1581,212 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[2] == 0u);
     EXPECT_TRUE(response.payload[3] == 0xA5u);
     EXPECT_TRUE(response.payload[4] == 0x5Au);
+}
+
+static void test_native_protocol_commissioning_console_round_trip(void)
+{
+    static const uint8_t configure_payload[] = {
+        0x00u, 0x2Au, 0x00u, 0x00u, 0x03u, 0xE8u
+    };
+    static const uint8_t start_payload[] = {
+        0x02u, 0x00u, 0x00u, 0x13u, 0x88u
+    };
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    mock_commissioning_t commissioning = {
+        .status = {
+            .schema_version = 2u,
+            .flags = 0x000007FFu,
+            .raw_input_levels = 0xA5u,
+            .debounced_input_levels = 0x5Au,
+            .adc_status = 3u,
+            .selected_leg = 2u,
+            .fault_flags = 0x00040000u,
+            .sample_count = 0x01020304u,
+            .current_a_raw = 0x0810u,
+            .current_b_raw = 0x0820u,
+            .current_a_zero_raw = 0x0800u,
+            .current_b_zero_raw = 0x0801u,
+            .current_a_reference_counts = -25,
+            .current_b_reference_counts = 24,
+            .current_a_measured_counts = -3,
+            .current_b_measured_counts = 4,
+            .phase_a_voltage_permille = -100,
+            .phase_b_voltage_permille = 99,
+            .duty_a1_permille = 450u,
+            .duty_a2_permille = 550u,
+            .duty_b1_permille = 549u,
+            .duty_b2_permille = 451u,
+            .test_amplitude_counts = 25u,
+            .maximum_test_amplitude_counts = 50u,
+            .hard_current_limit_counts = 100u,
+            .phase_voltage_limit_permille = 100u,
+            .test_frequency_millihz = 500u,
+            .remote_run_remaining_millis = 4321u,
+            .retained_panic = 15u,
+            .watchdog_reset = 1u,
+        },
+        .encoder_status = {
+            .schema_version = 1u,
+            .status = 1u,
+            .transport_status = 0u,
+            .angle_raw = 0x2345u,
+            .flags = 0x02u,
+            .sample_count = 0x01020304u,
+            .error_count = 0x05060708u,
+            .last_attempt_millis = 0x090A0B0Cu,
+        },
+    };
+    native_protocol_frame_t response;
+    size_t wire_length;
+
+    EXPECT_TRUE(init_commissioning_server(
+        &server,
+        &transmit,
+        &commissioning));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        20u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_COMMISSIONING_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 64u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 2u);
+    EXPECT_TRUE(response.payload[2] == 0u);
+    EXPECT_TRUE(response.payload[5] == 0xFFu);
+    EXPECT_TRUE(response.payload[6] == 0xA5u);
+    EXPECT_TRUE(response.payload[7] == 0x5Au);
+    EXPECT_TRUE(response.payload[26] == 0xFFu);
+    EXPECT_TRUE(response.payload[27] == 0xE7u);
+    EXPECT_TRUE(response.payload[54] == 0u);
+    EXPECT_TRUE(response.payload[57] == 0xF4u);
+    EXPECT_TRUE(response.payload[60] == 0x10u);
+    EXPECT_TRUE(response.payload[61] == 0xE1u);
+    EXPECT_TRUE(response.payload[62] == 15u);
+    EXPECT_TRUE(response.payload[63] == 1u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        21u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_CONFIGURE_CURRENT_TEST,
+        configure_payload,
+        sizeof(configure_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.configure_calls == 1u);
+    EXPECT_TRUE(commissioning.requested_config.amplitude_counts == 42u);
+    EXPECT_TRUE(commissioning.requested_config.frequency_millihz == 1000u);
+    EXPECT_TRUE(response.payload_length == 7u);
+    EXPECT_TRUE(response.payload[1] == 0u);
+    EXPECT_TRUE(response.payload[2] == 42u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        22u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_START_CURRENT_TEST,
+        start_payload,
+        sizeof(start_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.start_calls == 1u);
+    EXPECT_TRUE(commissioning.requested_leg == 2u);
+    EXPECT_TRUE(commissioning.requested_duration_millis == 5000u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        23u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_STOP_CURRENT_TEST,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.stop_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        24u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_BOOT_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.boot_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 11u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 0x28u);
+    EXPECT_TRUE(response.payload[6] == 15u);
+    EXPECT_TRUE(response.payload[7] == 1u);
+    EXPECT_TRUE(response.payload[10] == 4u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        25u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_ENCODER_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.encoder_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 19u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 1u);
+    EXPECT_TRUE(response.payload[3] == 0u);
+    EXPECT_TRUE(response.payload[4] == 0x23u);
+    EXPECT_TRUE(response.payload[5] == 0x45u);
+    EXPECT_TRUE(response.payload[6] == 0x02u);
+    EXPECT_TRUE(response.payload[7] == 0x01u);
+    EXPECT_TRUE(response.payload[10] == 0x04u);
+    EXPECT_TRUE(response.payload[11] == 0x05u);
+    EXPECT_TRUE(response.payload[14] == 0x08u);
+    EXPECT_TRUE(response.payload[15] == 0x09u);
+    EXPECT_TRUE(response.payload[18] == 0x0Cu);
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
@@ -2874,6 +3207,189 @@ static void test_application_core_invalid_step_stream_faults_immediately(void)
     EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
 }
 
+static phase_current_loop_config_t test_phase_current_loop_config(void)
+{
+    const phase_current_loop_config_t config = {
+        .current_a_zero_raw = 2040u,
+        .current_b_zero_raw = 2050u,
+        .reference_limit_counts = 50u,
+        .hard_current_limit_counts = 100u,
+        .proportional_gain_q16_per_count =
+            2 * (int32_t)PHASE_CURRENT_LOOP_Q16_ONE,
+        .integral_gain_q16_per_count_per_step =
+            (int32_t)PHASE_CURRENT_LOOP_Q16_ONE / 16,
+        .phase_voltage_limit_permille = 200u,
+        .duty_margin_permille = 100u,
+        .current_a_polarity = 1,
+        .current_b_polarity = -1,
+    };
+
+    return config;
+}
+
+static void test_phase_current_loop_generates_low_zero_bridge_duties(void)
+{
+    const phase_current_loop_config_t config =
+        test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    EXPECT_TRUE(phase_current_loop_config_is_valid(&config));
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
+                                                        &config,
+                                                        20,
+                                                        -10));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step(&loop,
+                                        &config,
+                                        config.current_a_zero_raw,
+                                        config.current_b_zero_raw,
+                                        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille > 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille < 0);
+    EXPECT_TRUE(output.duty_permille[0] == 0u);
+    EXPECT_TRUE(output.duty_permille[1] ==
+                (uint16_t)output.phase_a_voltage_permille);
+    EXPECT_TRUE(output.duty_permille[2] == 0u);
+    EXPECT_TRUE(output.duty_permille[3] ==
+                (uint16_t)(-output.phase_b_voltage_permille));
+
+    phase_current_loop_stop(&loop);
+    EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
+                                                        &config,
+                                                        -20,
+                                                        10));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step(&loop,
+                                        &config,
+                                        config.current_a_zero_raw,
+                                        config.current_b_zero_raw,
+                                        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille < 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille > 0);
+    EXPECT_TRUE(output.duty_permille[0] ==
+                (uint16_t)(-output.phase_a_voltage_permille));
+    EXPECT_TRUE(output.duty_permille[1] == 0u);
+    EXPECT_TRUE(output.duty_permille[2] ==
+                (uint16_t)output.phase_b_voltage_permille);
+    EXPECT_TRUE(output.duty_permille[3] == 0u);
+}
+
+static void test_phase_current_loop_hard_limit_latches_both_polarities(void)
+{
+    const phase_current_loop_config_t config =
+        test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(!phase_current_loop_step(
+        &loop,
+        &config,
+        (uint16_t)(config.current_a_zero_raw +
+                   config.hard_current_limit_counts + 1u),
+        (uint16_t)(config.current_b_zero_raw -
+                   config.hard_current_limit_counts - 1u),
+        &output));
+    EXPECT_TRUE((loop.fault_flags &
+                 PHASE_CURRENT_LOOP_FAULT_OVERCURRENT_A) != 0u);
+    EXPECT_TRUE((loop.fault_flags &
+                 PHASE_CURRENT_LOOP_FAULT_OVERCURRENT_B) != 0u);
+    EXPECT_TRUE(!loop.running);
+    EXPECT_TRUE(output.current_a_measured_counts == 101);
+    EXPECT_TRUE(output.current_b_measured_counts == 101);
+    EXPECT_TRUE(output.duty_permille[0] == 0u);
+    EXPECT_TRUE(!phase_current_loop_start(&loop));
+}
+
+static void test_phase_current_loop_rejects_excess_reference(void)
+{
+    const phase_current_loop_config_t config =
+        test_phase_current_loop_config();
+    phase_current_loop_t loop;
+
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(!phase_current_loop_set_reference_counts(
+        &loop,
+        &config,
+        (int16_t)(config.reference_limit_counts + 1u),
+        0));
+    EXPECT_TRUE((loop.fault_flags &
+                 PHASE_CURRENT_LOOP_FAULT_INVALID_REFERENCE) != 0u);
+    EXPECT_TRUE(!phase_current_loop_start(&loop));
+}
+
+static void test_phase_current_loop_anti_windup_recovers_from_saturation(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+    unsigned int step;
+
+    config.proportional_gain_q16_per_count =
+        20 * (int32_t)PHASE_CURRENT_LOOP_Q16_ONE;
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
+                                                        &config,
+                                                        50,
+                                                        0));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    for (step = 0u; step < 1000u; ++step)
+    {
+        EXPECT_TRUE(phase_current_loop_step(&loop,
+                                            &config,
+                                            config.current_a_zero_raw,
+                                            config.current_b_zero_raw,
+                                            &output));
+        EXPECT_TRUE(output.phase_a_voltage_permille == 200);
+    }
+    EXPECT_TRUE(loop.current_a_integrator_q16 == 0);
+
+    EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
+                                                        &config,
+                                                        0,
+                                                        0));
+    EXPECT_TRUE(phase_current_loop_step(&loop,
+                                        &config,
+                                        config.current_a_zero_raw,
+                                        config.current_b_zero_raw,
+                                        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.duty_permille[0] == 0u);
+    EXPECT_TRUE(output.duty_permille[1] == 0u);
+    EXPECT_TRUE(output.duty_permille[2] == 0u);
+    EXPECT_TRUE(output.duty_permille[3] == 0u);
+}
+
+static void test_rotating_current_test_generates_quadrature_references(void)
+{
+    rotating_current_test_t generator = {0};
+    int16_t current_a;
+    int16_t current_b;
+
+    EXPECT_TRUE(rotating_current_test_init(&generator,
+                                           40,
+                                           0x40000000u,
+                                           0u));
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(current_a == 40);
+    EXPECT_TRUE(current_b == 0);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(current_a == 0);
+    EXPECT_TRUE(current_b == 40);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(current_a == -40);
+    EXPECT_TRUE(current_b == 0);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -2920,6 +3436,7 @@ int main(void)
     test_command_service_rejects_invalid_identity_payload();
     test_native_protocol_ping_round_trip_handles_zero_bytes();
     test_native_protocol_reports_identity_and_capabilities();
+    test_native_protocol_commissioning_console_round_trip();
     test_native_protocol_rejects_bad_crc_and_resynchronizes();
     test_native_protocol_discards_oversize_then_resynchronizes();
     test_native_protocol_rejects_bad_cobs_and_unknown_version();
@@ -2937,6 +3454,11 @@ int main(void)
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();
+    test_phase_current_loop_generates_low_zero_bridge_duties();
+    test_phase_current_loop_hard_limit_latches_both_polarities();
+    test_phase_current_loop_rejects_excess_reference();
+    test_phase_current_loop_anti_windup_recovers_from_saturation();
+    test_rotating_current_test_generates_quadrature_references();
     test_motion_manager_enforces_authority_and_idempotency();
     test_motion_manager_lease_expiry_stops_then_disables();
     test_motion_manager_keepalive_is_explicit_and_retries_stay_safe();

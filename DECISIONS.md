@@ -382,3 +382,94 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** The 4 MHz first-image clock leaves no practical execution budget after the 44 microsecond current ADC sequence in a 50 microsecond PWM period. The N32L40x manual documents the 64 MHz maximum, HSE x8 encoding, Flash latency, APB limits, and timer multiplier; firmware 0.15.0 then passed bench boot and peripheral checks.
 - **Supersedes:** “Keep the first image on reset-default 4 MHz MSI.” MSI remains only the reset/startup source and safe pre-PLL state.
 - **Affects:** `firmware/src/platform/system.c`, platform clock API, SysTick, ADC, TIM3, I2C1, SPI1, USART1, diagnostics, firmware version 0.15.0
+
+## 2026-08-18 — Route documentation by task instead of requiring full-history reading
+
+- **Decision:** Keep `README.md` as the concise current safety/status snapshot, use `docs/README.md` to route task-specific reading, require only the latest 10 decisions for structural work, and reserve full `DECISIONS.md`, `PLAN.md`, and `docs/BRINGUP.md` reads for audits/conflicts, gate or scope changes, and bench work respectively.
+- **Why:** The blanket prerequisite had grown beyond 9,000 words and duplicated live status across several files, already leaving a stale next-gate claim in the README.
+- **Supersedes:** The universal pre-change reading rule in `AGENTS.md` and `CONTRIBUTING.md`.
+- **Affects:** `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, `docs/README.md`, documentation maintenance and onboarding
+
+## 2026-08-18 — Add a bounded interrupt-owned current-loop commissioning path
+
+- **Decision:** Firmware 0.16.0 links fixed-point A/B PI control into the hardware image, triggers two 7.5-cycle current samples from TIM2 CC2 at 58% of each TIM3 period, stages symmetric four-leg PWM, and grants authority only through released-then-held Enter with independent reference, raw-current, phase-voltage, duty, DMA/PWM, and missed-update bounds converging on the direct-GPIO all-low path.
+- **Why:** The bench-proven carrier, channel order, DMA transport, and zero calibration are sufficient to commission a deliberately low-energy loop without placing floating-point transforms or foreground work in the fast path; the delayed low-zero sample and conservative 150 mA nominal rotating reference make the remaining waveform and feedback-sign questions explicit bench gates.
+- **Supersedes:** The active carrier-boundary sampling contract in “Capture both current channels from the TIM3 carrier boundary” and firmware 0.15.0's permanent `RUN` suppression; the earlier acquisition remains historical bench evidence.
+- **Affects:** `firmware/src/platform/adc1.c`, `tim2_current_trigger.c`, `tim3_bridge_pwm.c`, `current_loop_backend.c`, `firmware/src/control/phase_current_loop.c`, `firmware/src/main.c`, Phase 5 commissioning and safety documentation
+
+## 2026-08-18 — Append current-loop state to diagnostic schema 5
+
+- **Decision:** Preserve the complete 184-byte schema-4 prefix and append 56 bytes of current-loop readiness, authority, fault, sample, reference, feedback, voltage, and four-duty state for a 240-byte schema-5 `g_diagnostics` record.
+- **Why:** The first switched-current commissioning path needs debugger-visible evidence that can be correlated with scope captures without adding unsolicited traffic or reading ISR-owned objects inconsistently.
+- **Supersedes:** Diagnostic schema 4 as the current producer format; its prefix and native-protocol fields remain unchanged.
+- **Affects:** `firmware/include/mks57d/diagnostics.h`, `firmware/src/app/diagnostics.c`, host/post-link ABI checks, `docs/DIAGNOSTICS.md`
+
+## 2026-08-18 — Enable the internal TIM2 CC2 event source
+
+- **Decision:** Firmware 0.16.1 enables TIM2 capture/compare channel 2 in frozen output-compare mode while leaving its GPIO unconfigured. The counter remains reset from TIM3 ITR2 and the CC2 match at 58% remains the ADC regular trigger.
+- **Why:** Firmware 0.16.0 selected TIM2 CC2 in the ADC but left `TIM2_CCEN.CC2EN` clear, so the newly introduced delayed trigger produced no accepted DMA snapshots on hardware and the OLED remained at `A-------mA`. The N32L40x output-compare setup requires the selected compare channel to be enabled even when it is used only as an internal event.
+- **Supersedes:** The incomplete TIM2 setup in “Add a bounded interrupt-owned current-loop commissioning path”; its trigger phase, controller bounds, and authority contract are unchanged.
+- **Affects:** `firmware/src/platform/tim2_current_trigger.c`, synchronous ADC startup, firmware version 0.16.1
+
+## 2026-08-18 — Separate proven ADC startup from switched-current sample timing
+
+- **Decision:** Firmware 0.16.3 retains the bench-proven DMA-before-ADC and ADC-before-PWM initialization order, but does not use TIM3 update as the switched-current conversion trigger. TIM2 resets from TIM3 update and compares at 65% of the carrier; its bounded interrupt software-starts the two-rank ADC sequence with 7.5-cycle apertures. A current-loop shutdown is latched visibly as `F####`, using the one-based position of the first set fault bit.
+- **Why:** Restoring the entire firmware 0.13.0 acquisition configuration in 0.16.2 recovered ADC samples after the failed direct TIM2_CC2 trigger, but it also restored sampling exactly at the switching boundary. That timing had been accepted only for bridge-disabled acquisition proof. The compare-ISR path keeps the proven ADC/DMA construction, bypasses the internal trigger route that produced no samples in both 0.16.0 and 0.16.1, and places both sample apertures outside the loop's bounded 45%-55% switching window.
+- **Supersedes:** The active direct TIM3-update trigger restored in firmware 0.16.2 and the direct TIM2_CC2-to-ADC route in “Add a bounded interrupt-owned current-loop commissioning path” / “Enable the internal TIM2 CC2 event source.” Historical bench evidence for the TIM3-triggered passive acquisition remains valid.
+- **Affects:** `firmware/src/platform/adc1.c`, `firmware/src/platform/tim2_current_trigger.c`, `firmware/src/main.c`, OLED fault reporting, PWM/ADC timing contract, firmware version 0.16.3
+
+## 2026-08-18 — Add a duration-bounded RS-485 current-loop commissioning console
+
+- **Decision:** Firmware 0.17.0 / native protocol 1.1 adds status, configure, start, and stop commissioning commands. The schema-1 status response serializes ADC readiness/raw/zero state, raw and debounced inputs, authority source, backend activity, faults, loop sample count, references, measurements, voltage commands, four duties, configured bounds, and remaining remote-run time. Foreground RS-485 parsing remains active during bridge authority. Remote runs are bounded to 0.1-60 seconds and stop on deadline, raw Menu, transport failure, or explicit STOP; STOP may also end local authority.
+- **Why:** The immediate-current-loop dropout is faster than the OLED refresh and the existing RS-485 service deliberately stopped parsing while RUN was active, leaving no way to distinguish an authority failure, inactive backend, absent ADC interrupts, zero references, saturation, or a latched fault from the bench. A polled binary snapshot provides the missing time-correlated internal evidence and duration-bounded authority makes it observable without relying on button timing.
+- **Supersedes:** The read-only native-command slice and the bridge-active RX/parser suspension. It is a commissioning-only exception and does not define the production motion protocol or remove the existing current/reference/voltage/duty/fault bounds.
+- **Affects:** `firmware/include/mks57d/command_service.h`, `firmware/include/mks57d/native_protocol.h`, `firmware/src/app/command_service.c`, `firmware/src/protocol/native_protocol.c`, `firmware/src/main.c`, `tools/mks57d_rs485.py`, RS-485 authority and observability contracts, firmware version 0.17.0
+
+## 2026-08-18 — Preserve current-loop faults instead of converting them into watchdog resets
+
+- **Decision:** Firmware 0.17.1 treats a failed foreground reference update with an already-latched backend fault as a normal fault stop: authority is revoked, the backend is stopped in `ZERO`, re-arming is inhibited, and fault telemetry remains queryable. Phase overcurrent paths preserve the fault-causing measured A/B counts. Commissioning status schema 2 fills the two remaining native-v1 payload bytes with retained panic code and watchdog-reset indication.
+- **Why:** The first RS-485-controlled run proved authority and the backend started with a 25-count reference but no successful sample before the board reset. The backend's immediate safe-state fault was being followed by a foreground invariant panic one millisecond later, causing IWDG reset and erasing the exact volatile fault before the next query. Expected control faults must remain evidence, while genuine fault-free API failures still panic.
+- **Supersedes:** The periodic current-reference path's unconditional `PANIC_BRIDGE_CHARACTERIZER_INIT` response and commissioning status schema 1. It does not weaken the ISR-owned immediate all-low shutdown or make a latched loop fault recoverable without reset.
+- **Affects:** `firmware/src/main.c`, `firmware/src/platform/current_loop_backend.c`, `firmware/src/control/phase_current_loop.c`, commissioning status serialization and CLI, firmware version 0.17.1
+
+## 2026-08-18 — Expose complete boot/reset evidence through native RS-485
+
+- **Decision:** Firmware 0.17.2 adds `GET_BOOT_STATUS` (`0x0104`) returning a schema byte, the complete captured RCC reset-flag mask, retained panic code, and current uptime. The host console decodes the individual reset causes with `boot`.
+- **Why:** Firmware 0.17.1 still reset immediately after bridge authority, but the post-boot commissioning summary showed neither retained panic nor IWDG reset, and the 1 A bench supply never reached constant-current mode. A one-bit watchdog summary cannot distinguish pin, power-on/brownout, software, RAM/MMU, window-watchdog, or low-power reset, and guessing among those would drive the next electrical or firmware change in different directions.
+- **Supersedes:** The commissioning status watchdog-reset summary as the only on-wire reset evidence; that field remains for convenient correlation.
+- **Affects:** Transport-independent command service, native command `0x0104`, `tools/mks57d_rs485.py`, reset-cause commissioning workflow, firmware version 0.17.2
+
+## 2026-08-18 — Start the current loop from low-zero sign-magnitude PWM
+
+- **Decision:** Firmware 0.17.3 replaces centered four-leg modulation with low-zero sign-magnitude modulation. Current-loop start stages `{0,0,0,0}`. A positive phase-voltage command PWM-drives leg 1 while leg 2 remains low; a negative command drives leg 2 while leg 1 remains low. Zero command remains the established all-low `ZERO` vector. The existing phase-voltage bound limits the active duty, and `duty_margin_permille` reserves only the upper end of its range because zero duty is now intentional.
+- **Why:** Firmware 0.17.2 accepted authority and staged `{500,500,500,500}`, then reset through the external reset-pin class before completing one ADC/current-loop sample. Full boot telemetry reported only `PINRSTF`, with no panic, watchdog, software, or power-on reset flag, and the 1 A bench supply remained in constant-voltage mode. The earlier characterizer had already run a selected leg while holding the other three low. Restoring that proven low-zero switching shape removes the simultaneous four-leg 50% transition and sharply reduces the common-mode edge activity most closely correlated with the reset; hardware confirmation remains required.
+- **Supersedes:** The symmetric four-leg modulation and 50% neutral startup in “Add a bounded interrupt-owned current-loop commissioning path.” All reference, raw-current, voltage, deadline, transport, and all-low fault bounds remain unchanged.
+- **Affects:** `firmware/src/control/phase_current_loop.c`, `firmware/src/platform/current_loop_backend.c`, phase-loop duty semantics and tests, ADC quiet-window assumptions, commissioning waveform expectations, firmware version 0.17.3
+
+## 2026-08-18 — Separate the NRST fault from the modulation change
+
+- **Decision:** Retain firmware 0.17.3's low-zero sign-magnitude modulation because it matches the proven single-leg bridge behavior and gives the 65% ADC trigger a larger quiet window, but do not treat it as the NRST-reset fix. Remove or otherwise eliminate the temporary NRST lead as the next isolated bench variable before making another firmware change.
+- **Why:** With the debugger fully disconnected, firmware 0.17.3 repeated the exact failure: START was accepted with authority/backend active and zero completed samples, the first 200 ms query timed out, and the reboot record contained only `PINRSTF` with no panic, watchdog, software, or power-on reset. The reset therefore persists without the probe and without the simultaneous four-leg 50% waveform.
+- **Supersedes:** Only the causal hypothesis in “Start the current loop from low-zero sign-magnitude PWM.” Its modulation contract remains active.
+- **Affects:** Current-loop fault diagnosis, NRST bench wiring, the next commissioning test; no firmware behavior change
+
+## 2026-08-18 — Give the delayed current sample a complete control-compute window
+
+- **Decision:** Firmware 0.17.5 moves the TIM2 current trigger from 65% to 30% of the 20 kHz carrier and compiles the ADC/DMA/current-loop/PWM interrupt path at `-O2` in Debug builds. The one-missed-update deadline limit is unchanged.
+- **Why:** Firmware 0.17.4 preserved `F0019` with zero completed loop outputs. Startup calibration proves the same TIM2-software-triggered ADC/DMA path is running before authority; the failure begins when the carrier deadline guardian is enabled. Low-zero modulation finishes every permitted PWM edge by 10%, so sampling at 30% retains a quiet interval while returning most of the period for conversion and fixed-point control instead of beginning at 65%.
+- **Supersedes:** The 65% trigger timing in “Separate proven ADC startup from switched-current sample timing”; its DMA-before-ADC order, delayed software trigger, low-zero modulation, and fault-preservation contracts remain active.
+- **Affects:** `firmware/include/mks57d/tim2_current_trigger.h`, `firmware/CMakeLists.txt`, current-loop real-time timing, firmware version 0.17.5
+
+## 2026-08-18 — Align phase-voltage signs with the asymmetric shunt placement
+
+- **Decision:** Firmware 0.17.7 defines positive A current as A- to A+ and positive B current as B+ to B-. Low-zero modulation therefore maps positive A voltage to `phaseA2`, negative A voltage to `phaseA1`, positive B voltage to `phaseB1`, and negative B voltage to `phaseB2`. The selected-leg test phases are updated so `A1` and `A2` still name the leg driven first.
+- **Why:** The schematic and physical tracing place the low-side shunts under the A+ and B- half-bridges. On firmware 0.17.6, an A1-positive command completed 75 loop samples but produced -101 A counts and tripped overcurrent, directly demonstrating that the prior uniform leg-1-positive mapping made the A controller positive feedback. The measured-current signs remain unchanged because they already match the physical winding conventions.
+- **Supersedes:** The uniform positive-command-to-leg-1 mapping in “Start the current loop from low-zero sign-magnitude PWM.” Low-zero modulation and all existing current, voltage, duty, deadline, and fault bounds remain unchanged.
+- **Affects:** `firmware/src/control/phase_current_loop.c`, `firmware/src/main.c`, selected-leg semantics, phase-current convention, firmware version 0.17.7
+
+## 2026-08-19 — Expose encoder motion during current-loop commissioning
+
+- **Decision:** Firmware 0.17.8 / native protocol 1.2 keeps the existing 100 Hz foreground encoder acquisition active during bridge authority and adds `GET_ENCODER_STATUS` (`0x0105`) with the latest 14-bit angle, encoder/SPI health, sensor flags, accepted and rejected sample counts, and last-attempt time. The host `encoder` command reads it directly, while `watch` and `run` attach an encoder snapshot to every current-loop record.
+- **Why:** Firmware 0.17.7 proved approximately 100,000 fault-free current-loop updates and a rotating current vector, but the RS-485 record could not establish that the rotor followed because encoder data existed only in debugger RAM. Commissioning telemetry must distinguish electrical commutation from mechanical motion without requiring a person at the shaft.
+- **Supersedes:** The commissioning console's current-only observability boundary in “Add a duration-bounded RS-485 current-loop commissioning console.” Existing command encodings and the full schema-2 current status remain unchanged.
+- **Affects:** foreground encoder scheduling, command service, native command `0x0105`, protocol minor version 1.2, `tools/mks57d_rs485.py`, firmware version 0.17.8

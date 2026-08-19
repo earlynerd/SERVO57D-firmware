@@ -26,6 +26,7 @@ enum
     LABEL_V_GLYPH = 13u,
     PLUS_GLYPH = 14u,
     LOWER_M_GLYPH = 15u,
+    LABEL_F_GLYPH = 16u,
     COMPACT_DIGIT_COUNT = 5u,
     COMPACT_CHARACTER_COUNT = 9u,
     COMPACT_SPACING = 1u,
@@ -55,6 +56,7 @@ static const uint8_t s_glyphs[][GLYPH_WIDTH] = {
     {0x1Fu, 0x20u, 0x40u, 0x20u, 0x1Fu}, /* V */
     {0x08u, 0x08u, 0x3Eu, 0x08u, 0x08u}, /* + */
     {0x7Cu, 0x04u, 0x18u, 0x04u, 0x78u}, /* m */
+    {0x7Fu, 0x09u, 0x09u, 0x09u, 0x01u}, /* F */
 };
 
 static void set_pixel(uint8_t* pixels, size_t x, size_t y)
@@ -173,6 +175,8 @@ static size_t label_glyph(adc_display_channel_t channel)
             return LABEL_B_GLYPH;
         case ADC_DISPLAY_VBUS:
             return LABEL_V_GLYPH;
+        case ADC_DISPLAY_FAULT:
+            return LABEL_F_GLYPH;
         default:
             return INVALID_GLYPH;
     }

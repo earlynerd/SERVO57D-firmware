@@ -174,8 +174,8 @@ The selected rates must be derived from measured ADC settling, current-loop plan
 ## Processor and cycle budget
 
 Motor-control timing is budgeted in core cycles, not average foreground load.
-The current bridge-characterization image remains at 4 MHz; the examples below apply only after
-64 MHz clock operation has passed its hardware gate:
+Firmware 0.17.3 runs the bench-proven 64 MHz clock tree. The examples below
+remain planning budgets until the control path is measured:
 
 | Candidate event rate | Core cycles between events at 64 MHz |
 | ---: | ---: |
@@ -313,9 +313,9 @@ Following error, velocity, acceleration, current, voltage request, and duty cycl
 
 The Nations 2.3.0 four-channel PWM example maps PA6, PA7, PB0, and PB1 to
 TIM3 channels 1-4 on AF2, matching the published schematic and the Delsian
-CAN-board project. Firmware 0.14.0 implements that exact mapping with an
-edge-aligned 20 kHz carrier; all four alternate-function outputs are proven on
-the purchased RS-485 board.
+CAN-board project. Firmware 0.17.3 retains that edge-aligned 20 kHz mapping and
+stages low-zero sign-magnitude current-loop duties; all four alternate-function outputs
+were proven on the purchased RS-485 board by the earlier bounded characterizer.
 
 N32L40x User Manual V2.6 documents the relevant internal triggers:
 
@@ -328,11 +328,13 @@ Because TIM3 channel 4 is also needed for PB1 bridge control, `TIM3_CC4` would p
 
 Timing strategies are therefore:
 
-1. **Implemented for characterization:** edge-aligned TIM3 PWM with update as
-   `TRGO`, triggering a two-rank `currentB`/`currentA` regular sequence captured
-   by circular DMA channel 1 once per carrier period. This is deterministic but
-   not yet proven quiet because sampling begins at the switching boundary.
-2. Synchronize an otherwise pinless auxiliary timer to the PWM timebase and use its fixed compare/TRGO event to trigger the ADC.
+1. **Implemented commissioning path:** edge-aligned TIM3 PWM with TIM2 reset
+   from update. TIM2 compare at 65% invokes a bounded ISR that software-starts
+   the two-rank `currentB`/`currentA` regular sequence. This bypasses the
+   unproven internal TIM2_CC2-to-ADC route while preserving timer-relative
+   sampling.
+2. The direct TIM3-update trigger remains only a bench-proven passive
+   acquisition fallback; it is not a quiet switched-current sampling point.
 3. Intentionally sample both halves of a center-aligned cycle and design the control rate, publication, and symmetry checks around both samples.
 
 Selection requires register-level timing review followed by oscilloscope measurements of PWM edges, amplifier settling, ADC trigger position, and interrupt latency. The timing backend must expose the same “sample accepted / preload next command” contract regardless of which strategy wins.

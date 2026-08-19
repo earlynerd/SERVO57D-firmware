@@ -20,7 +20,7 @@ A failed check is removed from `passed`, added to `failed`, and cannot be restor
 | Bit | Gate | Runtime evidence |
 | ---: | --- | --- |
 | 0 | Early memory | SRAM2 parity initialization completed and the early platform state is ready |
-| 1 | Clock | Reset-default 4 MHz MSI and bus/flash settings passed bounded verification |
+| 1 | Clock | Reset MSI, 8 MHz HSE, 64 MHz PLL, bus prescalers, and Flash settings passed bounded verification |
 | 2 | Interrupt policy | PRIGROUP read back as four preemption bits/no subpriorities |
 | 3 | Safe board I/O | Before peripheral initialization, GPIOA remains clock-gated; PB2 holds the display in reset, PD0 drives the status LED, and bridge-related GPIOB pins remain high impedance |
 | 4 | Timebase | 1 kHz SysTick configured with priority 15 under the expected grouping |
@@ -39,7 +39,7 @@ Early-memory failure cannot safely initialize the diagnostic record because SRAM
 - GPIOD is enabled and PD0 reads back as an output.
 
 This check applies only to the reset-safe state before peripheral and future
-bridge initialization. Firmware 0.14.0 subsequently preloads PA6/PA7/PB0/PB1
+bridge initialization. Firmware 0.17.3 subsequently preloads PA6/PA7/PB0/PB1
 low before configuring TIM3 channels 1-4 on AF2. Because each signal drives
 tied active-high HIN and active-low LIN inputs, this commands all four low-side
 FETs and creates a zero-voltage vector; it is not an all-FET-off state. This

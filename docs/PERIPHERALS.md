@@ -86,7 +86,7 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.14.0 samples eight passive inputs every 10 ms. PB8 Enter, PB9 Menu,
+Firmware 0.17.3 samples eight passive inputs every 10 ms. PB8 Enter, PB9 Menu,
 PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
 three consecutive changed samples update each independently. The physical keys
 are left Next, center Enter, and right Menu, and both auxiliary inputs respond
@@ -134,9 +134,10 @@ polarity, proving the TIM3 AF2 pin mapping on the tested board.
 
 Firmware 0.12.1 attempted to select TIM3 update as `TRGO` for a two-rank
 `currentB`/`currentA` sequence, but DMA channel 1 reported `ERRF` on hardware.
-Firmware 0.14.0 retains the bench-proven target two-rank `currentB/currentA`
-scan and arms ADC/DMA before TIM3 starts. Each 20 kHz TIM3 update triggers one
-sequence into the 64-halfword ring. After independent 32-sample startup zero
+Firmware 0.17.3 retains the bench-proven target two-rank `currentB/currentA`
+scan and arms ADC/DMA before TIM3 starts. TIM2 resets from TIM3 update; its
+65%-phase compare ISR software-starts one sequence into a two-halfword DMA buffer.
+After independent 32-sample startup zero
 calibration, the OLED shows both signed currents in milliamperes. Bridge `RUN`
 remains suppressed until a bounded current-loop backend owns it.
 
@@ -146,7 +147,7 @@ Production PWM and current acquisition still require:
   any separate hardware shutdown path;
 - EG3013 truth table, dead time, bootstrap, and reset behavior;
 - preload/update behavior with a non-motor load or scoped gate-driver inputs;
-- measurement of switching-edge contamination at the implemented update
+- measurement of switching-edge contamination at the implemented delayed
   trigger and, if needed, an auxiliary-timer offset trigger or deliberately
   designed dual-sample schedule;
 - debugger halt, watchdog, clock failure, malformed commands, and missed

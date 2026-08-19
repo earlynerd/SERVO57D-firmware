@@ -323,6 +323,24 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_CAPABILITIES:
             *operation = COMMAND_OPERATION_GET_CAPABILITIES;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_COMMISSIONING_STATUS:
+            *operation = COMMAND_OPERATION_GET_COMMISSIONING_STATUS;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_CONFIGURE_CURRENT_TEST:
+            *operation = COMMAND_OPERATION_CONFIGURE_CURRENT_TEST;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_START_CURRENT_TEST:
+            *operation = COMMAND_OPERATION_START_CURRENT_TEST;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_STOP_CURRENT_TEST:
+            *operation = COMMAND_OPERATION_STOP_CURRENT_TEST;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_BOOT_STATUS:
+            *operation = COMMAND_OPERATION_GET_BOOT_STATUS;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_ENCODER_STATUS:
+            *operation = COMMAND_OPERATION_GET_ENCODER_STATUS;
+            return true;
         default:
             return false;
     }
@@ -399,6 +417,123 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u32_be(&response_frame->payload[1],
                              command_response->data.capabilities);
                 payload_length = 5u;
+                break;
+
+            case COMMAND_RESPONSE_COMMISSIONING_STATUS:
+            {
+                const command_commissioning_status_t* status =
+                    &command_response->data.commissioning_status;
+
+                response_frame->payload[1] = status->schema_version;
+                write_u32_be(&response_frame->payload[2], status->flags);
+                response_frame->payload[6] = status->raw_input_levels;
+                response_frame->payload[7] =
+                    status->debounced_input_levels;
+                response_frame->payload[8] = status->adc_status;
+                response_frame->payload[9] = status->selected_leg;
+                write_u32_be(&response_frame->payload[10],
+                             status->fault_flags);
+                write_u32_be(&response_frame->payload[14],
+                             status->sample_count);
+                write_u16_be(&response_frame->payload[18],
+                             status->current_a_raw);
+                write_u16_be(&response_frame->payload[20],
+                             status->current_b_raw);
+                write_u16_be(&response_frame->payload[22],
+                             status->current_a_zero_raw);
+                write_u16_be(&response_frame->payload[24],
+                             status->current_b_zero_raw);
+                write_u16_be(&response_frame->payload[26],
+                             (uint16_t)status->current_a_reference_counts);
+                write_u16_be(&response_frame->payload[28],
+                             (uint16_t)status->current_b_reference_counts);
+                write_u16_be(&response_frame->payload[30],
+                             (uint16_t)status->current_a_measured_counts);
+                write_u16_be(&response_frame->payload[32],
+                             (uint16_t)status->current_b_measured_counts);
+                write_u16_be(&response_frame->payload[34],
+                             (uint16_t)status->phase_a_voltage_permille);
+                write_u16_be(&response_frame->payload[36],
+                             (uint16_t)status->phase_b_voltage_permille);
+                write_u16_be(&response_frame->payload[38],
+                             status->duty_a1_permille);
+                write_u16_be(&response_frame->payload[40],
+                             status->duty_a2_permille);
+                write_u16_be(&response_frame->payload[42],
+                             status->duty_b1_permille);
+                write_u16_be(&response_frame->payload[44],
+                             status->duty_b2_permille);
+                write_u16_be(&response_frame->payload[46],
+                             status->test_amplitude_counts);
+                write_u16_be(&response_frame->payload[48],
+                             status->maximum_test_amplitude_counts);
+                write_u16_be(&response_frame->payload[50],
+                             status->hard_current_limit_counts);
+                write_u16_be(&response_frame->payload[52],
+                             status->phase_voltage_limit_permille);
+                write_u32_be(&response_frame->payload[54],
+                             status->test_frequency_millihz);
+                write_u32_be(&response_frame->payload[58],
+                             status->remote_run_remaining_millis);
+                response_frame->payload[62] = status->retained_panic;
+                response_frame->payload[63] = status->watchdog_reset;
+                payload_length = 64u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_CURRENT_TEST_CONFIG:
+                write_u16_be(
+                    &response_frame->payload[1],
+                    command_response->data.current_test_config.
+                        amplitude_counts);
+                write_u32_be(
+                    &response_frame->payload[3],
+                    command_response->data.current_test_config.
+                        frequency_millihz);
+                payload_length = 7u;
+                break;
+
+            case COMMAND_RESPONSE_BOOT_STATUS:
+                response_frame->payload[1] =
+                    command_response->data.boot_status.schema_version;
+                write_u32_be(
+                    &response_frame->payload[2],
+                    command_response->data.boot_status.reset_flags);
+                response_frame->payload[6] =
+                    command_response->data.boot_status.retained_panic;
+                write_u32_be(
+                    &response_frame->payload[7],
+                    command_response->data.boot_status.uptime_millis);
+                payload_length = 11u;
+                break;
+
+            case COMMAND_RESPONSE_ENCODER_STATUS:
+                response_frame->payload[1] =
+                    command_response->data.encoder_status.schema_version;
+                response_frame->payload[2] =
+                    command_response->data.encoder_status.status;
+                response_frame->payload[3] =
+                    command_response->data.encoder_status.transport_status;
+                write_u16_be(
+                    &response_frame->payload[4],
+                    command_response->data.encoder_status.angle_raw);
+                response_frame->payload[6] =
+                    command_response->data.encoder_status.flags;
+                write_u32_be(
+                    &response_frame->payload[7],
+                    command_response->data.encoder_status.sample_count);
+                write_u32_be(
+                    &response_frame->payload[11],
+                    command_response->data.encoder_status.error_count);
+                write_u32_be(
+                    &response_frame->payload[15],
+                    command_response->data.encoder_status.
+                        last_attempt_millis);
+                payload_length = 19u;
+                break;
+
+            case COMMAND_RESPONSE_NONE:
+                payload_length = 1u;
                 break;
 
             default:

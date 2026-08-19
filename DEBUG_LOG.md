@@ -126,3 +126,82 @@
 - **Class:** system-clock-bench-validation
 - **Recently-touched?** yes
 - **Status:** Resolved and bench-proven on firmware 0.15.0.
+
+## 2026-08-18 — Delayed TIM2 current trigger produced no ADC samples
+
+- **Observation:** Firmware 0.16.0 remained at `A-------mA` indefinitely after flashing, although the immediately preceding TIM3-triggered image produced valid calibrated A/B current readings. Enabling TIM2 CC2 in firmware 0.16.1 did not change the symptom.
+- **Root cause:** The new direct TIM2_CC2-to-ADC trigger path did not produce accepted conversions on the tested board. The exact internal-event failure is unresolved; the original claim that `CC2EN` alone was the cause was disproved by the 0.16.1 bench result.
+- **Fix:** Firmware 0.16.2 restored the manufacturer-style ADC/DMA-before-TIM3 order, direct TIM3-update trigger, and 28.5-cycle apertures. Calibrated current display returned immediately, proving the ADC/DMA path remained functional.
+- **Class:** timer-trigger-path-regression
+- **Recently-touched?** yes
+- **Status:** Missing-sample regression resolved and bench-confirmed in firmware 0.16.2; exact direct TIM2_CC2 routing failure remains unexplained.
+
+## 2026-08-18 — Current loop drops out immediately after Enter
+
+- **Observation:** With a motor attached, holding Enter produces only an infinitesimal shaft movement. The OLED never captures nonzero current, and the bench supply confirms that the nominal 150 mA command is not sustained.
+- **Code audit:** An interrupt fault can stop the backend before the 200 ms OLED current refresh. The candidates are the 100-count raw trip in `phase_current_loop_step()`, PWM staging failure in `adc_current_event()`, and the consecutive-empty-update guardian in `pwm_update_event()`. Firmware 0.16.2 also sampled at TIM3 update, a switching boundary that the project log explicitly had not accepted for switched-current feedback.
+- **Fix under test:** Firmware 0.16.3 moves the trigger to a 65%-phase TIM2 compare ISR, restores 7.5-cycle current apertures, and persistently displays the first latched loop fault as `F####`. It does not change the 25-count reference, 100-count raw trip, PI gains, voltage bound, or duty bound.
+- **Class:** immediate-current-loop-dropout
+- **Recently-touched?** yes
+- **Status:** Corrected diagnostic/timing image built; bench result pending.
+
+## 2026-08-18 — OLED remains zero and button test provides no diagnostic sample
+
+- **Observation:** Firmware 0.16.3 continuously displays `00000mA`; pressing or holding Enter produces no perceptible shaft motion and no OLED fault code. The OLED's 200 ms cadence cannot show a drive interval shorter than one refresh.
+- **Code audit:** `firmware/src/main.c` drained and parsed RS-485 only while `bridge_characterizer.active` was false. The on-wire service exposed identity and capabilities but none of the ADC, input-authority, current-loop, PWM-duty, sample-count, or fault state needed to separate an input/authority failure from an interrupt/backend failure. This is an observability defect, not yet proof of the motor-current root cause.
+- **Fix under test:** Firmware 0.17.0 keeps RS-485 parsing live during RUN and adds a schema-versioned commissioning status query plus inactive-only reference configuration, duration-bounded START, and always-available STOP. The host console emits JSON snapshots before, during, and after a run.
+- **Class:** current-loop-observability-gap
+- **Recently-touched?** yes
+- **Status:** Host tests and target build pass; bench query result pending.
+
+## 2026-08-18 — RS-485 proves authority starts but no loop sample completes before reset
+
+- **Observation:** On firmware 0.17.0, the inactive RS-485 snapshot was completely ready with no faults and raw A/B exactly at their calibrated zeros. A five-second START was accepted and the first immediate snapshot showed foreground authority active, backend active, A reference 25 counts, `sample_count=0`, zero measured currents, and zero output duties. The next 200 ms query timed out. After communication returned, authority and faults were clear, `sample_count` was zero, and B had recalibrated from 2059 to 2057, proving a reset occurred.
+- **Code audit:** A fast-loop fault disables the backend in `current_loop_backend.c`. Before the 10 ms status publisher can preserve it, the 1 ms reference update in `main.c` calls `current_loop_backend_set_reference_counts()`, treats the expected rejection as an invariant failure, enters `platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT)`, and is reset by IWDG. The reset explains both the timeout and erased volatile fault. The underlying fast-loop fault remains to be identified; zero completed samples makes raw overcurrent on the first switched sample and the no-output deadline guardian the remaining discriminated outcomes.
+- **Fix under test:** Firmware 0.17.1 handles a latched backend fault as a preserved `ZERO` stop instead of a panic, retains the fault-causing measured current when the phase loop received a sample, and extends commissioning status schema 2 with retained panic and watchdog-reset evidence.
+- **Class:** current-loop-fault-evidence-erased-by-reset
+- **Recently-touched?** yes
+- **Follow-up:** Firmware 0.17.1 repeated the same sequence and reset before the second poll. After reboot, commissioning schema 2 reported retained panic 0 and no IWDG reset. The bench supply was limited to 1 A and never entered constant-current mode, excluding a sustained or supply-limited greater-than-1-A load. The reset is therefore earlier/different than the corrected foreground panic path; pin, power-on/brownout, software, and other RCC reset classes remain to be separated.
+- **Status:** Root cause of the 0.17.0 panic path resolved, but it was not the only reset mechanism. Firmware 0.17.2 adds full RCC reset flags and uptime over RS-485; exact reset cause pending one run.
+
+## 2026-08-18 — Current-loop start asserts the external reset class
+
+- **Observation:** Firmware 0.17.2 booted cleanly and reported a 70-second baseline uptime. A five-second A1 START again showed authority active, backend active, a 25-count A reference, zero completed samples, and zero published duties, then the first 200 ms follow-up timed out. After communication returned, uptime was 8.4 seconds and the complete RCC record contained only `PINRSTF` (`0x04000000`). Retained panic was zero and neither watchdog, software, nor power-on reset was reported. The 1 A bench supply had remained in constant-voltage mode.
+- **Code audit:** `firmware/src/platform/current_loop_backend.c` staged `{500,500,500,500}` before marking the loop active, so all four tied EG3013 inputs began 20 kHz 50% switching together before the first ADC completion. The bench-proven characterizer instead drove one selected TIM3 channel and held the other three at zero. `firmware/src/control/phase_current_loop.c` perpetuated the same four-leg centered switching for every command.
+- **Fix under test:** Firmware 0.17.3 starts from `{0,0,0,0}` and uses low-zero sign-magnitude duties: only one leg per commanded phase switches, with the opposing leg held low. The 10% phase-voltage limit, 25-count reference, 100-count raw trip, and all fault shutdown paths are unchanged.
+- **Class:** pwm-common-mode-reset-coupling
+- **Recently-touched?** yes
+- **Status:** Reset class resolved as external-pin reset; modulation correction built pending bench confirmation.
+
+### Follow-up — Debugger removal and low-zero modulation do not stop PINRSTF
+
+- Firmware 0.17.3 was confirmed over RS-485 with the debugger disconnected and remained healthy for 57 seconds before START. The five-second A1 command was accepted, but the next 200 ms poll again timed out before one completed loop sample. After reboot, uptime was 8.8 seconds and the sole reset flag was again `PINRSTF` (`0x04000000`).
+- This excludes the attached probe and the prior `{500,500,500,500}` startup waveform as sufficient causes. The temporary wire still soldered to NRST is the leading isolated variable and must be removed or terminated before another firmware hypothesis is tested.
+- **Status:** Unresolved external NRST assertion; no further firmware change indicated until the NRST lead is eliminated.
+
+## 2026-08-18 — Sticky ADC start flag limited synchronous acquisition to one sample
+
+- **Observation:** Firmware 0.17.5 completed startup calibration but a bridge run latched backend deadline fault `F0019` without a completed loop output. Firmware 0.17.6 restored changing current samples on the OLED and completed 75 current-loop samples during the next bounded run.
+- **Root cause:** `firmware/src/platform/adc1.c` treated `ADC_STS.STR` as a live conversion-busy flag. On the N32L40x it is a sticky regular-conversion-started status set by hardware and cleared by software, so every trigger after the first conversion was rejected. Foreground calibration also counted repeated reads of that one DMA snapshot as distinct samples.
+- **Fix:** Clear `ENDC`, `STR`, and `ENDCA` after each DMA-complete sequence, and require a fresh DMA sequence number for every foreground synchronized-current read.
+- **Class:** adc-sticky-status-misinterpreted-as-busy
+- **Recently-touched?** yes
+- **Status:** Resolved and bench-confirmed on firmware 0.17.6.
+
+## 2026-08-18 — Uniform phase-leg mapping made the A current loop positive feedback
+
+- **Observation:** Firmware 0.17.6 completed 75 loop samples after an A1 start, but measured A moved to -101 counts while the reference and A1 voltage command were positive, then latched `overcurrent_a`. The supply never reached its 1 A current limit.
+- **Root cause:** `firmware/src/control/phase_current_loop.c` mapped positive voltage to leg 1 for both windings. The board is asymmetric: A1 is A+ and the A shunt is under its low-side FET, so positive measured A current is A- to A+ and requires A2 drive. B1 is B+ while the B shunt is under B-, so positive B current correctly requires B1 drive.
+- **Fix:** Map positive A voltage to A2 and negative A voltage to A1 while retaining positive B to B1 and negative B to B2. Update the selected-leg initial phases so their names continue to identify the first driven leg.
+- **Class:** asymmetric-bridge-current-polarity
+- **Recently-touched?** yes
+- **Status:** Resolved and bench-confirmed on firmware 0.17.7. Two 150 mA one-second runs completed approximately 40,000 combined samples across all four legs without a fault; a subsequent 300 mA, 5 Hz, three-second run completed 59,900 samples without a fault or reset.
+
+## 2026-08-19 — Encoder telemetry confirms synchronized motor rotation
+
+- **Observation:** Firmware 0.17.8 ran a 50-count nominal 300 mA, 5 Hz electrical current vector for three seconds while streaming the 100 Hz encoder acquisition. During active authority the encoder moved monotonically from 9839 to 4993 counts in 2.973 seconds with no encoder or SPI errors and no sensor flags.
+- **Root cause:** No remaining motor-motion defect was observed. Earlier firmware could prove rotating stator current but could not distinguish it from a stationary rotor because encoder acquisition paused during bridge authority and was absent from RS-485 telemetry.
+- **Fix:** Keep encoder acquisition active during the current test and expose it through `GET_ENCODER_STATUS`; the host `run` stream now correlates mechanical angle with current references and duties.
+- **Class:** motor-rotation-bench-validation
+- **Recently-touched?** yes
+- **Status:** Resolved and bench-confirmed on firmware 0.17.8. Measured motion was -0.2958 revolution at -5.97 RPM versus the 6.00 RPM expected for a 5 Hz vector and 50 electrical cycles per mechanical revolution. The current loop completed 59,905 samples without a control fault or reset.

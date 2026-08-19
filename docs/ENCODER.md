@@ -61,7 +61,7 @@ foreground records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
-SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.14.0
+SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.17.3
 later claims PB0/PB1 and PA6/PA7 for bridge characterization while separate
 input monitoring reads PB7 `nEN` and configures PB8/PB9/PB12/PB13 and PA15 as
 pulled-up inputs. Encoder foreground acquisition pauses while the selected
@@ -69,7 +69,7 @@ bridge leg is toggling.
 
 ## Diagnostic fields
 
-The schema-2 encoder prefix, retained unchanged in current schema 4, contains
+The schema-2 encoder prefix, retained unchanged in current schema 5, contains
 the current MT6816 status, underlying SPI status,
 last accepted raw angle, sensor flags, accepted-sample count, error count, and
 last-attempt timestamp. Status values are defined in `mks57d/mt6816.h`; SPI

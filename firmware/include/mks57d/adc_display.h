@@ -19,6 +19,7 @@ typedef enum
     ADC_DISPLAY_CURRENT_A = 0,
     ADC_DISPLAY_CURRENT_B,
     ADC_DISPLAY_VBUS,
+    ADC_DISPLAY_FAULT,
     ADC_DISPLAY_CHANNEL_COUNT
 } adc_display_channel_t;
 

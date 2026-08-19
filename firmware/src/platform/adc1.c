@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "mks57d/dma_channels.h"
+#include "mks57d/interrupt_priority.h"
 #include "n32l40x.h"
 
 enum
@@ -13,6 +14,7 @@ enum
                          (3u << (2u * 2u)) |
                          (3u << (3u * 2u)),
     ADC_GPIO_MODE_ANALOG = ADC_GPIO_MODE_MASK,
+    ADC_SAMPLE_TIME_7CYCLES5 = 1u,
     ADC_SAMPLE_TIME_28CYCLES5 = 3u,
     ADC_SAMPLE_TIME_55CYCLES5 = 5u,
     ADC_CTRL3_RESOLUTION_12BIT = 3u,
@@ -23,13 +25,14 @@ enum
     ADC_POLL_BUDGET = 20000u,
     ADC_LDO_CONTROL_OFFSET = 0x60u,
     ADC_LDO_ENABLE_VALUE = 0x28u,
-    ADC_CURRENT_DMA_BUFFER_LENGTH = 64u,
+    ADC_CURRENT_DMA_BUFFER_LENGTH = 2u,
     ADC_CURRENT_SEQUENCE_LENGTH = 2u,
     ADC_CURRENT_SEQUENCE_LENGTH_ENCODING =
         ADC_CURRENT_SEQUENCE_LENGTH - 1u,
-    ADC_TIM3_TRGO_SELECT = ADC_CTRL2_EXTRSEL_2,
     DMA_REQUEST_ADC = 0u,
-    DMA_CURRENT_CONFIGURATION = DMA_CHCFG1_CIRC |
+    DMA_CURRENT_CONFIGURATION = DMA_CHCFG1_TXCIE |
+                                DMA_CHCFG1_ERRIE |
+                                DMA_CHCFG1_CIRC |
                                 DMA_CHCFG1_MINC |
                                 DMA_CHCFG1_PSIZE_0 |
                                 DMA_CHCFG1_MSIZE_0 |
@@ -66,6 +69,13 @@ static const adc_clock_divider_t ADC_CLOCK_DIVIDERS[] = {
 static bool s_adc1_initialized;
 static bool s_synchronous_current_started;
 static uint32_t s_capture_index;
+static volatile uint32_t s_current_snapshot_sequence;
+static uint32_t s_last_read_snapshot_sequence;
+static volatile adc1_status_t s_synchronous_status =
+    ADC1_STATUS_NOT_READY;
+static volatile adc1_current_snapshot_t s_latest_current_snapshot;
+static adc1_current_event_handler_t s_current_event_handler;
+static void* s_current_event_context;
 static volatile uint16_t
     s_current_dma_buffer[ADC_CURRENT_DMA_BUFFER_LENGTH];
 
@@ -196,6 +206,12 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     s_adc1_initialized = false;
     s_synchronous_current_started = false;
     s_capture_index = 0u;
+    s_current_snapshot_sequence = 0u;
+    s_last_read_snapshot_sequence = 0u;
+    s_synchronous_status = ADC1_STATUS_NOT_READY;
+    s_current_event_handler = NULL;
+    s_current_event_context = NULL;
+    NVIC_DisableIRQ(DMA_Channel1_IRQn);
 
     RCC->CTRL |= RCC_CTRL_HSIEN;
     if (!wait_for_mask(&RCC->CTRL, RCC_CTRL_HSIRDF, true))
@@ -348,16 +364,25 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     DMA_CH1->PADDR = 0u;
     DMA_CH1->MADDR = 0u;
     DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
+    s_current_snapshot_sequence = 0u;
+    s_last_read_snapshot_sequence = 0u;
+    s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
     DMA_CH1->PADDR = (uint32_t)(uintptr_t)&ADC->DAT;
     DMA_CH1->MADDR =
         (uint32_t)(uintptr_t)&s_current_dma_buffer[0];
     DMA_CH1->TXNUM = ADC_CURRENT_DMA_BUFFER_LENGTH;
     DMA_CH1->CHSEL = DMA_REQUEST_ADC;
     DMA_CH1->CHCFG = DMA_CURRENT_CONFIGURATION;
+
+    NVIC_DisableIRQ(DMA_Channel1_IRQn);
+    NVIC_ClearPendingIRQ(DMA_Channel1_IRQn);
+    NVIC_SetPriority(DMA_Channel1_IRQn,
+                     INTERRUPT_PRIORITY_FAST_CURRENT);
+    NVIC_EnableIRQ(DMA_Channel1_IRQn);
     DMA_CH1->CHCFG |= DMA_CHCFG1_CHEN;
 
     ADC->CTRL1 = ADC_CTRL1_SCANMD;
-    ADC->CTRL2 = ADC_TIM3_TRGO_SELECT;
+    ADC->CTRL2 = ADC_SOFTWARE_TRIGGER_SELECT;
     ADC->RSEQ1 = (ADC->RSEQ1 & ~ADC_RSEQ1_LEN) |
                  ((uint32_t)ADC_CURRENT_SEQUENCE_LENGTH_ENCODING << 20u);
     ADC->RSEQ3 =
@@ -365,8 +390,8 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
         (((uint32_t)ADC1_CURRENT_A_CHANNEL << 5u) & ADC_RSEQ3_SEQ2);
     ADC->SAMPT2 = (ADC->SAMPT2 &
                    ~(ADC_SAMPT2_SAMP2 | ADC_SAMPT2_SAMP3)) |
-                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (2u * 3u)) |
-                  ((uint32_t)ADC_SAMPLE_TIME_28CYCLES5 << (3u * 3u));
+                  ((uint32_t)ADC_SAMPLE_TIME_7CYCLES5 << (2u * 3u)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_7CYCLES5 << (3u * 3u));
     ADC->STS = 0u;
 
     ADC->CTRL2 |= ADC_CTRL2_ON;
@@ -389,66 +414,54 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
         ((ADC->CTRL2 & (ADC_CTRL2_ENDMA | ADC_CTRL2_EXTRTRIG |
                         ADC_CTRL2_EXTRSEL)) ==
          (ADC_CTRL2_ENDMA | ADC_CTRL2_EXTRTRIG |
-          ADC_TIM3_TRGO_SELECT));
-    return s_synchronous_current_started ? ADC1_STATUS_OK :
-                                           ADC1_STATUS_NOT_READY;
+           ADC_SOFTWARE_TRIGGER_SELECT));
+    if (!s_synchronous_current_started)
+    {
+        NVIC_DisableIRQ(DMA_Channel1_IRQn);
+        s_synchronous_status = ADC1_STATUS_NOT_READY;
+        return ADC1_STATUS_NOT_READY;
+    }
+
+    return ADC1_STATUS_OK;
 }
 
 adc1_status_t adc1_read_synchronized_current(
     adc1_current_snapshot_t* output)
 {
     uint32_t attempt;
+    const adc1_status_t status = s_synchronous_status;
 
     if (output == NULL)
     {
         return ADC1_STATUS_INVALID_ARGUMENT;
     }
+    if ((status != ADC1_STATUS_OK) &&
+        (status != ADC1_STATUS_NO_SAMPLE))
+    {
+        return status;
+    }
     if (!s_synchronous_current_started)
     {
         return ADC1_STATUS_NOT_READY;
     }
-    if ((DMA->INTSTS & DMA_INTSTS_ERRF1) != 0u)
-    {
-        return ADC1_STATUS_DMA_ERROR;
-    }
     for (attempt = 0u; attempt < ADC_SNAPSHOT_RETRY_LIMIT; ++attempt)
     {
-        const uint32_t remaining_before = DMA_CH1->TXNUM;
-        const bool wrapped =
-            (DMA->INTSTS & DMA_INTSTS_TXCF1) != 0u;
-        uint32_t completed;
-        uint32_t pair_start;
+        const uint32_t sequence_before = s_current_snapshot_sequence;
         uint16_t current_b_raw;
         uint16_t current_a_raw;
-        uint32_t remaining_after;
 
-        if (remaining_before > ADC_CURRENT_DMA_BUFFER_LENGTH)
-        {
-            return ADC1_STATUS_DMA_ERROR;
-        }
-
-        completed = ADC_CURRENT_DMA_BUFFER_LENGTH - remaining_before;
-        completed &= ~((uint32_t)1u);
-        if (completed >= ADC_CURRENT_SEQUENCE_LENGTH)
-        {
-            pair_start = completed - ADC_CURRENT_SEQUENCE_LENGTH;
-        }
-        else if (wrapped)
-        {
-            pair_start = ADC_CURRENT_DMA_BUFFER_LENGTH -
-                         ADC_CURRENT_SEQUENCE_LENGTH;
-        }
-        else
+        if ((sequence_before == 0u) ||
+            ((sequence_before & 1u) != 0u) ||
+            (sequence_before == s_last_read_snapshot_sequence))
         {
             return ADC1_STATUS_NO_SAMPLE;
         }
 
         __DMB();
-        current_b_raw = s_current_dma_buffer[pair_start];
-        current_a_raw = s_current_dma_buffer[pair_start + 1u];
+        current_b_raw = s_latest_current_snapshot.current_b_raw;
+        current_a_raw = s_latest_current_snapshot.current_a_raw;
         __DMB();
-        remaining_after = DMA_CH1->TXNUM;
-        if (remaining_before == remaining_after)
+        if (sequence_before == s_current_snapshot_sequence)
         {
             if ((current_b_raw > ADC_SAMPLE_RAW_MAX) ||
                 (current_a_raw > ADC_SAMPLE_RAW_MAX))
@@ -458,9 +471,110 @@ adc1_status_t adc1_read_synchronized_current(
 
             output->current_a_raw = current_a_raw;
             output->current_b_raw = current_b_raw;
+            s_last_read_snapshot_sequence = sequence_before;
             return ADC1_STATUS_OK;
         }
     }
 
     return ADC1_STATUS_BUSY;
+}
+
+bool adc1_set_current_event_handler(
+    adc1_current_event_handler_t handler,
+    void* context)
+{
+    if (!s_synchronous_current_started)
+    {
+        return false;
+    }
+
+    /* Publish context before the handler. An interrupt between the NULL store
+       and final publication safely skips one callback. */
+    s_current_event_handler = NULL;
+    __DMB();
+    s_current_event_context = context;
+    __DMB();
+    s_current_event_handler = handler;
+    __DMB();
+    return true;
+}
+
+bool adc1_trigger_synchronized_current_from_isr(void)
+{
+    if (!s_synchronous_current_started ||
+        ((ADC->STS & ADC_STS_STR) != 0u))
+    {
+        return false;
+    }
+
+    ADC->CTRL2 |= ADC_CTRL2_SWSTRRCH;
+    return true;
+}
+
+void DMA_Channel1_IRQHandler(void)
+{
+    const uint32_t flags = DMA->INTSTS;
+    adc1_current_event_handler_t handler;
+    void* context;
+
+    if ((flags & DMA_INTSTS_ERRF1) != 0u)
+    {
+        DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
+        DMA_CH1->CHCFG &= ~((uint32_t)DMA_CHCFG1_CHEN);
+        s_synchronous_status = ADC1_STATUS_DMA_ERROR;
+        s_synchronous_current_started = false;
+        handler = s_current_event_handler;
+        context = s_current_event_context;
+        if (handler != NULL)
+        {
+            handler(ADC1_STATUS_DMA_ERROR, NULL, context);
+        }
+        return;
+    }
+
+    if ((flags & DMA_INTSTS_TXCF1) != 0u)
+    {
+        adc1_current_snapshot_t snapshot;
+
+        DMA->INTCLR = DMA_INTCLR_CTXCF1 | DMA_INTCLR_CGLBF1;
+        snapshot.current_b_raw = s_current_dma_buffer[0];
+        snapshot.current_a_raw = s_current_dma_buffer[1];
+        /* STR records that a regular conversion started; it is not a live
+           busy bit. The N32L40x manual requires software to clear it. Clear
+           the completed sequence flags here so the next timed software
+           trigger is accepted instead of permanently rejecting every
+           sequence after the first one. */
+        ADC->STS = (~((uint32_t)ADC_STS_ENDC |
+                      ADC_STS_STR |
+                      ADC_STS_ENDCA)) &
+                   ADC_STATUS_WRITABLE_MASK;
+        if ((snapshot.current_b_raw > ADC_SAMPLE_RAW_MAX) ||
+            (snapshot.current_a_raw > ADC_SAMPLE_RAW_MAX))
+        {
+            DMA_CH1->CHCFG &= ~((uint32_t)DMA_CHCFG1_CHEN);
+            s_synchronous_status = ADC1_STATUS_DATA_OUT_OF_RANGE;
+            s_synchronous_current_started = false;
+            handler = s_current_event_handler;
+            context = s_current_event_context;
+            if (handler != NULL)
+            {
+                handler(ADC1_STATUS_DATA_OUT_OF_RANGE, NULL, context);
+            }
+            return;
+        }
+
+        ++s_current_snapshot_sequence;
+        __DMB();
+        s_latest_current_snapshot = snapshot;
+        __DMB();
+        ++s_current_snapshot_sequence;
+        s_synchronous_status = ADC1_STATUS_OK;
+
+        handler = s_current_event_handler;
+        context = s_current_event_context;
+        if (handler != NULL)
+        {
+            handler(ADC1_STATUS_OK, &snapshot, context);
+        }
+    }
 }

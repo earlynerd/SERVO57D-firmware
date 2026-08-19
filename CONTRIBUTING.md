@@ -4,7 +4,11 @@ The project is still deciding whether a full firmware implementation is practica
 
 ## Before proposing code
 
-- Read `README.md`, `PLAN.md`, `DECISIONS.md`, and `docs/BRINGUP.md`.
+- Read the current safety boundary and project status in `README.md`, then use
+  `docs/README.md` to select the subsystem documentation relevant to the change.
+- Read `PLAN.md` for milestone, gate, or scope changes; read the last 10 entries
+  in `DECISIONS.md` for structural changes; read `docs/BRINGUP.md` for hardware
+  tests or bench procedures.
 - State which plan gate or risk the change addresses.
 - Distinguish measured hardware facts from schematic-derived assumptions.
 - Preserve third-party license headers and identify the source and version of imported code.
@@ -20,4 +24,3 @@ The project is still deciding whether a full firmware implementation is practica
 ## Licensing
 
 The project-owned-code license is still pending. Significant outside contributions should wait until that choice is made so contributors can agree to clear terms.
-

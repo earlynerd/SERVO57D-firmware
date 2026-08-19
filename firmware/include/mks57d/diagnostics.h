@@ -8,7 +8,7 @@
 enum
 {
     DIAGNOSTICS_RECORD_MAGIC = 0x4D4B5335u,
-    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 4u,
+    DIAGNOSTICS_RECORD_SCHEMA_VERSION = 5u,
     DIAGNOSTICS_CAPABILITY_BRINGUP_IMAGE = 1u << 0,
     DIAGNOSTICS_CAPABILITY_STATUS_LED = 1u << 1,
     DIAGNOSTICS_CAPABILITY_IWDG = 1u << 2,
@@ -21,6 +21,7 @@ enum
     DIAGNOSTICS_CAPABILITY_PASSIVE_ADC = 1u << 9,
     DIAGNOSTICS_CAPABILITY_USER_INPUTS = 1u << 10,
     DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER = 1u << 11,
+    DIAGNOSTICS_CAPABILITY_CURRENT_LOOP = 1u << 12,
     DIAGNOSTICS_CAPABILITIES_CURRENT =
         DIAGNOSTICS_CAPABILITY_BRINGUP_IMAGE |
         DIAGNOSTICS_CAPABILITY_STATUS_LED |
@@ -33,7 +34,8 @@ enum
          DIAGNOSTICS_CAPABILITY_DISPLAY_I2C |
          DIAGNOSTICS_CAPABILITY_PASSIVE_ADC |
          DIAGNOSTICS_CAPABILITY_USER_INPUTS |
-         DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER
+         DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER |
+         DIAGNOSTICS_CAPABILITY_CURRENT_LOOP
 };
 
 typedef struct
@@ -77,6 +79,24 @@ typedef struct
     uint32_t unexpected_message_types;
     uint32_t transmit_rejections;
 } diagnostics_protocol_t;
+
+typedef struct
+{
+    uint32_t ready;
+    uint32_t active;
+    uint32_t fault_flags;
+    uint32_t sample_count;
+    uint32_t current_a_reference_counts;
+    uint32_t current_b_reference_counts;
+    uint32_t current_a_measured_counts;
+    uint32_t current_b_measured_counts;
+    uint32_t phase_a_voltage_permille;
+    uint32_t phase_b_voltage_permille;
+    uint32_t duty_a1_permille;
+    uint32_t duty_a2_permille;
+    uint32_t duty_b1_permille;
+    uint32_t duty_b2_permille;
+} diagnostics_current_loop_t;
 
 typedef struct
 {
@@ -126,6 +146,20 @@ typedef struct
     uint32_t native_protocol_broadcasts_dropped;
     uint32_t native_protocol_unexpected_message_types;
     uint32_t native_protocol_transmit_rejections;
+    uint32_t current_loop_ready;
+    uint32_t current_loop_active;
+    uint32_t current_loop_fault_flags;
+    uint32_t current_loop_sample_count;
+    uint32_t current_loop_a_reference_counts;
+    uint32_t current_loop_b_reference_counts;
+    uint32_t current_loop_a_measured_counts;
+    uint32_t current_loop_b_measured_counts;
+    uint32_t current_loop_phase_a_voltage_permille;
+    uint32_t current_loop_phase_b_voltage_permille;
+    uint32_t current_loop_duty_a1_permille;
+    uint32_t current_loop_duty_a2_permille;
+    uint32_t current_loop_duty_b1_permille;
+    uint32_t current_loop_duty_b2_permille;
 } diagnostics_record_t;
 
 extern volatile diagnostics_record_t g_diagnostics;
@@ -143,5 +177,7 @@ void diagnostics_publish(uint32_t app_state,
 void diagnostics_publish_encoder(const diagnostics_encoder_t* encoder);
 void diagnostics_publish_rs485(const diagnostics_rs485_t* rs485);
 void diagnostics_publish_protocol(const diagnostics_protocol_t* protocol);
+void diagnostics_publish_current_loop(
+    const diagnostics_current_loop_t* current_loop);
 
 #endif

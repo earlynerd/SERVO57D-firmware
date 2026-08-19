@@ -8,12 +8,15 @@ set(PORTABLE_CONTROL_SOURCES
     src/control/current_controller.c
     src/control/motion_profile.c
     src/control/pi_controller.c
+    src/control/phase_current_loop.c
+    src/control/rotating_current_test.c
     src/control/servo_core.c
 )
 
-# Cross-compile the production control core on every firmware build, but do
-# not link it into the bridge-characterization image. Host tests own execution until a
-# measured board backend and numerical policy are selected.
+# Cross-compile the complete portable control core on every firmware build.
+# The fixed-point phase loop and rotating commissioning reference are also
+# linked explicitly below; the outer servo/application modules remain host-only
+# until their hardware timing and motor personality are commissioned.
 add_library(mks57d_portable_control OBJECT ${PORTABLE_CONTROL_SOURCES})
 target_include_directories(mks57d_portable_control PRIVATE include)
 target_compile_features(mks57d_portable_control PRIVATE c_std_11)
@@ -40,6 +43,8 @@ set(PROJECT_SOURCES
     src/app/diagnostics.c
     src/board/board.c
     src/board/board_inputs.c
+    src/control/phase_current_loop.c
+    src/control/rotating_current_test.c
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c
     src/drivers/adc_sample.c
@@ -53,8 +58,10 @@ set(PROJECT_SOURCES
     src/drivers/ssd1306.c
     src/drivers/user_inputs.c
     src/platform/adc1.c
+    src/platform/current_loop_backend.c
     src/platform/i2c1.c
     src/platform/spi1.c
+    src/platform/tim2_current_trigger.c
     src/platform/tim3_bridge_pwm.c
     src/platform/interrupt_priority.c
     src/platform/panic.c
@@ -86,16 +93,16 @@ target_include_directories(${FIRMWARE_TARGET} PRIVATE
 # the first image on reset-default 4 MHz MSI and does not configure HSI/HSE/PLL.
 target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     N32L40X
-    MKS57D_BRIDGE_CHARACTERIZATION_IMAGE=1
+    MKS57D_CURRENT_LOOP_COMMISSIONING_IMAGE=1
     MKS57D_FIRMWARE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     MKS57D_FIRMWARE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
-# Keep an explicit target for the manually controlled characterization image.
-# Portable production control modules remain excluded until PWM and current
-# acquisition have measured hardware backends.
+# Keep explicit targets for the bounded commissioning image and its historical
+# bridge-characterization target name.
 add_custom_target(bridge-characterization DEPENDS ${FIRMWARE_TARGET})
+add_custom_target(current-loop-commissioning DEPENDS ${FIRMWARE_TARGET})
 add_custom_target(portable-control-arm DEPENDS mks57d_portable_control)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)
@@ -113,6 +120,18 @@ target_compile_options(${FIRMWARE_TARGET} PRIVATE
     $<$<CONFIG:Debug>:-Og>
     $<$<CONFIG:Debug>:-g3>
     $<$<CONFIG:Release>:-Os>
+)
+
+# The ADC/DMA current-control chain has a hard 20 kHz deadline. Keep that
+# interrupt path optimized in diagnostic builds; -O2 appears after the
+# target-wide -Og and therefore governs these translation units.
+set_source_files_properties(
+    src/control/phase_current_loop.c
+    src/platform/adc1.c
+    src/platform/current_loop_backend.c
+    src/platform/tim2_current_trigger.c
+    src/platform/tim3_bridge_pwm.c
+    PROPERTIES COMPILE_OPTIONS -O2
 )
 
 set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/n32l406cbl7.ld)

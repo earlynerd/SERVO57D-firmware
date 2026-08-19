@@ -1,11 +1,14 @@
 # ADC Bring-up
 
-Status: firmware 0.15.0 runs the bench-proven target two-rank `currentB/currentA`
-sequence triggered by TIM3 update at 20 kHz and captured in the
-64-halfword incrementing DMA ring. ADC/DMA configuration and arming finish
-before TIM3 starts. Firmware averages 32 bridge-zeroed startup snapshots for
-independent A/B offsets, then the OLED shows both signed currents as compact
-`A+#####mA` and `B+#####mA` rows. The
+Status: firmware 0.17.3 uses TIM2 compare at 65% of each 20 kHz carrier to
+software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
+The current-loop channels use 7.5-cycle sampling and one two-halfword DMA
+transaction per sequence; transfer completion owns the fast fixed-point loop.
+ADC/DMA configuration and arming still finish before the PWM timers start.
+Firmware averages 32 bridge-zeroed startup snapshots for independent A/B
+offsets, then the OLED shows both signed currents as compact `A+#####mA` and
+`B+#####mA` rows. Switched-current sign and control timing are implemented but
+not yet bench-proven. The
 fixed-destination and single-channel ring diagnostics both produced stable
 2039-2044 PA2 readings, proving the basic request, channel, addresses, widths,
 memory increment, and ring size. The host-tested conversion module supplies
@@ -79,8 +82,8 @@ single regular-data register before software consumes each channel. Output is
 published only after all three conversions succeed, so callers never receive
 a partially updated sample.
 
-The current channels provisionally use 28.5 sampling cycles and the bus input
-uses 55.5 sampling cycles. With the conservative 2 MHz ADC clock, the nominal
+Passive conversions provisionally use 28.5 sampling cycles for the current
+channels and 55.5 cycles for the bus input. With the conservative 2 MHz ADC clock, the nominal
 three-conversion sequence is about 75 microseconds plus the documented
 first-conversion overhead. These are bring-up settings, not a real-time timing
 contract; source impedance, settling, and loop timing must be measured.
@@ -143,19 +146,32 @@ calibration constants.
 
 Firmware 0.13.0 displayed stable alternating A/B samples without `A0010`, so
 the target acquisition architecture and corrected ADC/DMA-before-TIM3 startup
-order are accepted. The B channel has a visibly different zero point from A,
-confirming that offsets must remain independent. Current-controller integration
-is next. Firmware 0.14.0 displays both zero-calibrated currents simultaneously;
+order are accepted as a bring-up result. The B channel has a visibly different
+zero point from A, confirming that offsets must remain independent. Firmware
+0.14.0 displays both zero-calibrated currents simultaneously;
 with no commanded current they dither near 0 mA and remain within approximately
 +/-12 mA. At 6.06 mA/count this is a roughly two-count residual, consistent
 with the observed ADC quantization/noise floor.
 
+Firmware 0.17.3 retains the proven ADC/DMA-before-TIM3 initialization order but
+does not reuse the carrier-boundary trigger for switched-current regulation.
+TIM2 is reset by TIM3 update, compares at 65% of the carrier, and its short ISR
+sets the ADC software-start bit. The current channels use 7.5-cycle apertures
+at the retained 2 MHz ADC clock. Low-zero sign-magnitude modulation confines
+the loop's switching edges to the first 10% of the period under the current
+phase-voltage bound, so the first aperture begins at least 55% of a period
+after the latest permitted edge; the second aperture ends before the next
+carrier boundary. DMA completion executes the fixed-point A/B PI controllers,
+stages the selected-leg duties, and publishes a new output generation.
+The TIM3 update guardian allows one empty update for this pipelined result and
+faults on a second consecutive update without a new output.
+
 Remaining analog work is to measure the actual ADC reference, verify gain and
 sign with applied current, characterize amplifier settling/bandwidth and
 clipping, and repeat across bus voltage. Switching-correlated offset or noise
-must be measured when the current loop first drives PWM. The carrier-boundary
-trigger is deterministic but begins next to a switching edge, so an auxiliary
-timer may be needed to place the production sample at a quieter point.
+must be measured when the current loop drives PWM. The 65%-phase trigger must
+be scoped to quantify switching-edge contamination, ISR latency, and
+conversion/control completion relative to the following preload boundary.
 Analog-watchdog thresholds and restoring periodic `vBus` acquisition also
 remain later work.
 

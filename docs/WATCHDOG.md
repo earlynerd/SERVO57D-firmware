@@ -50,8 +50,8 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-Firmware 0.14.0 clears both `DBG_CTRL.IWDG_STOP` and `DBG_CTRL.TIM3_STOP`;
-IWDG and active TIM3 PWM continue while the Cortex-M4 is halted. A halt
+Firmware 0.17.3 clears `DBG_CTRL.IWDG_STOP`, `DBG_CTRL.TIM2_STOP`, and
+`DBG_CTRL.TIM3_STOP`; IWDG and both active timers continue while the Cortex-M4 is halted. A halt
 therefore preserves the last timer command until the nominal
 one-second watchdog reset returns the MCU pins to reset state. The tied HIN/LIN
 inputs make that high-impedance reset interval electrically undefined, so the

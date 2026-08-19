@@ -70,7 +70,7 @@ On the tested board, the physical button order is:
 All three buttons and both isolated M_IN1/M_IN2 inputs have been observed to
 change their corresponding active-low OLED state independently.
 
-Firmware 0.14.0 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
+Firmware 0.17.3 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
 high-impedance inputs without MCU pull resistors. The OLED exposes their
 debounced raw electrical levels as `S D E`. This is only a pin and polarity
 check: it does not count step pulses or assign motion or bridge-enable
@@ -95,6 +95,13 @@ gain. The resulting `currentA` and `currentB` signals reach PA2 and PA1
 directly. On the tested board at zero commanded current and 12 V bus input,
 the raw readings were approximately A=2041 and B=2053 with no more than one
 count of short-term fluctuation.
+
+The phase signs are asymmetric by construction. `phaseA1` drives connector
+terminal A+ and its low-side FET contains the A shunt, so positive measured A
+current flows from A- to A+ and positive A voltage must drive `phaseA2`.
+`phaseB2` drives B- and its low-side FET contains the B shunt, so positive
+measured B current flows from B+ to B- and positive B voltage drives
+`phaseB1`.
 
 The `vBus` divider uses 15.4 kOhm above 1 kOhm, for a 16.4 ratio. At a nominal
 3.3 V ADC reference, one current count is about 6.06 mA, one bus-voltage count

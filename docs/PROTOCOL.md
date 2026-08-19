@@ -1,9 +1,10 @@
 # Command Protocol Architecture
 
-Status: the native v1 base frame, read-only command service, and first three
-commands are implemented and host-tested. Address provisioning, duplicate
-request handling, control leases, telemetry, Modbus RTU, and Makerbase
-compatibility remain future work.
+Status: the native v1 base frame, discovery service, and current-loop
+commissioning console are implemented and host-tested. The discovery slice is
+bench-proven; commissioning commands await a board test. Address provisioning,
+duplicate request handling, production control leases, Modbus RTU, and
+Makerbase compatibility remain future work.
 
 ## Decision
 
@@ -90,11 +91,75 @@ from causing reply storms.
 | `0x0001` | `PING` | 0-16 opaque bytes | The same bytes |
 | `0x0002` | `GET_IDENTITY` | Empty | Product ID `u32`, firmware major `u8`, minor `u8`, patch `u16`, protocol major `u8`, minor `u8` |
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
+| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-2 commissioning status block |
+| `0x0101` | `CONFIGURE_CURRENT_TEST` | Amplitude counts `u16`, frequency millihertz `u32` | Applied amplitude counts `u16`, frequency millihertz `u32` |
+| `0x0102` | `START_CURRENT_TEST` | Initial leg `u8`, duration milliseconds `u32` | Empty |
+| `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
+| `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
+| `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema `u8`, encoder status `u8`, SPI status `u8`, raw angle `u16`, flags `u8`, sample count `u32`, error count `u32`, last-attempt milliseconds `u32` |
 
 The product ID is `0x4D4B5335` (`MKS5`). The current identity reports firmware
-0.14.0 and protocol 1.0. The capability bitmap uses the same stable bit
+0.17.3 and protocol 1.1. The capability bitmap uses the same stable bit
 definitions as the debugger diagnostic record, including the native-protocol
 capability.
+
+The commissioning commands are a feasibility-image service, not the
+production motion protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
+inactive. Amplitude is currently bounded to 1-50 ADC counts and frequency to
+1-20000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
+`2=B1`, and `3=B2`, with a duration from 100 to 60000 ms. It is unavailable
+until ADC zero calibration and current-loop initialization complete, or while
+authority is already active, a fault is latched, or raw Menu is asserted.
+`STOP_CURRENT_TEST` is always accepted and stops either local or remote test
+authority. A remote run also stops at its deadline, on raw Menu, or on an
+RS-485 transport failure. Foreground parsing continues during a run so status
+and STOP remain usable.
+
+`GET_BOOT_STATUS` exposes the complete captured RCC reset-flag mask rather
+than only the IWDG summary in commissioning status. This distinguishes RAM,
+MMU, pin, power-on, software, independent/window-watchdog, and low-power reset
+causes and reports the current boot uptime.
+
+`GET_ENCODER_STATUS` exposes the latest parity-valid 14-bit magnetic angle,
+encoder and SPI status, sensor flags, accepted-sample count, error count, and
+last-attempt time. The host commissioning console queries it alongside each
+current-loop snapshot so rotor displacement can be separated from successful
+stator-current commutation.
+
+`GET_COMMISSIONING_STATUS` returns the following schema-2 body after the common
+status byte. All multi-byte fields are big-endian; signed fields use two's
+complement.
+
+| Body offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 2 |
+| 1 | `u32` | Readiness, authority, pending-action, and fault flags |
+| 5 | `u8` | Raw electrical input levels; clear means asserted |
+| 6 | `u8` | Debounced electrical input levels; clear means asserted |
+| 7 | `u8` | `adc1_status_t` |
+| 8 | `u8` | Selected initial leg |
+| 9 | `u32` | Current-loop fault flags |
+| 13 | `u32` | Completed current-loop sample count |
+| 17 | `u16,u16` | Latest current A/B raw ADC values |
+| 21 | `u16,u16` | Calibrated current A/B zero values |
+| 25 | `i16,i16` | Current A/B references in ADC counts |
+| 29 | `i16,i16` | Current A/B measurements in ADC counts |
+| 33 | `i16,i16` | Phase A/B controller commands in permille |
+| 37 | `u16[4]` | A1, A2, B1, B2 duties in permille |
+| 45 | `u16` | Configured test amplitude in ADC counts |
+| 47 | `u16` | Maximum configurable test amplitude |
+| 49 | `u16` | Raw hard-current limit in ADC counts |
+| 51 | `u16` | Phase-voltage limit in permille |
+| 53 | `u32` | Configured test frequency in millihertz |
+| 57 | `u32` | Remaining remote-run time in milliseconds |
+| 61 | `u8` | Panic code retained across the last watchdog reset |
+| 62 | `u8` | One if the current boot followed an IWDG reset |
+
+Commissioning flag bits are: bit 0 ADC ready, 1 ADC snapshot valid, 2 zero
+calibration ready, 3 current loop initialized, 4 bridge ready, 5 authority
+active, 6 ISR backend active, 7 remote authority, 8 remote start pending,
+9 remote stop pending, and 10 fault present. The status body is 63 bytes and
+the complete successful response payload is 64 bytes.
 
 | Bit | Capability |
 | ---: | --- |
@@ -219,9 +284,9 @@ target but remain excluded from the passive bring-up image.
 
 1. **Complete:** define host-testable command request, response, error,
    capability, and dispatcher types with no wire-format dependency.
-2. **In progress:** the COBS/CRC native v1 framer and read-only ping, identity,
-   and capability commands are implemented. Diagnostics, encoder,
-   application-state, and fault commands plus broader fuzz coverage remain.
+2. **In progress:** the COBS/CRC native v1 framer, discovery commands, and
+   current-loop commissioning console are implemented. General application,
+   encoder, and production motion status plus broader fuzz coverage remain.
 3. Add the Modbus RTU adapter and project-owned register map to the same
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level

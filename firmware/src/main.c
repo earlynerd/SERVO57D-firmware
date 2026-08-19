@@ -12,6 +12,7 @@
 #include "mks57d/bridge_characterizer.h"
 #include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
+#include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/i2c1.h"
 #include "mks57d/interrupt_priority.h"
@@ -20,16 +21,18 @@
 #include "mks57d/panic.h"
 #include "mks57d/platform.h"
 #include "mks57d/rs485.h"
+#include "mks57d/rotating_current_test.h"
 #include "mks57d/spi1.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/timebase.h"
+#include "mks57d/tim2_current_trigger.h"
 #include "mks57d/tim3_bridge_pwm.h"
 #include "mks57d/user_inputs.h"
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
 
-#if !defined(MKS57D_BRIDGE_CHARACTERIZATION_IMAGE)
-#error "This entry point is reserved for the bridge characterization image"
+#if !defined(MKS57D_CURRENT_LOOP_COMMISSIONING_IMAGE)
+#error "This entry point is reserved for the current-loop commissioning image"
 #endif
 
 _Static_assert((unsigned int)NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE <=
@@ -38,6 +41,9 @@ _Static_assert((unsigned int)NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE <=
 _Static_assert((unsigned int)ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ ==
                    (unsigned int)TIM3_BRIDGE_PWM_FREQUENCY_HZ,
                "ADC acquisition rate must match the PWM trigger rate");
+_Static_assert((unsigned int)TIM2_CURRENT_TRIGGER_FREQUENCY_HZ ==
+                   (unsigned int)TIM3_BRIDGE_PWM_FREQUENCY_HZ,
+               "current trigger rate must match the PWM carrier rate");
 
 enum
 {
@@ -47,6 +53,314 @@ enum
 };
 
 static uint8_t s_display_frame[DISPLAY_FRAME_BYTES];
+
+enum
+{
+    COMMISSIONING_STATUS_SCHEMA_VERSION = 2u,
+    ENCODER_STATUS_SCHEMA_VERSION = 1u,
+    CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
+    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 20000u,
+    CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 100u,
+    CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u
+};
+
+typedef struct
+{
+    bool* adc_ready;
+    bool* adc_snapshot_valid;
+    bool* adc_calibration_ready;
+    bool* current_loop_initialized;
+    bool* bridge_ready;
+    adc1_status_t* adc_status;
+    adc1_current_snapshot_t* adc_snapshot;
+    adc_calibration_t* adc_calibration;
+    diagnostics_encoder_t* encoder_diagnostics;
+    bridge_characterizer_t* bridge_characterizer;
+    uint32_t* raw_input_levels;
+    uint32_t* input_levels;
+    const phase_current_loop_config_t* current_loop_config;
+    uint16_t maximum_test_amplitude_counts;
+    uint16_t test_amplitude_counts;
+    uint32_t test_frequency_millihz;
+    bool remote_start_requested;
+    bool remote_stop_requested;
+    bool remote_authority_active;
+    uint8_t remote_start_leg;
+    uint32_t remote_start_duration_millis;
+    uint32_t remote_run_deadline_millis;
+} commissioning_command_context_t;
+
+static uint32_t current_test_initial_phase(
+    bridge_characterizer_leg_t selected_leg)
+{
+    switch (selected_leg)
+    {
+        case BRIDGE_CHARACTERIZER_LEG_A1:
+            return 0x80000000u;
+        case BRIDGE_CHARACTERIZER_LEG_B1:
+            return 0x40000000u;
+        case BRIDGE_CHARACTERIZER_LEG_A2:
+            return 0x00000000u;
+        case BRIDGE_CHARACTERIZER_LEG_B2:
+            return 0xC0000000u;
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t current_test_phase_increment(uint32_t frequency_millihz)
+{
+    const uint64_t numerator =
+        ((uint64_t)frequency_millihz << 32u) + 500000u;
+
+    return (uint32_t)(numerator / 1000000u);
+}
+
+static command_status_t commissioning_get_status(
+    void* context,
+    command_commissioning_status_t* status)
+{
+    commissioning_command_context_t* commissioning = context;
+    current_loop_backend_snapshot_t loop = {0};
+    uint32_t now;
+
+    if ((commissioning == NULL) || (status == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    current_loop_backend_get_snapshot(&loop);
+    memset(status, 0, sizeof(*status));
+    status->schema_version = COMMISSIONING_STATUS_SCHEMA_VERSION;
+    if (*commissioning->adc_ready)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_ADC_READY;
+    }
+    if (*commissioning->adc_snapshot_valid)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_ADC_SNAPSHOT_VALID;
+    }
+    if (*commissioning->adc_calibration_ready)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_ADC_CALIBRATION_READY;
+    }
+    if (*commissioning->current_loop_initialized)
+    {
+        status->flags |=
+            COMMAND_COMMISSIONING_FLAG_CURRENT_LOOP_INITIALIZED;
+    }
+    if (*commissioning->bridge_ready)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_BRIDGE_READY;
+    }
+    if (commissioning->bridge_characterizer->active)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_AUTHORITY_ACTIVE;
+    }
+    if (loop.active)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_BACKEND_ACTIVE;
+    }
+    if (commissioning->remote_authority_active)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_REMOTE_AUTHORITY;
+    }
+    if (commissioning->remote_start_requested)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_REMOTE_START_PENDING;
+    }
+    if (commissioning->remote_stop_requested)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_REMOTE_STOP_PENDING;
+    }
+    if (loop.fault_flags != 0u)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT;
+    }
+
+    status->raw_input_levels =
+        (uint8_t)*commissioning->raw_input_levels;
+    status->debounced_input_levels =
+        (uint8_t)*commissioning->input_levels;
+    status->adc_status = (uint8_t)*commissioning->adc_status;
+    status->selected_leg =
+        (uint8_t)commissioning->bridge_characterizer->selected_leg;
+    status->fault_flags = loop.fault_flags;
+    status->sample_count = loop.sample_count;
+    status->current_a_raw = commissioning->adc_snapshot->current_a_raw;
+    status->current_b_raw = commissioning->adc_snapshot->current_b_raw;
+    if (*commissioning->adc_calibration_ready)
+    {
+        status->current_a_zero_raw = (uint16_t)(
+            commissioning->adc_calibration->current_a_zero_raw + 0.5f);
+        status->current_b_zero_raw = (uint16_t)(
+            commissioning->adc_calibration->current_b_zero_raw + 0.5f);
+    }
+    status->current_a_reference_counts =
+        loop.current_a_reference_counts;
+    status->current_b_reference_counts =
+        loop.current_b_reference_counts;
+    status->current_a_measured_counts =
+        loop.latest_output.current_a_measured_counts;
+    status->current_b_measured_counts =
+        loop.latest_output.current_b_measured_counts;
+    status->phase_a_voltage_permille =
+        loop.latest_output.phase_a_voltage_permille;
+    status->phase_b_voltage_permille =
+        loop.latest_output.phase_b_voltage_permille;
+    status->duty_a1_permille = loop.latest_output.duty_permille[0];
+    status->duty_a2_permille = loop.latest_output.duty_permille[1];
+    status->duty_b1_permille = loop.latest_output.duty_permille[2];
+    status->duty_b2_permille = loop.latest_output.duty_permille[3];
+    status->test_amplitude_counts =
+        commissioning->test_amplitude_counts;
+    status->maximum_test_amplitude_counts =
+        commissioning->maximum_test_amplitude_counts;
+    status->hard_current_limit_counts =
+        commissioning->current_loop_config->hard_current_limit_counts;
+    status->phase_voltage_limit_permille =
+        commissioning->current_loop_config->phase_voltage_limit_permille;
+    status->test_frequency_millihz =
+        commissioning->test_frequency_millihz;
+
+    now = timebase_millis();
+    if (commissioning->remote_authority_active &&
+        ((int32_t)(commissioning->remote_run_deadline_millis - now) > 0))
+    {
+        status->remote_run_remaining_millis =
+            commissioning->remote_run_deadline_millis - now;
+    }
+    status->retained_panic = (uint8_t)g_diagnostics.retained_panic;
+    status->watchdog_reset =
+        (g_platform_boot_diagnostics.reset_flags &
+         RCC_CTRLSTS_IWDGRSTF) != 0u ? 1u : 0u;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_configure(
+    void* context,
+    const command_current_test_config_t* requested,
+    command_current_test_config_t* applied)
+{
+    commissioning_command_context_t* commissioning = context;
+
+    if ((commissioning == NULL) || (requested == NULL) ||
+        (applied == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if ((requested->amplitude_counts == 0u) ||
+        (requested->amplitude_counts >
+         commissioning->maximum_test_amplitude_counts) ||
+        (requested->frequency_millihz <
+         CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ) ||
+        (requested->frequency_millihz >
+         CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    if (commissioning->bridge_characterizer->active ||
+        commissioning->remote_start_requested)
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    commissioning->test_amplitude_counts = requested->amplitude_counts;
+    commissioning->test_frequency_millihz = requested->frequency_millihz;
+    *applied = *requested;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_start(
+    void* context,
+    uint8_t selected_leg,
+    uint32_t duration_millis)
+{
+    commissioning_command_context_t* commissioning = context;
+    current_loop_backend_snapshot_t loop = {0};
+
+    if (commissioning == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if ((selected_leg >= (uint8_t)BRIDGE_CHARACTERIZER_LEG_COUNT) ||
+        (duration_millis < CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS) ||
+        (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+
+    current_loop_backend_get_snapshot(&loop);
+    if (!*commissioning->bridge_ready ||
+        commissioning->bridge_characterizer->active ||
+        commissioning->remote_start_requested ||
+        (loop.fault_flags != 0u) ||
+        ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    commissioning->remote_start_leg = selected_leg;
+    commissioning->remote_start_duration_millis = duration_millis;
+    commissioning->remote_stop_requested = false;
+    commissioning->remote_start_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_stop(void* context)
+{
+    commissioning_command_context_t* commissioning = context;
+
+    if (commissioning == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    commissioning->remote_start_requested = false;
+    commissioning->remote_stop_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_get_boot_status(
+    void* context,
+    command_boot_status_t* status)
+{
+    if ((context == NULL) || (status == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    status->schema_version = 1u;
+    status->reset_flags = g_platform_boot_diagnostics.reset_flags;
+    status->retained_panic = (uint8_t)g_diagnostics.retained_panic;
+    status->uptime_millis = timebase_millis();
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_get_encoder_status(
+    void* context,
+    command_encoder_status_t* status)
+{
+    commissioning_command_context_t* commissioning = context;
+    const diagnostics_encoder_t* encoder;
+
+    if ((commissioning == NULL) || (status == NULL) ||
+        (commissioning->encoder_diagnostics == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    encoder = commissioning->encoder_diagnostics;
+    status->schema_version = ENCODER_STATUS_SCHEMA_VERSION;
+    status->status = (uint8_t)encoder->status;
+    status->transport_status = (uint8_t)encoder->transport_status;
+    status->angle_raw = (uint16_t)encoder->angle_raw;
+    status->flags = (uint8_t)encoder->flags;
+    status->sample_count = encoder->sample_count;
+    status->error_count = encoder->error_count;
+    status->last_attempt_millis = encoder->last_attempt_millis;
+    return COMMAND_STATUS_OK;
+}
 
 static void wait_milliseconds(uint32_t duration)
 {
@@ -145,6 +459,57 @@ static void update_protocol_diagnostics(
     diagnostics->transmit_rejections = stats.transmit_rejections;
 }
 
+static uint32_t signed_i16_as_u32(int16_t value)
+{
+    return (uint32_t)(int32_t)value;
+}
+
+static uint16_t current_loop_fault_display_code(uint32_t fault_flags)
+{
+    uint16_t bit_position = 1u;
+
+    if (fault_flags == 0u)
+    {
+        return 0u;
+    }
+    while ((fault_flags & 1u) == 0u)
+    {
+        fault_flags >>= 1u;
+        ++bit_position;
+    }
+    return bit_position;
+}
+
+static void update_current_loop_diagnostics(
+    const current_loop_backend_snapshot_t* snapshot,
+    diagnostics_current_loop_t* diagnostics)
+{
+    diagnostics->ready = snapshot->initialized ? 1u : 0u;
+    diagnostics->active = snapshot->active ? 1u : 0u;
+    diagnostics->fault_flags = snapshot->fault_flags;
+    diagnostics->sample_count = snapshot->sample_count;
+    diagnostics->current_a_reference_counts = signed_i16_as_u32(
+        snapshot->current_a_reference_counts);
+    diagnostics->current_b_reference_counts = signed_i16_as_u32(
+        snapshot->current_b_reference_counts);
+    diagnostics->current_a_measured_counts = signed_i16_as_u32(
+        snapshot->latest_output.current_a_measured_counts);
+    diagnostics->current_b_measured_counts = signed_i16_as_u32(
+        snapshot->latest_output.current_b_measured_counts);
+    diagnostics->phase_a_voltage_permille = signed_i16_as_u32(
+        snapshot->latest_output.phase_a_voltage_permille);
+    diagnostics->phase_b_voltage_permille = signed_i16_as_u32(
+        snapshot->latest_output.phase_b_voltage_permille);
+    diagnostics->duty_a1_permille =
+        snapshot->latest_output.duty_permille[0];
+    diagnostics->duty_a2_permille =
+        snapshot->latest_output.duty_permille[1];
+    diagnostics->duty_b1_permille =
+        snapshot->latest_output.duty_permille[2];
+    diagnostics->duty_b2_permille =
+        snapshot->latest_output.duty_permille[3];
+}
+
 int main(void)
 {
     enum
@@ -153,9 +518,26 @@ int main(void)
         ENCODER_SAMPLE_PERIOD_MS = 10u,
         ADC_SNAPSHOT_PERIOD_MS = 10u,
         INPUT_SAMPLE_PERIOD_MS = 10u,
+        CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
         DISPLAY_REFRESH_PERIOD_MS = 200u,
-        RS485_FOREGROUND_DRAIN_BYTES = 64u
+        RS485_FOREGROUND_DRAIN_BYTES = 64u,
+        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS = 50u,
+        CURRENT_LOOP_HARD_LIMIT_COUNTS = 100u,
+        CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE = 100u,
+        CURRENT_LOOP_DUTY_MARGIN_PERMILLE = 200u,
+        CURRENT_TEST_AMPLITUDE_COUNTS = 25u,
+        CURRENT_TEST_FREQUENCY_MILLIHZ = 500u
     };
+    _Static_assert(CURRENT_TEST_AMPLITUDE_COUNTS <
+                       CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
+                   "commissioning demand must remain below its reference limit");
+    _Static_assert(CURRENT_LOOP_REFERENCE_LIMIT_COUNTS <
+                       CURRENT_LOOP_HARD_LIMIT_COUNTS,
+                   "requested current must remain below the raw trip");
+    _Static_assert(CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE <=
+                       (1000u -
+                        CURRENT_LOOP_DUTY_MARGIN_PERMILLE),
+                   "phase voltage limit violates the active duty margin");
     app_state_t state = APP_STATE_RESET_SAFE;
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
@@ -166,26 +548,35 @@ int main(void)
         .status = RS485_STATUS_NOT_READY,
     };
     diagnostics_protocol_t protocol_diagnostics = {0};
-    const command_service_context_t command_context = {
-        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
-        .firmware_major = MKS57D_FIRMWARE_VERSION_MAJOR,
-        .firmware_minor = MKS57D_FIRMWARE_VERSION_MINOR,
-        .firmware_patch = MKS57D_FIRMWARE_VERSION_PATCH,
-        .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
-        .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
-        .capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT,
-    };
+    diagnostics_current_loop_t current_loop_diagnostics = {0};
     native_protocol_server_t protocol_server;
     uint8_t rs485_receive_buffer[RS485_FOREGROUND_DRAIN_BYTES];
     adc1_current_snapshot_t adc_snapshot = {0};
     adc_zero_calibrator_t adc_zero_calibrator;
     adc_calibration_t adc_calibration = {0};
+    phase_current_loop_config_t current_loop_config = {
+        .reference_limit_counts = CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
+        .hard_current_limit_counts = CURRENT_LOOP_HARD_LIMIT_COUNTS,
+        .proportional_gain_q16_per_count =
+            (int32_t)PHASE_CURRENT_LOOP_Q16_ONE,
+        .integral_gain_q16_per_count_per_step =
+            (int32_t)PHASE_CURRENT_LOOP_Q16_ONE / 64,
+        .phase_voltage_limit_permille =
+            CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE,
+        .duty_margin_permille = CURRENT_LOOP_DUTY_MARGIN_PERMILLE,
+        .current_a_polarity = 1,
+        .current_b_polarity = 1,
+    };
+    current_loop_backend_snapshot_t current_loop_snapshot = {0};
+    rotating_current_test_t current_test_generator = {0};
     i2c_bus_t display_bus = {0};
     spi_bus_t encoder_bus = {0};
     bool display_ready = false;
     bool adc_ready = false;
     bool adc_snapshot_valid = false;
     bool adc_calibration_ready = false;
+    bool current_loop_initialized = false;
+    uint16_t current_loop_fault_code = 0u;
     int32_t current_a_milliamperes = 0;
     int32_t current_b_milliamperes = 0;
     adc1_status_t adc_status = ADC1_STATUS_NOT_READY;
@@ -198,6 +589,7 @@ int main(void)
     uint32_t next_encoder_sample;
     uint32_t next_adc_sample;
     uint32_t next_input_sample;
+    uint32_t next_current_reference;
     uint32_t next_display_refresh;
     uint32_t input_levels = USER_INPUT_MASK;
     uint32_t raw_input_levels = USER_INPUT_MASK;
@@ -206,6 +598,43 @@ int main(void)
     uint32_t uptime_millis = 0u;
     watchdog_supervisor_t watchdog;
     watchdog_status_t watchdog_status = WATCHDOG_STATUS_NOT_STARTED;
+    commissioning_command_context_t commissioning_context = {
+        .adc_ready = &adc_ready,
+        .adc_snapshot_valid = &adc_snapshot_valid,
+        .adc_calibration_ready = &adc_calibration_ready,
+        .current_loop_initialized = &current_loop_initialized,
+        .bridge_ready = &bridge_ready,
+        .adc_status = &adc_status,
+        .adc_snapshot = &adc_snapshot,
+        .adc_calibration = &adc_calibration,
+        .encoder_diagnostics = &encoder_diagnostics,
+        .bridge_characterizer = &bridge_characterizer,
+        .raw_input_levels = &raw_input_levels,
+        .input_levels = &input_levels,
+        .current_loop_config = &current_loop_config,
+        .maximum_test_amplitude_counts =
+            CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
+        .test_amplitude_counts = CURRENT_TEST_AMPLITUDE_COUNTS,
+        .test_frequency_millihz = CURRENT_TEST_FREQUENCY_MILLIHZ,
+    };
+    const command_service_context_t command_context = {
+        .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
+        .firmware_major = MKS57D_FIRMWARE_VERSION_MAJOR,
+        .firmware_minor = MKS57D_FIRMWARE_VERSION_MINOR,
+        .firmware_patch = MKS57D_FIRMWARE_VERSION_PATCH,
+        .protocol_major = NATIVE_PROTOCOL_VERSION_MAJOR,
+        .protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR,
+        .capabilities = DIAGNOSTICS_CAPABILITIES_CURRENT,
+        .commissioning = {
+            .context = &commissioning_context,
+            .get_status = commissioning_get_status,
+            .configure = commissioning_configure,
+            .start = commissioning_start,
+            .stop = commissioning_stop,
+            .get_boot_status = commissioning_get_boot_status,
+            .get_encoder_status = commissioning_get_encoder_status,
+        },
+    };
 
     if (!platform_early_memory_ready())
     {
@@ -319,6 +748,11 @@ int main(void)
         adc_status = adc1_start_pwm_synchronized_current();
         adc_ready = adc_status == ADC1_STATUS_OK;
     }
+    if (adc_ready &&
+        !tim2_current_trigger_init(platform_apb1_timer_clock_hz()))
+    {
+        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+    }
     if (!board_bridge_characterizer_init(
             platform_apb1_timer_clock_hz()))
     {
@@ -412,13 +846,14 @@ int main(void)
     next_encoder_sample = timebase_millis() + ENCODER_POWER_UP_DELAY_MS;
     next_adc_sample = timebase_millis();
     next_input_sample = timebase_millis();
+    next_current_reference = timebase_millis();
     next_display_refresh = next_encoder_sample;
 
     for (;;)
     {
         bool diagnostics_due = false;
         const uint32_t now = timebase_millis();
-        const bool bridge_was_active = bridge_characterizer.active;
+        bool bridge_was_active;
 
         raw_input_levels = board_inputs_read_raw();
         if (inputs_ready &&
@@ -432,66 +867,7 @@ int main(void)
             next_input_sample = now + INPUT_SAMPLE_PERIOD_MS;
         }
 
-        if (bridge_ready)
-        {
-            (void)bridge_characterizer_update(&bridge_characterizer,
-                                              raw_input_levels,
-                                              input_levels);
-            if (bridge_was_active && !bridge_characterizer.active)
-            {
-                if (!board_bridge_characterizer_apply(
-                        bridge_characterizer.selected_leg,
-                        false))
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                }
-            }
-            else if (bridge_characterizer.active && !bridge_was_active)
-            {
-                if (!adc_snapshot_valid)
-                {
-                    bridge_characterizer_stop(&bridge_characterizer);
-                    if (!board_bridge_characterizer_apply(
-                            bridge_characterizer.selected_leg,
-                            false))
-                    {
-                        board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                    }
-                }
-                else
-                {
-                    if (display_ready &&
-                        (!bridge_display_render(
-                             s_display_frame,
-                             BRIDGE_DISPLAY_FRAME_BYTES,
-                             bridge_characterizer.selected_leg,
-                             true) ||
-                         (ssd1306_write_pages(
-                              &display_bus,
-                              &SSD1306_PANEL_SERVO57D_CANDIDATE,
-                              BRIDGE_DISPLAY_START_PAGE,
-                              BRIDGE_DISPLAY_PAGE_COUNT,
-                              s_display_frame,
-                              BRIDGE_DISPLAY_FRAME_BYTES) != I2C_STATUS_OK)))
-                    {
-                        display_ready = false;
-                    }
-
-                    if (!board_bridge_characterizer_apply(
-                            bridge_characterizer.selected_leg,
-                            true))
-                    {
-                        bridge_characterizer_stop(&bridge_characterizer);
-                        board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                    }
-                }
-            }
-        }
-
-        if (rs485_ready && !bridge_characterizer.active)
+        if (rs485_ready)
         {
             const size_t received = rs485_read(
                 rs485_receive_buffer,
@@ -512,11 +888,169 @@ int main(void)
             if (rs485_diagnostics.status != (uint32_t)RS485_STATUS_OK)
             {
                 rs485_ready = false;
+                commissioning_context.remote_stop_requested = true;
                 diagnostics_due = true;
             }
         }
 
-        if (!bridge_characterizer.active && encoder_spi_ready &&
+        bridge_was_active = bridge_characterizer.active;
+        if (bridge_ready)
+        {
+            if (commissioning_context.remote_authority_active &&
+                (((raw_input_levels & USER_INPUT_KEY_MENU) == 0u) ||
+                 ((int32_t)(now - commissioning_context.
+                                      remote_run_deadline_millis) >= 0)))
+            {
+                commissioning_context.remote_stop_requested = true;
+            }
+
+            if (commissioning_context.remote_stop_requested)
+            {
+                bridge_characterizer_stop(&bridge_characterizer);
+                bridge_characterizer.previous_debounced_levels =
+                    input_levels;
+                bridge_characterizer.enter_release_seen =
+                    (raw_input_levels & USER_INPUT_KEY_ENTER) != 0u;
+                commissioning_context.remote_authority_active = false;
+                commissioning_context.remote_stop_requested = false;
+            }
+            else if (commissioning_context.remote_start_requested)
+            {
+                bridge_characterizer.selected_leg =
+                    (bridge_characterizer_leg_t)
+                        commissioning_context.remote_start_leg;
+                bridge_characterizer.active = true;
+                commissioning_context.remote_authority_active = true;
+                commissioning_context.remote_run_deadline_millis =
+                    now + commissioning_context.
+                              remote_start_duration_millis;
+                commissioning_context.remote_start_requested = false;
+            }
+            else if (!commissioning_context.remote_authority_active)
+            {
+                (void)bridge_characterizer_update(&bridge_characterizer,
+                                                  raw_input_levels,
+                                                  input_levels);
+            }
+
+            if (bridge_was_active && !bridge_characterizer.active)
+            {
+                if (!current_loop_backend_stop())
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                }
+                commissioning_context.remote_authority_active = false;
+            }
+            else if (bridge_characterizer.active && !bridge_was_active)
+            {
+                if (!adc_snapshot_valid)
+                {
+                    bridge_characterizer_stop(&bridge_characterizer);
+                    if (!current_loop_backend_stop())
+                    {
+                        board_bridge_force_low_zero();
+                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    }
+                }
+                else
+                {
+                    int16_t current_a_reference_counts;
+                    int16_t current_b_reference_counts;
+
+                    if (display_ready &&
+                        (!bridge_display_render(
+                             s_display_frame,
+                             BRIDGE_DISPLAY_FRAME_BYTES,
+                             bridge_characterizer.selected_leg,
+                             true) ||
+                         (ssd1306_write_pages(
+                              &display_bus,
+                              &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                              BRIDGE_DISPLAY_START_PAGE,
+                              BRIDGE_DISPLAY_PAGE_COUNT,
+                              s_display_frame,
+                              BRIDGE_DISPLAY_FRAME_BYTES) != I2C_STATUS_OK)))
+                    {
+                        display_ready = false;
+                    }
+
+                    if (!rotating_current_test_init(
+                            &current_test_generator,
+                            (int16_t)commissioning_context.
+                                test_amplitude_counts,
+                            current_test_phase_increment(
+                                commissioning_context.
+                                    test_frequency_millihz),
+                            current_test_initial_phase(
+                                bridge_characterizer.selected_leg)) ||
+                        !rotating_current_test_step(
+                            &current_test_generator,
+                            &current_a_reference_counts,
+                            &current_b_reference_counts) ||
+                        !current_loop_backend_set_reference_counts(
+                            current_a_reference_counts,
+                            current_b_reference_counts) ||
+                        !current_loop_backend_start())
+                    {
+                        bridge_characterizer_stop(&bridge_characterizer);
+                        board_bridge_force_low_zero();
+                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    }
+                    next_current_reference =
+                        now + CURRENT_TEST_REFERENCE_PERIOD_MS;
+                }
+            }
+        }
+
+        if (bridge_characterizer.active &&
+            ((int32_t)(now - next_current_reference) >= 0))
+        {
+            int16_t current_a_reference_counts;
+            int16_t current_b_reference_counts;
+
+            if (!rotating_current_test_step(
+                    &current_test_generator,
+                    &current_a_reference_counts,
+                    &current_b_reference_counts))
+            {
+                bridge_characterizer_stop(&bridge_characterizer);
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+            }
+            if (!current_loop_backend_set_reference_counts(
+                    current_a_reference_counts,
+                    current_b_reference_counts))
+            {
+                current_loop_backend_get_snapshot(&current_loop_snapshot);
+                bridge_characterizer_stop(&bridge_characterizer);
+                commissioning_context.remote_authority_active = false;
+                bridge_ready = false;
+                if ((current_loop_snapshot.fault_flags == 0u) ||
+                    !current_loop_backend_stop())
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                }
+                current_loop_backend_get_snapshot(&current_loop_snapshot);
+                update_current_loop_diagnostics(
+                    &current_loop_snapshot,
+                    &current_loop_diagnostics);
+                diagnostics_publish_current_loop(
+                    &current_loop_diagnostics);
+                if (current_loop_fault_code == 0u)
+                {
+                    current_loop_fault_code =
+                        current_loop_fault_display_code(
+                            current_loop_snapshot.fault_flags);
+                    next_display_refresh = now;
+                }
+            }
+            next_current_reference =
+                now + CURRENT_TEST_REFERENCE_PERIOD_MS;
+        }
+
+        if (encoder_spi_ready &&
             ((int32_t)(now - next_encoder_sample) >= 0))
         {
             mt6816_sample_t sample;
@@ -565,6 +1099,20 @@ int main(void)
                         &adc_zero_calibrator,
                         &adc_calibration);
                 }
+                if (adc_calibration_ready && !current_loop_initialized)
+                {
+                    current_loop_config.current_a_zero_raw =
+                        (uint16_t)(adc_calibration.current_a_zero_raw + 0.5f);
+                    current_loop_config.current_b_zero_raw =
+                        (uint16_t)(adc_calibration.current_b_zero_raw + 0.5f);
+                    if (!current_loop_backend_init(&current_loop_config))
+                    {
+                        board_bridge_force_low_zero();
+                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    }
+                    current_loop_initialized = true;
+                    bridge_ready = true;
+                }
                 if (adc_calibration_ready &&
                     !adc_current_pair_convert_milliamperes(
                         adc_snapshot.current_b_raw,
@@ -582,12 +1130,32 @@ int main(void)
                 adc_ready = false;
                 adc_snapshot_valid = false;
                 bridge_characterizer_stop(&bridge_characterizer);
-                if (!board_bridge_characterizer_apply(
-                        bridge_characterizer.selected_leg,
-                        false))
+                commissioning_context.remote_authority_active = false;
+                bridge_ready = false;
+                board_bridge_force_low_zero();
+            }
+            if (current_loop_initialized)
+            {
+                current_loop_backend_get_snapshot(&current_loop_snapshot);
+                update_current_loop_diagnostics(
+                    &current_loop_snapshot,
+                    &current_loop_diagnostics);
+                diagnostics_publish_current_loop(
+                    &current_loop_diagnostics);
+                if ((current_loop_snapshot.fault_flags != 0u) &&
+                    (current_loop_fault_code == 0u))
                 {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    current_loop_fault_code =
+                        current_loop_fault_display_code(
+                            current_loop_snapshot.fault_flags);
+                    next_display_refresh = now;
+                }
+                if (bridge_characterizer.active &&
+                    !current_loop_snapshot.active)
+                {
+                    bridge_characterizer_stop(&bridge_characterizer);
+                    commissioning_context.remote_authority_active = false;
+                    bridge_ready = false;
                 }
             }
             next_adc_sample = now + ADC_SNAPSHOT_PERIOD_MS;
@@ -632,7 +1200,16 @@ int main(void)
         {
             bool rendered;
 
-            if (!adc_ready)
+            if (current_loop_fault_code != 0u)
+            {
+                rendered = adc_display_render(
+                    s_display_frame,
+                    ADC_DISPLAY_FRAME_BYTES,
+                    ADC_DISPLAY_FAULT,
+                    current_loop_fault_code,
+                    true);
+            }
+            else if (!adc_ready)
             {
                 rendered = adc_display_render(
                     s_display_frame,

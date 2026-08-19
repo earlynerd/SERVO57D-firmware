@@ -1,12 +1,12 @@
 # Firmware Architecture
 
 Status: the reset-safe foundation, foreground encoder and ADC acquisition,
-OLED diagnostics, DMA RS-485 transport, first read-only native protocol slice,
-portable control foundation, and manually gated TIM3 bridge characterizer are
-implemented. The passive peripherals are bench-proven. The control foundation
-is exercised against host plants and is not linked into the embedded image;
-production modulation, synchronous sampling, and calibrated current control
-remain gated on waveform measurements.
+OLED diagnostics, DMA RS-485 transport, native commissioning protocol,
+portable control foundation, and a hold-to-run current-loop commissioning path
+are implemented. The passive peripherals are bench-proven. Fixed-point A/B PI
+control, low-zero sign-magnitude modulation, delayed synchronous sampling, raw
+overcurrent trips, and a carrier deadline guardian are linked into firmware
+0.17.3 but remain gated on waveform and switched-current measurements.
 
 ## Design priorities
 
@@ -42,19 +42,23 @@ The initial image implements only the parts that can be meaningfully built befor
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
 - A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
   sustained 50 Hz two-page transactions are proven and the current characterizer uses 5 Hz.
-- A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM3-triggered 20 kHz
-  `currentB`/`currentA` sequence captured by circular DMA channel 1, with
+- A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM2-compare-triggered
+  20 kHz `currentB`/`currentA` sequence captured by circular DMA channel 1, with
   host-tested schematic-derived engineering conversion using runtime reference
   and zeros.
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
-  adapter serving only ping, identity, and capabilities from foreground.
+  adapter serving discovery plus current-loop status/configure/start/stop from
+  foreground, including status and STOP while active.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
-- An edge-aligned 20 kHz TIM3 characterization backend mapping channels 1-4
-  to PA6/PA7/PB0/PB1 on AF2, with preloaded zero/50% compare updates and a
+- An edge-aligned 20 kHz TIM3 backend mapping channels 1-4 to
+  PA6/PA7/PB0/PB1 on AF2, with four independent preloaded duties and a
   direct-GPIO all-low panic fallback.
+- A fixed-point A/B PI commissioning loop with conditional anti-windup,
+  low-zero sign-magnitude H-bridge modulation, independent reference/raw-current/voltage/
+  duty bounds, and DMA/PWM/deadline fault latching.
 - Hardware-independent application-state and fault-latch modules with native tests.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
@@ -65,15 +69,18 @@ The initial image implements only the parts that can be meaningfully built befor
   disable, lease, completion, and recovery contracts; and drives the servo core
   in end-to-end simulated-plant tests.
 
-There is deliberately no bridge module yet. Creating one would imply shutdown
-behavior, polarity, and pin truth that have not been verified on a purchased
-board. Active low-energy peripheral work does not weaken that boundary.
+The commissioning bridge module owns TIM3, DMA
+channel 1 completion, and the common all-low fault path. Its bounded software
+contract is implemented; feedback sign, delayed sample observability, reset
+behavior, and protection latency remain hardware commissioning gates.
 
 The portable control and application modules live under
 `firmware/src/control/` and `firmware/src/app/`. They are compiled for both the
-host and the exact Arm target, but are not linked into the passive `mks57d`
-image. Their contracts use revolutions, seconds, amperes, volts, and radians
-explicitly. The outer servo core accepts timestamped raw
+host and the exact Arm target. The fixed-point phase loop and rotating
+commissioning reference are linked into `mks57d`; the outer application,
+estimator, trajectory, and d/q servo path remain excluded. Their contracts use
+revolutions, seconds, amperes, volts, and radians explicitly. The outer servo
+core accepts timestamped raw
 encoder samples and emits a hard-clamped torque-current request; stale input,
 missed control deadlines, excessive following error, implausible encoder
 motion, and invalid arithmetic latch the output invalid. The current-control

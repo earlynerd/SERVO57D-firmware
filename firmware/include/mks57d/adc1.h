@@ -36,6 +36,11 @@ typedef enum
     ADC1_STATUS_NO_SAMPLE
 } adc1_status_t;
 
+typedef void (*adc1_current_event_handler_t)(
+    adc1_status_t status,
+    const adc1_current_snapshot_t* snapshot,
+    void* context);
+
 /*
  * Provisional bridge-disabled acquisition for PA1/PA2/PA3. Merely linking
  * this module does not enable HSI, ADC, or GPIOA; init must be called.
@@ -44,10 +49,14 @@ typedef enum
 adc1_status_t adc1_init_passive(uint32_t hclk_hz);
 adc1_status_t adc1_read_passive(adc_sample_t* output);
 
-/* Arm a two-rank currentB/currentA sequence before TIM3 starts. Each TIM3
- * update triggers one sequence, captured in a 64-halfword DMA ring. */
+/* Arm a two-rank currentB/currentA sequence before TIM3 starts. TIM2 issues
+ * one software trigger per carrier period and DMA publishes each fresh pair. */
 adc1_status_t adc1_start_pwm_synchronized_current(void);
 adc1_status_t adc1_read_synchronized_current(
     adc1_current_snapshot_t* output);
+bool adc1_set_current_event_handler(
+    adc1_current_event_handler_t handler,
+    void* context);
+bool adc1_trigger_synchronized_current_from_isr(void);
 
 #endif
