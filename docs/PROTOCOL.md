@@ -1,7 +1,8 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.4, discovery, boot and encoder telemetry, and the
-current diagnostic service are implemented and host-tested. Firmware 0.18.2
+Status: native protocol 1.5, discovery, boot and encoder telemetry, the
+current diagnostic service, generic drive STOP, and automatic alignment are
+implemented and host-tested. Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
 the product drive supervisor and has passed both deadline-release and explicit-
@@ -107,13 +108,18 @@ from causing reply storms.
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
 | `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema `u8`, captured count `u16`, echoed index `u16`, loop sample count `u32`, A/B references `i16`, A/B measurements `i16`, A/B voltage commands `i16` |
+| `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
+| `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
+| `0x0202` | `STOP_DRIVE` | Empty | Empty |
 
 The product ID is `0x4D4B5335` (`MKS5`). Firmware 0.19.0 / protocol 1.3 is the
 bench-proven converged supervisor image. Firmware 0.20.0 / protocol 1.4 appends
 mechanical-estimator, alignment, electrical-phase, and sample-interval telemetry
 to `GET_ENCODER_STATUS`; the current host tool decodes both schema 1 and schema
 2, while fixed-length third-party clients must check identity/schema before
-decoding. Protocol 1.3 added the bounded current trace validated
+decoding. Firmware 0.21.0 / protocol 1.5 adds the bounded automatic-alignment
+service and a generic STOP operation; successful, repeatable alignment and STOP
+are bench-proven on the tested motor. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
@@ -127,10 +133,30 @@ until the product supervisor reaches `READY` from calibrated current feedback,
 initialized current control, and a healthy encoder sample, or while authority
 is already active, a fault is latched, or raw Menu is asserted. START requests
 diagnostic authority from the supervisor before the backend can switch.
-`STOP_CURRENT_TEST` is always accepted and releases either local or remote
-diagnostic authority after stopping the backend. A remote run also stops at its deadline, on raw Menu, or on an
+`STOP_CURRENT_TEST` remains a wire-compatible alias for generic stop behavior.
+`STOP_DRIVE` is the preferred name and is always accepted; either operation
+stops a current diagnostic or alignment before releasing its authority. A remote run also stops at its deadline, on raw Menu, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
+
+`START_ALIGNMENT` is accepted only from supervisor `READY`, with current and
+encoder readiness intact, Menu released, no fault, no active/pending current
+diagnostic, and no existing alignment operation. The requested current is
+currently bounded to 50-165 ADC counts. The controller applies `(A=+I,B=0)`,
+then `(A=0,B=+I)`, then `(A=+I,B=0)` through the production current backend
+under `ALIGN` motion authority. It samples only settled encoder/current data,
+checks the observed quarter-step geometry and final closure, and transactionally
+commits zero and direction only after the whole sequence passes. Failed or
+aborted attempts preserve an earlier valid calibration.
+
+The initial 50-count minimum is an alignment policy candidate based on the
+repeatable 303 mA cardinal test; 165 counts is the existing current-backend
+request ceiling, not a hardware capability claim. The initial observation
+policy is 750 ms settle per state, 100 ms sample windows with at least 64
+samples, a 4 s total deadline, at most 8 raw counts of within-window span, 12
+counts of return-closure error, and 8 counts of current-tracking error. These
+values are explicitly subject to bench tuning and the project-wide limit
+inventory; they are not motor speed, current, or physical travel limits.
 
 `GET_BOOT_STATUS` exposes the complete captured RCC reset-flag mask rather
 than only the IWDG summary in commissioning status. This distinguishes RAM,
@@ -164,6 +190,48 @@ flags remain clear and their numeric fields must not be used for control.
 | 38 | `u32` | Electrical phase, Q0.32 turns; valid only when flagged |
 | 42 | `u32` | Latest estimator sample interval in microseconds |
 | 46 | `u32` | Maximum estimator sample interval observed since boot |
+
+`GET_ALIGNMENT_STATUS` returns this schema-1 body after the common status byte.
+All multi-byte values are big-endian and signed values use two's complement.
+
+| Body offset | Type | Alignment schema-1 field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 1 |
+| 1 | `u8` | Controller state |
+| 2 | `u8` | Terminal/result code |
+| 3 | `u8` | Active, calibration-valid, authority-active, and backend-active flags |
+| 4 | `u16` | Requested alignment current in ADC counts |
+| 6 | `u16` | Averaged phase-zero raw encoder count |
+| 8 | `u16` | Averaged positive-quarter raw encoder count |
+| 10 | `u16` | Averaged return-to-zero raw encoder count |
+| 12 | `u16` | Observed absolute quarter-step magnitude |
+| 14 | `i16` | Observed minus expected quarter-step error |
+| 16 | `i16` | Signed return-closure error |
+| 18 | `i8` | Encoder direction for increasing electrical phase |
+| 19 | `u16` | Samples accepted in the active observation window |
+| 21 | `u32` | Attempt elapsed time in milliseconds |
+| 25 | `u32` | Time remaining before the attempt deadline |
+| 29 | `u16` | Minimum alignment current in ADC counts |
+| 31 | `u16` | Maximum alignment current in ADC counts |
+| 33 | `u16` | Expected rounded quarter-step movement in encoder counts |
+| 35 | `u16` | Maximum quarter-step error in encoder counts |
+| 37 | `u32` | Settle duration per commanded phase in milliseconds |
+| 41 | `u32` | Observation-window duration in milliseconds |
+| 45 | `u32` | Whole-attempt deadline in milliseconds |
+| 49 | `u16` | Minimum samples per observation window |
+| 51 | `u16` | Maximum raw span within a window in encoder counts |
+| 53 | `u16` | Maximum return-closure error in encoder counts |
+| 55 | `u16` | Maximum per-axis current-tracking error in ADC counts |
+
+States are 0 idle, 1 phase-zero settle, 2 phase-zero sample, 3 quarter settle,
+4 quarter sample, 5 return settle, 6 return sample, 7 complete, 8 failed, and
+9 aborted. Result codes are 0 none, 1 success, 2 aborted, 3 deadline, 4 encoder
+invalid, 5 backend inactive, 6 current tracking, 7 encoder unstable, 8 geometry,
+and 9 closure. Flag bits are 0 active, 1 calibration valid, 2 authority active,
+and 3 backend active. The status body is 57 bytes and the complete successful
+response payload is 58 bytes. Hosts should preflight from these reported policy
+fields rather than duplicating firmware constants; firmware still validates
+every request independently.
 
 `GET_CURRENT_TRACE` is available only after current-loop authority has ended.
 Each start clears a fixed 256-entry buffer, then the DMA-completion ISR records
@@ -210,7 +278,7 @@ the complete successful response payload is 64 bytes.
 
 | Bit | Capability |
 | ---: | --- |
-| 0 | Board bring-up and characterization services |
+| 0 | Product firmware image |
 | 1 | Status LED |
 | 2 | Foreground-supervised IWDG |
 | 3 | Reset-cause capture |
@@ -221,7 +289,9 @@ the complete successful response payload is 64 bytes.
 | 8 | SSD1306-compatible I2C display |
 | 9 | Raw ADC acquisition, including timer-synchronous current capture |
 | 10 | Debounced passive-input monitor |
-| 11 | TIM3 bridge PWM and bounded current-loop operation |
+| 11 | Legacy bridge-characterizer diagnostic UI capability |
+| 12 | TIM3 bridge PWM and bounded current-loop operation |
+| 13 | Bounded production automatic alignment |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -325,8 +395,9 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.20.0 links the mechanical estimator and alignment geometry,
-while the outer motion shell remains excluded.
+target; firmware 0.21.0 links the mechanical estimator, transactional alignment
+controller, and native alignment/STOP service, while the outer motion shell
+remains excluded.
 
 ## Implementation sequence
 
@@ -342,8 +413,9 @@ while the outer motion shell remains excluded.
 5. **Application prerequisite complete:** the portable application shell,
    limits, command arbiter, retry history, lease, safe-stop, and completion
    behavior exist and have end-to-end simulated-plant tests. The hardware
-   current-control state is now proven; add alignment, then native velocity and
-   position wire mappings. Homing remains deferred until alignment exists.
+   current-control state is now proven and automatic alignment is implemented;
+   bench-accept it, then add native velocity and position wire mappings. Homing
+   remains deferred until alignment is bench-proven.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

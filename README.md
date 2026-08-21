@@ -44,11 +44,13 @@ are the next motor-control milestone.
 
 ## Current operating envelope
 
-Firmware 0.20.0 is the current converged product build. It runs from the fitted
+Firmware 0.21.0 is the current bench-validated product build. It runs from the fitted
 8 MHz crystal at a bench-proven 64 MHz system clock, closes independent A/B
 winding-current loops at 20 kHz, schedules timestamped encoder acquisition at
-1 kHz in foreground, updates the OLED, and serves native RS-485 protocol 1.4
-telemetry plus the bounded 20 kHz startup-trace service. The 0.19.0
+1 kHz in foreground, updates the OLED, and serves native RS-485 protocol 1.5
+telemetry, automatic alignment, and the bounded 20 kHz startup-trace service.
+Two 757.4 mA automatic alignments and a generic-STOP abort passed on the tested
+motor with clean authority release, zero faults, and no reset or retained panic. The 0.19.0
 supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
 deadline release and at 151.5 mA / 5 Hz through an explicit STOP. The new 1 kHz
 estimator is bench-proven at idle and during a 757 mA / 20 Hz bounded run;
@@ -121,20 +123,25 @@ Bench-proven on the tested board:
   versus -18 RPM commanded, and 757 mA / 20 Hz tracks 1.97 revolutions over
   five seconds versus 2.00 commanded with 25.2% peak voltage effort.
 
-Host- and build-validated in firmware 0.20.0: one product drive supervisor owns
+Host-, build-, and bench-validated in firmware 0.21.0: one product drive supervisor owns
 `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT`, separates diagnostic
 from motion authority, gates energization on current-path and encoder readiness,
 and deauthorizes every fault transition. The product build also contains the
-measured 50-cycle alignment mapping, transactional calibration math, a
-microsecond timebase, and 1 kHz estimator telemetry; alignment validity remains
-false until a controlled product calibration procedure accepts observations.
+measured 50-cycle alignment mapping, a bounded automatic alignment controller,
+transactional calibration math, a microsecond timebase, and 1 kHz estimator
+telemetry. The controller requests `ALIGN` motion authority, applies phase-zero
+and quarter-phase current vectors through the production backend, validates
+current tracking, encoder stability, geometry, and return closure, and commits
+the new zero/direction only after the complete sequence passes.
 On hardware, stationary polling produced no raw-count or velocity movement over
 five seconds. During a 757 mA / 20 Hz run, sampled encoder intervals were
 981-1001 us with a 5.450 ms cumulative worst case, estimator velocity averaged
 -0.3953 revolution/s versus -0.4000 commanded, and no estimator fault occurred.
 
-The next functional milestone is the supervisor-owned controlled alignment
-procedure followed by velocity and position control. Remaining characterization
+Successful/repeatable automatic alignment and explicit STOP are accepted on the
+tested motor. Menu abort and induced readiness-loss behavior remain physical
+fault-injection checks. The next functional milestone is the aligned
+torque/current interface followed by velocity and position control. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

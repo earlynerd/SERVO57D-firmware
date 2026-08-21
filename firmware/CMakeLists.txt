@@ -4,6 +4,7 @@ set(PORTABLE_CONTROL_SOURCES
     src/app/application_core.c
     src/app/motion_manager.c
     src/app/step_direction.c
+    src/control/alignment_controller.c
     src/control/angle_tracker.c
     src/control/current_controller.c
     src/control/motion_profile.c
@@ -44,6 +45,7 @@ set(PROJECT_SOURCES
     src/app/diagnostics.c
     src/board/board.c
     src/board/board_inputs.c
+    src/control/alignment_controller.c
     src/control/angle_tracker.c
     src/control/motor_alignment.c
     src/control/phase_current_loop.c

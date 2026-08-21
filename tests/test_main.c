@@ -9,6 +9,7 @@
 #include "mks57d/adc1.h"
 #include "mks57d/adc_calibration.h"
 #include "mks57d/adc_display.h"
+#include "mks57d/alignment_controller.h"
 #include "mks57d/application_core.h"
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
@@ -80,6 +81,7 @@ typedef struct
     command_commissioning_status_t status;
     command_encoder_status_t encoder_status;
     command_current_trace_sample_t current_trace;
+    command_alignment_status_t alignment_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -90,7 +92,11 @@ typedef struct
     size_t boot_status_calls;
     size_t encoder_status_calls;
     size_t current_trace_calls;
+    size_t alignment_start_calls;
+    size_t alignment_status_calls;
+    size_t drive_stop_calls;
     uint16_t requested_trace_index;
+    uint16_t requested_alignment_current_counts;
 } mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
@@ -355,6 +361,37 @@ static command_status_t mock_commissioning_get_current_trace(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_alignment_start(
+    void* context,
+    uint16_t alignment_current_counts)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->alignment_start_calls;
+    mock->requested_alignment_current_counts =
+        alignment_current_counts;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_alignment_get_status(
+    void* context,
+    command_alignment_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->alignment_status_calls;
+    *status = mock->alignment_status;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_drive_stop(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->drive_stop_calls;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -393,6 +430,15 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_boot_status = mock_commissioning_get_boot_status,
             .get_encoder_status = mock_commissioning_get_encoder_status,
             .get_current_trace = mock_commissioning_get_current_trace,
+        },
+        .alignment = {
+            .context = commissioning,
+            .start = mock_alignment_start,
+            .get_status = mock_alignment_get_status,
+        },
+        .drive = {
+            .context = commissioning,
+            .stop = mock_drive_stop,
         },
     };
 
@@ -677,6 +723,10 @@ static void test_diagnostics_record_abi(void)
                  DIAGNOSTICS_CAPABILITY_CURRENT_LOOP) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_PRODUCT_IMAGE) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_ALIGNMENT) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -1780,6 +1830,34 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .phase_a_voltage_permille = -100,
             .phase_b_voltage_permille = 99,
         },
+        .alignment_status = {
+            .schema_version = 1u,
+            .state = 7u,
+            .result = 1u,
+            .flags = 0x0Fu,
+            .alignment_current_counts = 125u,
+            .phase_zero_raw = 14249u,
+            .phase_quarter_raw = 14165u,
+            .return_zero_raw = 14250u,
+            .observed_quarter_step_counts = 84u,
+            .quarter_step_error_counts = 2,
+            .closure_error_counts = 1,
+            .encoder_direction = -1,
+            .active_sample_count = 101u,
+            .elapsed_millis = 2550u,
+            .remaining_millis = 1450u,
+            .minimum_current_counts = 50u,
+            .maximum_current_counts = 165u,
+            .expected_quarter_step_counts = 82u,
+            .maximum_quarter_step_error_counts = 12u,
+            .settle_duration_millis = 750u,
+            .sample_duration_millis = 100u,
+            .maximum_duration_millis = 4000u,
+            .minimum_sample_count = 64u,
+            .maximum_sample_span_counts = 8u,
+            .maximum_closure_error_counts = 12u,
+            .maximum_current_error_counts = 8u,
+        },
     };
     native_protocol_frame_t response;
     size_t wire_length;
@@ -1978,6 +2056,113 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[11] == 0xCEu);
     EXPECT_TRUE(response.payload[20] == 0u);
     EXPECT_TRUE(response.payload[21] == 99u);
+
+    {
+        static const uint8_t alignment_payload[] = {0x00u, 0x7Du};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            27u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_START_ALIGNMENT,
+            alignment_payload,
+            sizeof(alignment_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.alignment_start_calls == 1u);
+        EXPECT_TRUE(commissioning.requested_alignment_current_counts ==
+                    125u);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        28u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_ALIGNMENT_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.alignment_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 58u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 7u);
+    EXPECT_TRUE(response.payload[3] == 1u);
+    EXPECT_TRUE(response.payload[4] == 0x0Fu);
+    EXPECT_TRUE(response.payload[5] == 0u);
+    EXPECT_TRUE(response.payload[6] == 125u);
+    EXPECT_TRUE(response.payload[7] == 0x37u);
+    EXPECT_TRUE(response.payload[8] == 0xA9u);
+    EXPECT_TRUE(response.payload[9] == 0x37u);
+    EXPECT_TRUE(response.payload[10] == 0x55u);
+    EXPECT_TRUE(response.payload[11] == 0x37u);
+    EXPECT_TRUE(response.payload[12] == 0xAAu);
+    EXPECT_TRUE(response.payload[13] == 0u);
+    EXPECT_TRUE(response.payload[14] == 84u);
+    EXPECT_TRUE(response.payload[15] == 0u);
+    EXPECT_TRUE(response.payload[16] == 2u);
+    EXPECT_TRUE(response.payload[17] == 0u);
+    EXPECT_TRUE(response.payload[18] == 1u);
+    EXPECT_TRUE(response.payload[19] == 0xFFu);
+    EXPECT_TRUE(response.payload[20] == 0u);
+    EXPECT_TRUE(response.payload[21] == 101u);
+    EXPECT_TRUE(response.payload[22] == 0u);
+    EXPECT_TRUE(response.payload[25] == 0xF6u);
+    EXPECT_TRUE(response.payload[26] == 0u);
+    EXPECT_TRUE(response.payload[29] == 0xAAu);
+    EXPECT_TRUE(response.payload[30] == 0u);
+    EXPECT_TRUE(response.payload[31] == 50u);
+    EXPECT_TRUE(response.payload[32] == 0u);
+    EXPECT_TRUE(response.payload[33] == 165u);
+    EXPECT_TRUE(response.payload[34] == 0u);
+    EXPECT_TRUE(response.payload[35] == 82u);
+    EXPECT_TRUE(response.payload[36] == 0u);
+    EXPECT_TRUE(response.payload[37] == 12u);
+    EXPECT_TRUE(response.payload[38] == 0u);
+    EXPECT_TRUE(response.payload[41] == 0xEEu);
+    EXPECT_TRUE(response.payload[42] == 0u);
+    EXPECT_TRUE(response.payload[45] == 100u);
+    EXPECT_TRUE(response.payload[46] == 0u);
+    EXPECT_TRUE(response.payload[49] == 0xA0u);
+    EXPECT_TRUE(response.payload[50] == 0u);
+    EXPECT_TRUE(response.payload[51] == 64u);
+    EXPECT_TRUE(response.payload[52] == 0u);
+    EXPECT_TRUE(response.payload[53] == 8u);
+    EXPECT_TRUE(response.payload[54] == 0u);
+    EXPECT_TRUE(response.payload[55] == 12u);
+    EXPECT_TRUE(response.payload[56] == 0u);
+    EXPECT_TRUE(response.payload[57] == 8u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        29u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_STOP_DRIVE,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.drive_stop_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
@@ -2286,6 +2471,284 @@ static void test_motor_alignment_accepts_measured_stepper_geometry(void)
         &alignment, 1000u, 1400u));
     motor_alignment_get_status(&alignment, &status);
     EXPECT_TRUE(!status.valid);
+}
+
+static alignment_controller_config_t test_alignment_controller_config(void)
+{
+    const alignment_controller_config_t config = {
+        .settle_duration_millis = 10u,
+        .sample_duration_millis = 4u,
+        .maximum_duration_millis = 100u,
+        .minimum_sample_count = 3u,
+        .maximum_sample_span_counts = 4u,
+        .maximum_closure_error_counts = 4u,
+        .maximum_current_error_counts = 2u,
+    };
+
+    return config;
+}
+
+static motor_alignment_config_t test_motor_alignment_config(void)
+{
+    const motor_alignment_config_t config = {
+        .encoder_counts_per_revolution = 16384u,
+        .electrical_cycles_per_revolution = 50u,
+        .maximum_quarter_step_error_counts = 12u,
+    };
+
+    return config;
+}
+
+static void test_alignment_controller_commits_closed_sequence(void)
+{
+    const alignment_controller_config_t controller_config =
+        test_alignment_controller_config();
+    const motor_alignment_config_t alignment_config =
+        test_motor_alignment_config();
+    alignment_controller_t controller;
+    alignment_controller_status_t controller_status;
+    motor_alignment_t alignment;
+    motor_alignment_status_t alignment_status;
+    int16_t reference_a = 0;
+    int16_t reference_b = 0;
+
+    EXPECT_TRUE(alignment_controller_init(
+        &controller, &controller_config));
+    EXPECT_TRUE(motor_alignment_init(&alignment, &alignment_config));
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 0u));
+    EXPECT_TRUE(alignment_controller_get_reference_counts(
+        &controller, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 125);
+    EXPECT_TRUE(reference_b == 0);
+
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 10u, true, 14249u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 12u, true, 14250u, 124, 1, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 14u, true, 14249u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_get_reference_counts(
+        &controller, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 0);
+    EXPECT_TRUE(reference_b == 125);
+
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 24u, true, 14165u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 26u, true, 14165u, 1, 124, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 28u, true, 14164u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_get_reference_counts(
+        &controller, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 125);
+    EXPECT_TRUE(reference_b == 0);
+
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 38u, true, 14250u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 40u, true, 14249u, 124, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 42u, true, 14250u, 125, 1, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_COMPLETED);
+
+    alignment_controller_get_status(&controller, &controller_status);
+    motor_alignment_get_status(&alignment, &alignment_status);
+    EXPECT_TRUE(controller_status.state ==
+                ALIGNMENT_CONTROLLER_STATE_COMPLETE);
+    EXPECT_TRUE(controller_status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_SUCCESS);
+    EXPECT_TRUE(controller_status.phase_zero_raw == 14249u);
+    EXPECT_TRUE(controller_status.phase_quarter_raw == 14165u);
+    EXPECT_TRUE(controller_status.return_zero_raw == 14250u);
+    EXPECT_TRUE(controller_status.closure_error_counts == 1);
+    EXPECT_TRUE(!alignment_controller_is_active(&controller));
+    EXPECT_TRUE(alignment_status.valid);
+    EXPECT_TRUE(alignment_status.encoder_direction == -1);
+    EXPECT_TRUE(alignment_controller_get_reference_counts(
+        &controller, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 0);
+    EXPECT_TRUE(reference_b == 0);
+}
+
+static void test_alignment_controller_failure_preserves_calibration(void)
+{
+    const alignment_controller_config_t controller_config =
+        test_alignment_controller_config();
+    const motor_alignment_config_t alignment_config =
+        test_motor_alignment_config();
+    alignment_controller_t controller;
+    alignment_controller_status_t controller_status;
+    motor_alignment_t alignment;
+    motor_alignment_status_t alignment_status;
+
+    EXPECT_TRUE(alignment_controller_init(
+        &controller, &controller_config));
+    EXPECT_TRUE(motor_alignment_init(&alignment, &alignment_config));
+    EXPECT_TRUE(motor_alignment_calibrate(
+        &alignment, 14249u, 14165u));
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 100u));
+
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 110u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 112u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 114u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 124u, true, 1400u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 126u, true, 1400u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 128u, true, 1400u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 138u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 140u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 142u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+
+    alignment_controller_get_status(&controller, &controller_status);
+    motor_alignment_get_status(&alignment, &alignment_status);
+    EXPECT_TRUE(controller_status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_GEOMETRY);
+    EXPECT_TRUE(alignment_status.valid);
+    EXPECT_TRUE(alignment_status.electrical_zero_raw == 14249u);
+}
+
+static void test_alignment_controller_aborts_and_rejects_bad_feedback(void)
+{
+    const alignment_controller_config_t controller_config =
+        test_alignment_controller_config();
+    const motor_alignment_config_t alignment_config =
+        test_motor_alignment_config();
+    alignment_controller_t controller;
+    alignment_controller_status_t status;
+    motor_alignment_t alignment;
+
+    EXPECT_TRUE(alignment_controller_init(
+        &controller, &controller_config));
+    EXPECT_TRUE(motor_alignment_init(&alignment, &alignment_config));
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, UINT32_MAX - 5u));
+    alignment_controller_abort(&controller, 2u);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == ALIGNMENT_CONTROLLER_STATE_ABORTED);
+    EXPECT_TRUE(status.result == ALIGNMENT_CONTROLLER_RESULT_ABORTED);
+    EXPECT_TRUE(status.elapsed_millis == 8u);
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 10u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 20u, true, 14249u, 100, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_CURRENT_TRACKING);
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 30u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 40u, false, 0u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_ENCODER_INVALID);
+}
+
+static void test_alignment_controller_rejects_runtime_failures(void)
+{
+    const alignment_controller_config_t controller_config =
+        test_alignment_controller_config();
+    const motor_alignment_config_t alignment_config =
+        test_motor_alignment_config();
+    alignment_controller_t controller;
+    alignment_controller_status_t status;
+    motor_alignment_t alignment;
+
+    EXPECT_TRUE(alignment_controller_init(
+        &controller, &controller_config));
+    EXPECT_TRUE(motor_alignment_init(&alignment, &alignment_config));
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 0u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 1u, true, 14249u, 125, 0, false) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_BACKEND_INACTIVE);
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 100u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 201u, true, 14249u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_DEADLINE);
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 0u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 10u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 12u, true, 1005u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result ==
+                ALIGNMENT_CONTROLLER_RESULT_ENCODER_UNSTABLE);
+
+    EXPECT_TRUE(alignment_controller_start(
+        &controller, &alignment, 125u, 0u));
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 10u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 12u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 14u, true, 1000u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 24u, true, 918u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 26u, true, 918u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 28u, true, 918u, 0, 125, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 38u, true, 1010u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 40u, true, 1010u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_NONE);
+    EXPECT_TRUE(alignment_controller_update(
+        &controller, 42u, true, 1010u, 125, 0, true) ==
+        ALIGNMENT_CONTROLLER_EVENT_FAILED);
+    alignment_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNMENT_CONTROLLER_RESULT_CLOSURE);
 }
 
 static void test_motion_profile_respects_velocity_and_acceleration_limits(void)
@@ -3684,6 +4147,10 @@ int main(void)
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_motor_alignment_accepts_measured_stepper_geometry();
+    test_alignment_controller_commits_closed_sequence();
+    test_alignment_controller_failure_preserves_calibration();
+    test_alignment_controller_aborts_and_rejects_bad_feedback();
+    test_alignment_controller_rejects_runtime_failures();
     test_motion_profile_respects_velocity_and_acceleration_limits();
     test_motion_profile_controlled_stop_decelerates_to_rest();
     test_pi_controller_prevents_integrator_windup();

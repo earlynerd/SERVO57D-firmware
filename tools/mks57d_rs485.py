@@ -26,6 +26,9 @@ COMMAND_STOP_CURRENT_TEST = 0x0103
 COMMAND_GET_BOOT_STATUS = 0x0104
 COMMAND_GET_ENCODER_STATUS = 0x0105
 COMMAND_GET_CURRENT_TRACE = 0x0106
+COMMAND_START_ALIGNMENT = 0x0200
+COMMAND_GET_ALIGNMENT_STATUS = 0x0201
+COMMAND_STOP_DRIVE = 0x0202
 
 STATUS_NAMES = {
     0: "ok",
@@ -129,10 +132,44 @@ ENCODER_ESTIMATOR_FAULT_NAMES = {
     0: "invalid_sample",
 }
 
+ALIGNMENT_STATE_NAMES = {
+    0: "idle",
+    1: "phase_zero_settle",
+    2: "phase_zero_sample",
+    3: "phase_quarter_settle",
+    4: "phase_quarter_sample",
+    5: "return_zero_settle",
+    6: "return_zero_sample",
+    7: "complete",
+    8: "failed",
+    9: "aborted",
+}
+
+ALIGNMENT_RESULT_NAMES = {
+    0: "none",
+    1: "success",
+    2: "aborted",
+    3: "deadline",
+    4: "encoder_invalid",
+    5: "backend_inactive",
+    6: "current_tracking",
+    7: "encoder_unstable",
+    8: "geometry",
+    9: "closure",
+}
+
+ALIGNMENT_FLAG_NAMES = {
+    0: "active",
+    1: "calibration_valid",
+    2: "authority_active",
+    3: "backend_active",
+}
+
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
+ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -509,6 +546,93 @@ def read_current_trace(client: Client) -> list[dict[str, Any]]:
     return samples
 
 
+def query_alignment(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_ALIGNMENT_STATUS)
+    if len(body) != ALIGNMENT_STATUS_BODY.size:
+        raise ProtocolError("alignment-status response has an unexpected length")
+    (
+        schema,
+        state,
+        result,
+        flags,
+        alignment_current_counts,
+        phase_zero_raw,
+        phase_quarter_raw,
+        return_zero_raw,
+        observed_quarter_step_counts,
+        quarter_step_error_counts,
+        closure_error_counts,
+        encoder_direction,
+        active_sample_count,
+        elapsed_millis,
+        remaining_millis,
+        minimum_current_counts,
+        maximum_current_counts,
+        expected_quarter_step_counts,
+        maximum_quarter_step_error_counts,
+        settle_duration_millis,
+        sample_duration_millis,
+        maximum_duration_millis,
+        minimum_sample_count,
+        maximum_sample_span_counts,
+        maximum_closure_error_counts,
+        maximum_current_error_counts,
+    ) = ALIGNMENT_STATUS_BODY.unpack(body)
+    return {
+        "schema": schema,
+        "state": ALIGNMENT_STATE_NAMES.get(state, f"state_{state}"),
+        "result": ALIGNMENT_RESULT_NAMES.get(result, f"result_{result}"),
+        "flags_hex": f"0x{flags:02X}",
+        "flags": active_names(flags, ALIGNMENT_FLAG_NAMES),
+        "alignment_current_counts": alignment_current_counts,
+        "alignment_current_nominal_milliamperes": round(
+            alignment_current_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "phase_zero_raw": phase_zero_raw,
+        "phase_quarter_raw": phase_quarter_raw,
+        "return_zero_raw": return_zero_raw,
+        "observed_quarter_step_counts": observed_quarter_step_counts,
+        "quarter_step_error_counts": quarter_step_error_counts,
+        "closure_error_counts": closure_error_counts,
+        "encoder_direction": encoder_direction,
+        "active_sample_count": active_sample_count,
+        "elapsed_millis": elapsed_millis,
+        "remaining_millis": remaining_millis,
+        "policy": {
+            "minimum_current_counts": minimum_current_counts,
+            "minimum_current_nominal_milliamperes": round(
+                minimum_current_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "maximum_current_counts": maximum_current_counts,
+            "maximum_current_nominal_milliamperes": round(
+                maximum_current_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "expected_quarter_step_counts": expected_quarter_step_counts,
+            "maximum_quarter_step_error_counts": (
+                maximum_quarter_step_error_counts
+            ),
+            "settle_duration_millis": settle_duration_millis,
+            "sample_duration_millis": sample_duration_millis,
+            "maximum_duration_millis": maximum_duration_millis,
+            "minimum_sample_count": minimum_sample_count,
+            "maximum_sample_span_counts": maximum_sample_span_counts,
+            "maximum_closure_error_counts": (
+                maximum_closure_error_counts
+            ),
+            "maximum_current_error_counts": maximum_current_error_counts,
+        },
+    }
+
+
+def stop_drive(client: Client) -> None:
+    try:
+        client.transact(COMMAND_STOP_DRIVE)
+    except ProtocolError as error:
+        if "unknown_command" not in str(error):
+            raise
+        client.transact(COMMAND_STOP_CURRENT_TEST)
+
+
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True), flush=True)
 
@@ -525,6 +649,7 @@ def make_parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="read one drive-diagnostic snapshot")
     commands.add_parser("boot", help="read reset cause, panic, and uptime")
     commands.add_parser("encoder", help="read live encoder position and health")
+    commands.add_parser("alignment", help="read alignment progress and result")
     trace = commands.add_parser(
         "trace", help="read the completed 20 kHz current-loop startup trace"
     )
@@ -538,7 +663,15 @@ def make_parser() -> argparse.ArgumentParser:
     start.add_argument("--leg", choices=LEG_VALUES, default="A1")
     start.add_argument("--duration-ms", type=int, default=10000)
 
-    commands.add_parser("stop", help="stop a local or remote run")
+    commands.add_parser("stop", help="stop any active drive operation")
+
+    align = commands.add_parser(
+        "align", help="run the bounded production alignment procedure"
+    )
+    alignment_current = align.add_mutually_exclusive_group(required=True)
+    alignment_current.add_argument("--counts", type=int)
+    alignment_current.add_argument("--current-ma", type=float)
+    align.add_argument("--interval", type=float, default=0.1)
 
     watch = commands.add_parser("watch", help="stream status as JSON lines")
     watch.add_argument("--interval", type=float, default=0.2)
@@ -633,6 +766,8 @@ def main() -> int:
             )
         elif args.command == "encoder":
             print_json(query_encoder(client))
+        elif args.command == "alignment":
+            print_json(query_alignment(client))
         elif args.command == "trace":
             samples = read_current_trace(client)
             if args.output:
@@ -671,8 +806,52 @@ def main() -> int:
             )
             print_json(query_status(client))
         elif args.command == "stop":
-            client.transact(COMMAND_STOP_CURRENT_TEST)
+            stop_drive(client)
             print_json(query_status(client))
+        elif args.command == "align":
+            if args.counts is not None:
+                alignment_counts = args.counts
+            else:
+                if args.current_ma is None or args.current_ma <= 0.0:
+                    raise ProtocolError("--current-ma must be positive")
+                alignment_counts = round(
+                    args.current_ma / COUNTS_TO_MILLIAMPERES
+                )
+            if not 1 <= alignment_counts <= 0xFFFF:
+                raise ProtocolError(
+                    "alignment current must encode as 1..65535 counts"
+                )
+            if not 0.01 <= args.interval <= 2.0:
+                raise ProtocolError(
+                    "--interval must be in the range 0.01..2.0 seconds"
+                )
+            alignment_status = query_alignment(client)
+            policy = alignment_status["policy"]
+            if not (
+                policy["minimum_current_counts"]
+                <= alignment_counts
+                <= policy["maximum_current_counts"]
+            ):
+                raise ProtocolError(
+                    "alignment current is outside the firmware-reported "
+                    f"range {policy['minimum_current_counts']}.."
+                    f"{policy['maximum_current_counts']} counts"
+                )
+            client.transact(
+                COMMAND_START_ALIGNMENT,
+                struct.pack(">H", alignment_counts),
+            )
+            try:
+                while True:
+                    alignment = query_alignment(client)
+                    print(json.dumps(alignment, sort_keys=True), flush=True)
+                    if alignment["state"] in {"complete", "failed", "aborted"}:
+                        return 0 if alignment["result"] == "success" else 3
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                stop_drive(client)
+                print("stopped", file=sys.stderr)
+                return 130
         elif args.command == "watch":
             while True:
                 status = query_status(client)
@@ -695,7 +874,7 @@ def main() -> int:
                         break
                     time.sleep(args.interval)
             except KeyboardInterrupt:
-                client.transact(COMMAND_STOP_CURRENT_TEST)
+                stop_drive(client)
                 print("stopped", file=sys.stderr)
     return 0
 

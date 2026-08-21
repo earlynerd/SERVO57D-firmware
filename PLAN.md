@@ -175,7 +175,14 @@ Goal: close the mechanical loop incrementally.
 - [x] Determine motor geometry and direction: 50 electrical cycles per
   mechanical revolution and decreasing raw encoder count for increasing
   commanded electrical phase, confirmed by a 757.5 mA cardinal-vector sequence.
-- [ ] Add a controlled alignment/calibration procedure.
+- [x] Add a controlled alignment/calibration procedure with transactional
+  acceptance, bounded production current authority, generic STOP, and native
+  status telemetry.
+- [x] Bench-validate successful and repeatable automatic alignment at the
+  accepted 757 mA point, including exact return closure, generic STOP, retained
+  prior calibration, clean authority release, and reset/fault health.
+- [ ] Exercise physical Menu abort and induced invalid-encoder/readiness-loss
+  shutdown with an immediate supply cutoff available.
 - [x] Integrate the existing host-tested angle unwrapping and velocity estimator
   with the on-board encoder on a timestamped 1 kHz foreground schedule without
   enabling the outer servo or importing host-test motion limits.

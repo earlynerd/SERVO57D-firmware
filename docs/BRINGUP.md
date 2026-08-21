@@ -181,16 +181,72 @@ internal backend failure.
 ## Stage 7 — Toward useful closed-loop motion
 
 The rotating-current test proves the inverter, current loop, motor geometry,
-and encoder direction. The next implementation sequence is:
+and encoder direction. Firmware 0.20.0 bench-validated the timestamped
+mechanical estimator. Firmware 0.21.0 adds the production automatic-alignment
+operation; it must pass the gate below before aligned torque or an outer loop
+uses electrical phase.
 
-1. Measure the encoder offset for known electrical phase states and formalize
-   the 50-electrical-cycles-per-revolution relationship.
-2. Integrate the existing portable angle unwrapping and velocity estimator
-   with timestamped hardware encoder samples.
-3. Add an aligned torque/current command and close the velocity loop.
-4. Add position trajectories, following-error detection, step/direction
+Initial result on the tested motor: accepted. Two 757.4 mA runs each measured
+`9302 → 9222 → 9302`, an -80-count quarter step versus 82 expected, direction
+`-1`, and zero-count closure. Both completed in 2.55 seconds and released
+authority without a current-loop, encoder, reset, or panic fault. A third run
+stopped at 113 ms reported `aborted`, cleared backend/authority, and preserved
+the accepted zero/direction. Menu and induced readiness-loss injection remain.
+
+Use the already accepted motor, 12 V supply, and a current-limited supply
+setting appropriate for the 757 mA test point. Confirm the flashed identity is
+0.21.0 / protocol 1.5 and that the drive is `READY` with no faults:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 identity
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 encoder
+py tools/mks57d_rs485.py --port COM14 alignment
+```
+
+Keep clear of the shaft: alignment deliberately steps the rotor between known
+electrical states. Run the bounded sequence at the previously accepted current:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 align --current-ma 757.5 --interval 0.1
+```
+
+Acceptance requires all of the following:
+
+1. State advances through phase-zero settle/sample, quarter settle/sample, and
+   return settle/sample, then reports `complete` / `success` within four seconds.
+2. Current/backend/authority flags remain active only during the operation and
+   all clear afterward; current-loop and supervisor fault fields remain zero.
+3. The observed quarter step is near 82 counts with direction `-1`; the initial
+   software tolerance is ±12 counts. Each sampling window spans no more than
+   8 raw counts and return closure is within 12 counts.
+4. A following `encoder` query reports alignment and electrical phase valid,
+   and a following `status` reports `READY` with the bridge backend inactive.
+5. Run a second sequence and confirm repeatable zero, direction, quarter step,
+   closure, and clean release. Do not promote the initial timing/tolerance
+   candidates without recording the observed distributions.
+
+Validate stop separately by starting `align` in one terminal and issuing the
+following from another during the first settle interval:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 stop
+```
+
+The alignment result must become `aborted`, the prior accepted calibration must
+remain valid and unchanged, and authority/backend activity must clear. Repeat
+with Menu and then with an induced encoder-readiness loss; Menu is an orderly
+abort, while readiness loss during authority must enter the common fault path.
+Do not perform the readiness-loss injection until an immediate supply cutoff is
+available and the ordinary/STOP runs have passed.
+
+After that gate, the next implementation sequence is:
+
+1. Connect the aligned torque/current command to the proven phase-current backend.
+2. Close the velocity loop at low gains and explicit current/velocity/acceleration bounds.
+3. Add position trajectories, following-error detection, step/direction
    capture, and native motion commands.
-5. Characterize the useful current, speed, acceleration, bus-voltage, and
+4. Characterize the useful current, speed, acceleration, bus-voltage, and
    thermal envelope with encoder tracking as the acceptance measure.
 
 ## Stop conditions during motor development

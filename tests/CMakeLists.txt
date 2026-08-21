@@ -5,6 +5,7 @@ add_executable(host_unit_tests
     ../firmware/src/app/command_service.c
     ../firmware/src/app/motion_manager.c
     ../firmware/src/app/step_direction.c
+    ../firmware/src/control/alignment_controller.c
     ../firmware/src/control/angle_tracker.c
     ../firmware/src/control/current_controller.c
     ../firmware/src/control/motion_profile.c

@@ -243,3 +243,12 @@
 - **Recently-touched?** yes — the limiting constants and current-trace tuning image were the current working-tree focus.
 - **Status:** Resolved and bench-confirmed on firmware 0.18.2. Identity, boot, and status were clean after flash; a 303 mA step completed with 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. Staged 454 mA / 10 Hz and 606 mA / 15 Hz runs tracked -12 and -18 RPM without faults. A visible 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 mechanical revolutions versus 2.00 commanded, with zero current-loop, ADC, encoder, reset, or protocol faults. Peak observed phase-voltage effort was 25.2% of the bus, leaving substantial headroom below the 70% ceiling.
 - **Time to fix:** approximately 55 minutes of code/timing audit, implementation, build validation, bounded bench expansion, and analysis.
+
+## 2026-08-20 — Firmware 0.21 automatic alignment passed initial hardware acceptance
+
+- **Observation:** After flashing 0.21.0, automatic alignment needed identity, readiness, current/encoder health, repeatability, transactional calibration, generic STOP, authority release, and reset/fault validation on COM14.
+- **Root cause:** No defect observed; `firmware/src/control/alignment_controller.c:246`, `firmware/src/main.c:388`, and `firmware/src/main.c:1698` produced two identical successful 757.4 mA sequences of `9302 → 9222 → 9302`, followed by a clean STOP-aborted attempt.
+- **Fix:** No firmware change required; accept successful/repeatable alignment and generic STOP on the tested motor while retaining Menu and induced encoder-readiness-loss injection as later physical tests.
+- **Class:** automatic-alignment-bench-validation
+- **Recently-touched?** yes
+- **Time to fix:** no fix required; approximately one bounded bench-validation pass

@@ -8,7 +8,7 @@ Manufacturer executables and archives belong under ignored `vendor/local/`, not 
 
 The motor tools below are product service and engineering-diagnostic tools, not
 an alternate commissioning firmware stack. `motor_test.py`, the identity/status/
-encoder/STOP portions of `mks57d_rs485.py`, the current trace, and both analyzers
+encoder/alignment/STOP portions of `mks57d_rs485.py`, the current trace, and both analyzers
 are retained because they provide repeatable acceptance, tuning, and fault
 evidence. Current-test wire names from native protocol 1.3 remain compatibility
 labels; START is now a diagnostic request to the product drive supervisor and
@@ -23,7 +23,7 @@ role. No new feature should extend them into a second control path.
 `motor_test.py` is the normal human-facing motor diagnostic and regression loop. It runs one
 firmware-bounded rotating-current move, captures the diagnostic stream and
 20 kHz startup trace, analyzes current tracking and encoder motion, writes a
-self-contained HTML report with four plots, and opens it. On protocol 1.4 it
+self-contained HTML report with four plots, and opens it. On protocol 1.4+
 also rejects an unready or faulted mechanical estimator and records the worst
 observed estimator sample interval; saved protocol-1.3 runs remain supported:
 
@@ -62,6 +62,8 @@ py tools/mks57d_rs485.py list
 py tools/mks57d_rs485.py --port COM14 identity
 py tools/mks57d_rs485.py --port COM14 boot
 py tools/mks57d_rs485.py --port COM14 encoder
+py tools/mks57d_rs485.py --port COM14 alignment
+py tools/mks57d_rs485.py --port COM14 align --current-ma 757.5 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
@@ -70,15 +72,25 @@ py tools/mks57d_rs485.py --port COM14 stop
 ```
 
 `encoder` reports the live 14-bit magnetic angle and health counters. On
-protocol 1.4 it also reports unwrapped mechanical position, filtered velocity,
+protocol 1.4+ it also reports unwrapped mechanical position, filtered velocity,
 estimator faults, alignment/electrical-phase validity, and the latest and
 maximum observed sample intervals. The decoder remains compatible with the
 shorter protocol-1.3 encoder schema. `watch` and `run` attach the same encoder
 snapshot to every current-loop record so electrical commutation and physical
-rotor motion can be compared directly. Protocol 1.3 and later firmware also
-records the first 256 current-loop samples after
-each start. Run a nearly stationary reference for a clean startup step, then
-read and analyze it after authority ends:
+rotor motion can be compared directly.
+
+On firmware 0.21.0, `alignment` reads the production alignment state without
+energizing the motor. `align` requests the bounded phase-zero/quarter/return
+sequence, polls its structured result, and sends the generic drive STOP on
+Ctrl+C. The recommended first bench command uses the already accepted current
+point shown above. The status output includes the firmware-reported current,
+timing, sample-count, stability, geometry, closure, and current-error policy;
+the CLI preflights current against that contract before START. Calibration is
+updated only if all of those runtime checks pass.
+
+Protocol 1.3 and later firmware also records the first 256 current-loop samples
+after each start. Run a nearly stationary reference for a clean startup step,
+then read and analyze it after authority ends:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 0.001

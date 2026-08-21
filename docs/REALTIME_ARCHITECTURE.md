@@ -1,10 +1,12 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.20.0 implements the fast-path portion of this architecture:
+Status: firmware 0.21.0 implements the fast path and production alignment layer:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
-fixed-point current control, and a carrier deadline guardian. The path is
-bench-proven with encoder-observed motor rotation. This document also defines
-the next alignment, velocity, and position layers.
+fixed-point current control, a carrier deadline guardian, and a foreground
+automatic-alignment controller using the same backend and supervisor. The fast
+path is bench-proven with encoder-observed motor rotation; successful,
+repeatable alignment and generic STOP are also bench-proven. This document defines
+the next velocity and position layers.
 
 ## Goals
 
@@ -451,5 +453,5 @@ Verification for the active backend and next control layers includes:
 | Step/direction capture peripheral | Physical pin alternate functions and maximum required input rate |
 
 These decisions guide hardening and the broader operating envelope. They do not
-block the proven low-current backend or the next alignment, velocity, and
-position milestones.
+block the proven current backend, automatic-alignment bench gate, or subsequent
+velocity and position milestones.

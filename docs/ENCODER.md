@@ -1,11 +1,13 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.20.0 schedules encoder reads at 1 kHz in foreground,
+Status: firmware 0.21.0 schedules encoder reads at 1 kHz in foreground,
 including during current-loop operation, assigns accepted samples microsecond
-timestamps, and feeds the shared mechanical angle/velocity estimator. Native
-protocol 1.4 exposes raw health, unwrapped position, filtered velocity,
-estimator faults, alignment validity, and latest/maximum sample intervals. The
-new schedule is build-validated and awaits hardware timing/noise regression.
+timestamps, and feeds the shared mechanical angle/velocity estimator and
+automatic-alignment controller. Native protocol 1.5 exposes raw health,
+unwrapped position, filtered velocity, estimator faults, alignment validity,
+sample timing, and alignment progress/result. The 1 kHz schedule passed its
+initial idle and active hardware regression; two automatic alignments reproduced
+the accepted geometry and zero exactly, and STOP preserved the valid calibration.
 
 ## Evidence and confidence
 
@@ -77,7 +79,7 @@ is a scheduling/feedback validity check, not a motor speed command limit. Its
 mechanical-speed endpoint and is likewise not exposed as a motion set-point
 ceiling; both values are part of the traceable-limit audit before release.
 
-SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.20.0
+SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.21.0
 later claims PB0/PB1 and PA6/PA7 for current-loop PWM while separate
 input monitoring reads PB7 `nEN` and configures PB8/PB9/PB12/PB13 and PA15 as
 pulled-up inputs. Encoder acquisition continues throughout an active run.
@@ -120,9 +122,10 @@ settled velocity averaged -0.3953 revolution/s, consistent with the independentl
 derived -23.51 RPM and the -24 RPM command. No encoder or estimator fault
 occurred.
 
-Remaining work is to test the no-magnet/readiness-loss path and implement the
-supervisor-owned controlled alignment procedure. That procedure will establish
-the per-motor electrical zero and persist it transactionally before motion can
-use electrical phase. Foreground acquisition remains subject to revalidation
+Remaining work is to test the no-magnet/readiness-loss and Menu-abort paths.
+The bench-validated supervisor-owned automatic alignment procedure
+establishes the per-motor electrical zero transactionally before motion can use
+electrical phase; persistence across power cycles remains separate work.
+Foreground acquisition remains subject to revalidation
 after outer-loop compute is added; timer-released SPI/DMA remains available if
 that later load makes its jitter unsuitable.

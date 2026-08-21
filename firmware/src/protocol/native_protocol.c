@@ -344,6 +344,15 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_CURRENT_TRACE:
             *operation = COMMAND_OPERATION_GET_CURRENT_TRACE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_START_ALIGNMENT:
+            *operation = COMMAND_OPERATION_START_ALIGNMENT;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_ALIGNMENT_STATUS:
+            *operation = COMMAND_OPERATION_GET_ALIGNMENT_STATUS;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_STOP_DRIVE:
+            *operation = COMMAND_OPERATION_STOP_DRIVE;
+            return true;
         default:
             return false;
     }
@@ -597,6 +606,63 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u16_be(&response_frame->payload[20],
                              (uint16_t)trace->phase_b_voltage_permille);
                 payload_length = 22u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_ALIGNMENT_STATUS:
+            {
+                const command_alignment_status_t* status =
+                    &command_response->data.alignment_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->state;
+                response_frame->payload[3] = status->result;
+                response_frame->payload[4] = status->flags;
+                write_u16_be(&response_frame->payload[5],
+                             status->alignment_current_counts);
+                write_u16_be(&response_frame->payload[7],
+                             status->phase_zero_raw);
+                write_u16_be(&response_frame->payload[9],
+                             status->phase_quarter_raw);
+                write_u16_be(&response_frame->payload[11],
+                             status->return_zero_raw);
+                write_u16_be(&response_frame->payload[13],
+                             status->observed_quarter_step_counts);
+                write_u16_be(&response_frame->payload[15],
+                             (uint16_t)status->quarter_step_error_counts);
+                write_u16_be(&response_frame->payload[17],
+                             (uint16_t)status->closure_error_counts);
+                response_frame->payload[19] =
+                    (uint8_t)status->encoder_direction;
+                write_u16_be(&response_frame->payload[20],
+                             status->active_sample_count);
+                write_u32_be(&response_frame->payload[22],
+                             status->elapsed_millis);
+                write_u32_be(&response_frame->payload[26],
+                             status->remaining_millis);
+                write_u16_be(&response_frame->payload[30],
+                             status->minimum_current_counts);
+                write_u16_be(&response_frame->payload[32],
+                             status->maximum_current_counts);
+                write_u16_be(&response_frame->payload[34],
+                             status->expected_quarter_step_counts);
+                write_u16_be(&response_frame->payload[36],
+                             status->maximum_quarter_step_error_counts);
+                write_u32_be(&response_frame->payload[38],
+                             status->settle_duration_millis);
+                write_u32_be(&response_frame->payload[42],
+                             status->sample_duration_millis);
+                write_u32_be(&response_frame->payload[46],
+                             status->maximum_duration_millis);
+                write_u16_be(&response_frame->payload[50],
+                             status->minimum_sample_count);
+                write_u16_be(&response_frame->payload[52],
+                             status->maximum_sample_span_counts);
+                write_u16_be(&response_frame->payload[54],
+                             status->maximum_closure_error_counts);
+                write_u16_be(&response_frame->payload[56],
+                             status->maximum_current_error_counts);
+                payload_length = 58u;
                 break;
             }
 

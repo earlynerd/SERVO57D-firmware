@@ -168,6 +168,59 @@ void command_service_dispatch(const command_service_context_t* context,
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 
+        case COMMAND_OPERATION_START_ALIGNMENT:
+            if (request->payload_length != 2u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->alignment.start == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->alignment.start(
+                context->alignment.context,
+                read_u16_be(request->payload));
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
+        case COMMAND_OPERATION_GET_ALIGNMENT_STATUS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->alignment.get_status == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->alignment.get_status(
+                context->alignment.context,
+                &response->data.alignment_status);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_ALIGNMENT_STATUS;
+            }
+            return;
+
+        case COMMAND_OPERATION_STOP_DRIVE:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->drive.stop == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->drive.stop(
+                context->drive.context);
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
         case COMMAND_OPERATION_GET_BOOT_STATUS:
             if (request->payload_length != 0u)
             {

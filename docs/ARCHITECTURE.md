@@ -1,8 +1,8 @@
 # Firmware Architecture
 
-Status: firmware 0.20.0 implements the reset-safe foundation, continuous
+Status: firmware 0.21.0 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
-transport, native product diagnostics, an authoritative drive supervisor, and a
+transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
 loop. Low-zero sign-magnitude modulation, 80%-carrier sampling, raw overcurrent
 trips, and the carrier deadline guardian are bench-proven with an attached
@@ -10,8 +10,10 @@ motor. An encoder-observed 757 mA, 20 Hz electrical run produced smooth motion
 at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault
 on 0.18.2. Firmware 0.19.0 has since passed supervisor-authorized 303 mA / 5 Hz
 deadline release and 151.5 mA / 5 Hz explicit-STOP motor regressions without a
-fault, reset, or retained panic. Firmware 0.20.0 adds the timestamped 1 kHz
-mechanical estimator and measured stepper geometry; its hardware regression and
+fault, reset, or retained panic. Firmware 0.20.0 added the timestamped 1 kHz
+mechanical estimator and measured stepper geometry and passed its initial
+hardware regression. Firmware 0.21.0 adds transactional automatic alignment;
+two successful runs plus generic STOP are bench-proven, while Menu and
 readiness-loss injection remain open.
 
 ## Design priorities
@@ -58,7 +60,8 @@ The current image implements:
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
   adapter serving discovery, boot and encoder telemetry, and supervisor-gated
-  current diagnostics from foreground, including status and STOP while active.
+  current diagnostics and automatic alignment from foreground, including
+  status and generic STOP while active.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - An edge-aligned 20 kHz TIM3 backend mapping channels 1-4 to
@@ -70,6 +73,10 @@ The current image implements:
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
   diagnostic and motion authority, and bridge deauthorization on faults.
+- A portable automatic-alignment controller that applies phase-zero,
+  positive-quarter, and return-zero current vectors through the proven backend;
+  validates current tracking, encoder stability, geometry, closure, and its
+  deadline; and transactionally commits zero/direction only on full success.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with

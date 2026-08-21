@@ -6,6 +6,7 @@
 #include "mks57d/adc1.h"
 #include "mks57d/adc_calibration.h"
 #include "mks57d/adc_display.h"
+#include "mks57d/alignment_controller.h"
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/board.h"
@@ -62,10 +63,12 @@ enum
     COMMISSIONING_STATUS_SCHEMA_VERSION = 2u,
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 1u,
+    ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 50000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 100u,
     CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u,
+    ALIGNMENT_MINIMUM_CURRENT_COUNTS = 50u,
     ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0
 };
 
@@ -86,6 +89,7 @@ typedef struct
     uint32_t* estimator_sample_interval_us;
     uint32_t* estimator_maximum_sample_interval_us;
     motor_alignment_t* motor_alignment;
+    alignment_controller_t* alignment_controller;
     bridge_characterizer_t* bridge_characterizer;
     uint32_t* raw_input_levels;
     uint32_t* input_levels;
@@ -99,6 +103,9 @@ typedef struct
     uint8_t remote_start_leg;
     uint32_t remote_start_duration_millis;
     uint32_t remote_run_deadline_millis;
+    uint16_t alignment_current_counts;
+    bool alignment_start_requested;
+    bool alignment_stop_requested;
 } commissioning_command_context_t;
 
 static bool encoder_control_ready(
@@ -305,7 +312,10 @@ static command_status_t commissioning_configure(
     }
     if (app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->bridge_characterizer->active ||
-        commissioning->remote_start_requested)
+        commissioning->remote_start_requested ||
+        commissioning->alignment_start_requested ||
+        alignment_controller_is_active(
+            commissioning->alignment_controller))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
@@ -343,6 +353,9 @@ static command_status_t commissioning_start(
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
+        commissioning->alignment_start_requested ||
+        alignment_controller_is_active(
+            commissioning->alignment_controller) ||
         (loop.fault_flags != 0u) ||
         ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
     {
@@ -367,6 +380,164 @@ static command_status_t commissioning_stop(void* context)
 
     commissioning->remote_start_requested = false;
     commissioning->remote_stop_requested = true;
+    commissioning->alignment_start_requested = false;
+    commissioning->alignment_stop_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t alignment_start(
+    void* context,
+    uint16_t alignment_current_counts)
+{
+    commissioning_command_context_t* commissioning = context;
+    current_loop_backend_snapshot_t loop = {0};
+
+    if ((commissioning == NULL) ||
+        (commissioning->alignment_controller == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if ((alignment_current_counts < ALIGNMENT_MINIMUM_CURRENT_COUNTS) ||
+        (alignment_current_counts >
+         commissioning->maximum_test_amplitude_counts))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    current_loop_backend_get_snapshot(&loop);
+    if ((commissioning->supervisor == NULL) ||
+        (commissioning->supervisor->state != APP_STATE_READY) ||
+        (commissioning->supervisor->authority != APP_AUTHORITY_NONE) ||
+        !*commissioning->bridge_ready ||
+        app_supervisor_bridge_authorized(commissioning->supervisor) ||
+        commissioning->bridge_characterizer->active ||
+        commissioning->remote_start_requested ||
+        commissioning->alignment_start_requested ||
+        alignment_controller_is_active(
+            commissioning->alignment_controller) ||
+        (loop.fault_flags != 0u) ||
+        ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    commissioning->alignment_current_counts =
+        alignment_current_counts;
+    commissioning->alignment_stop_requested = false;
+    commissioning->alignment_start_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t alignment_get_status(
+    void* context,
+    command_alignment_status_t* status)
+{
+    commissioning_command_context_t* commissioning = context;
+    alignment_controller_status_t controller_status;
+    motor_alignment_status_t alignment_status;
+    current_loop_backend_snapshot_t loop = {0};
+
+    if ((commissioning == NULL) || (status == NULL) ||
+        (commissioning->alignment_controller == NULL) ||
+        (commissioning->motor_alignment == NULL) ||
+        (commissioning->supervisor == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    alignment_controller_get_status(
+        commissioning->alignment_controller, &controller_status);
+    motor_alignment_get_status(
+        commissioning->motor_alignment, &alignment_status);
+    current_loop_backend_get_snapshot(&loop);
+    memset(status, 0, sizeof(*status));
+    status->schema_version = ALIGNMENT_STATUS_SCHEMA_VERSION;
+    status->state = (uint8_t)controller_status.state;
+    status->result = (uint8_t)controller_status.result;
+    status->alignment_current_counts =
+        controller_status.alignment_current_counts;
+    status->phase_zero_raw = controller_status.phase_zero_raw;
+    status->phase_quarter_raw =
+        controller_status.phase_quarter_raw;
+    status->return_zero_raw = controller_status.return_zero_raw;
+    status->observed_quarter_step_counts =
+        controller_status.observed_quarter_step_counts;
+    status->quarter_step_error_counts =
+        controller_status.quarter_step_error_counts;
+    status->closure_error_counts =
+        controller_status.closure_error_counts;
+    status->encoder_direction = controller_status.encoder_direction;
+    if ((controller_status.state ==
+         ALIGNMENT_CONTROLLER_STATE_IDLE) && alignment_status.valid)
+    {
+        status->phase_zero_raw = alignment_status.electrical_zero_raw;
+        status->observed_quarter_step_counts =
+            alignment_status.observed_quarter_step_counts;
+        status->quarter_step_error_counts =
+            alignment_status.quarter_step_error_counts;
+        status->encoder_direction = alignment_status.encoder_direction;
+    }
+    status->active_sample_count =
+        controller_status.active_sample_count;
+    status->elapsed_millis = controller_status.elapsed_millis;
+    if (alignment_controller_is_active(
+            commissioning->alignment_controller))
+    {
+        status->flags |= COMMAND_ALIGNMENT_FLAG_ACTIVE;
+        if (controller_status.elapsed_millis <
+            commissioning->alignment_controller->config.
+                maximum_duration_millis)
+        {
+            status->remaining_millis =
+                commissioning->alignment_controller->config.
+                    maximum_duration_millis -
+                controller_status.elapsed_millis;
+        }
+    }
+    if (alignment_status.valid)
+    {
+        status->flags |= COMMAND_ALIGNMENT_FLAG_CALIBRATION_VALID;
+    }
+    if ((commissioning->supervisor->state == APP_STATE_ALIGN) &&
+        (commissioning->supervisor->authority == APP_AUTHORITY_MOTION))
+    {
+        status->flags |= COMMAND_ALIGNMENT_FLAG_AUTHORITY_ACTIVE;
+    }
+    if (loop.active)
+    {
+        status->flags |= COMMAND_ALIGNMENT_FLAG_BACKEND_ACTIVE;
+    }
+    status->minimum_current_counts = ALIGNMENT_MINIMUM_CURRENT_COUNTS;
+    status->maximum_current_counts =
+        commissioning->maximum_test_amplitude_counts;
+    status->expected_quarter_step_counts = (uint16_t)(
+        ((uint32_t)commissioning->motor_alignment->config.
+             encoder_counts_per_revolution +
+         ((uint32_t)commissioning->motor_alignment->config.
+              electrical_cycles_per_revolution * 2u)) /
+        ((uint32_t)commissioning->motor_alignment->config.
+             electrical_cycles_per_revolution * 4u));
+    status->maximum_quarter_step_error_counts =
+        commissioning->motor_alignment->config.
+            maximum_quarter_step_error_counts;
+    status->settle_duration_millis =
+        commissioning->alignment_controller->config.
+            settle_duration_millis;
+    status->sample_duration_millis =
+        commissioning->alignment_controller->config.
+            sample_duration_millis;
+    status->maximum_duration_millis =
+        commissioning->alignment_controller->config.
+            maximum_duration_millis;
+    status->minimum_sample_count =
+        commissioning->alignment_controller->config.
+            minimum_sample_count;
+    status->maximum_sample_span_counts =
+        commissioning->alignment_controller->config.
+            maximum_sample_span_counts;
+    status->maximum_closure_error_counts =
+        commissioning->alignment_controller->config.
+            maximum_closure_error_counts;
+    status->maximum_current_error_counts =
+        commissioning->alignment_controller->config.
+            maximum_current_error_counts;
     return COMMAND_STATUS_OK;
 }
 
@@ -656,7 +827,20 @@ int main(void)
         ENCODER_MAXIMUM_SAMPLE_INTERVAL_US = 20000u,
         ENCODER_COUNTS_PER_REVOLUTION = 16384u,
         MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION = 50u,
+        /*
+         * Initial alignment-policy candidates, not hardware or motor limits.
+         * The 50-count floor comes from the repeatable 303 mA cardinal test;
+         * the 165-count ceiling is the current backend's existing qualified
+         * request contract. Tune the observation tolerances from bench data.
+         */
         ALIGNMENT_MAXIMUM_QUARTER_STEP_ERROR_COUNTS = 12u,
+        ALIGNMENT_SETTLE_DURATION_MS = 750u,
+        ALIGNMENT_SAMPLE_DURATION_MS = 100u,
+        ALIGNMENT_MAXIMUM_DURATION_MS = 4000u,
+        ALIGNMENT_MINIMUM_SAMPLE_COUNT = 64u,
+        ALIGNMENT_MAXIMUM_SAMPLE_SPAN_COUNTS = 8u,
+        ALIGNMENT_MAXIMUM_CLOSURE_ERROR_COUNTS = 12u,
+        ALIGNMENT_MAXIMUM_CURRENT_ERROR_COUNTS = 8u,
         ADC_SNAPSHOT_PERIOD_MS = 10u,
         INPUT_SAMPLE_PERIOD_MS = 10u,
         CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
@@ -702,6 +886,19 @@ int main(void)
             MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION,
         .maximum_quarter_step_error_counts =
             ALIGNMENT_MAXIMUM_QUARTER_STEP_ERROR_COUNTS,
+    };
+    alignment_controller_t alignment_controller;
+    const alignment_controller_config_t alignment_controller_config = {
+        .settle_duration_millis = ALIGNMENT_SETTLE_DURATION_MS,
+        .sample_duration_millis = ALIGNMENT_SAMPLE_DURATION_MS,
+        .maximum_duration_millis = ALIGNMENT_MAXIMUM_DURATION_MS,
+        .minimum_sample_count = ALIGNMENT_MINIMUM_SAMPLE_COUNT,
+        .maximum_sample_span_counts =
+            ALIGNMENT_MAXIMUM_SAMPLE_SPAN_COUNTS,
+        .maximum_closure_error_counts =
+            ALIGNMENT_MAXIMUM_CLOSURE_ERROR_COUNTS,
+        .maximum_current_error_counts =
+            ALIGNMENT_MAXIMUM_CURRENT_ERROR_COUNTS,
     };
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
@@ -783,6 +980,7 @@ int main(void)
         .estimator_maximum_sample_interval_us =
             &estimator_maximum_sample_interval_us,
         .motor_alignment = &motor_alignment,
+        .alignment_controller = &alignment_controller,
         .bridge_characterizer = &bridge_characterizer,
         .raw_input_levels = &raw_input_levels,
         .input_levels = &input_levels,
@@ -810,6 +1008,15 @@ int main(void)
             .get_encoder_status = commissioning_get_encoder_status,
             .get_current_trace = commissioning_get_current_trace,
         },
+        .alignment = {
+            .context = &commissioning_context,
+            .start = alignment_start,
+            .get_status = alignment_get_status,
+        },
+        .drive = {
+            .context = &commissioning_context,
+            .stop = commissioning_stop,
+        },
     };
 
     if (!platform_early_memory_ready())
@@ -823,7 +1030,9 @@ int main(void)
     }
     if (!angle_tracker_init(&angle_tracker, &angle_tracker_config) ||
         !motor_alignment_init(
-            &motor_alignment, &motor_alignment_config))
+            &motor_alignment, &motor_alignment_config) ||
+        !alignment_controller_init(
+            &alignment_controller, &alignment_controller_config))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
@@ -1079,8 +1288,99 @@ int main(void)
             {
                 rs485_ready = false;
                 commissioning_context.remote_stop_requested = true;
+                commissioning_context.alignment_stop_requested = true;
                 diagnostics_due = true;
             }
+        }
+
+        if (alignment_controller_is_active(&alignment_controller) &&
+            ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        {
+            commissioning_context.alignment_stop_requested = true;
+        }
+
+        if (commissioning_context.alignment_stop_requested)
+        {
+            const bool alignment_was_active =
+                alignment_controller_is_active(&alignment_controller);
+
+            commissioning_context.alignment_start_requested = false;
+            commissioning_context.alignment_stop_requested = false;
+            if (alignment_was_active)
+            {
+                alignment_controller_abort(
+                    &alignment_controller, now);
+                if (!current_loop_backend_stop())
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                }
+                current_loop_backend_get_snapshot(
+                    &current_loop_snapshot);
+                if (current_loop_snapshot.fault_flags != 0u)
+                {
+                    bridge_ready = false;
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                }
+                else if (!app_supervisor_handle_event(
+                             &drive_supervisor,
+                             APP_EVENT_AUTHORITY_RELEASED,
+                             (app_transition_context_t){0}))
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_INTERNAL_INVARIANT);
+                }
+                diagnostics_due = true;
+            }
+        }
+
+        if (commissioning_context.alignment_start_requested)
+        {
+            const app_transition_context_t energize_context = {
+                .safe_to_energize =
+                    bridge_ready && adc_snapshot_valid &&
+                    encoder_control_ready(
+                        &encoder_diagnostics,
+                        &angle_tracker,
+                        estimator_fault_flags),
+            };
+            int16_t current_a_reference_counts;
+            int16_t current_b_reference_counts;
+
+            commissioning_context.alignment_start_requested = false;
+            if (!app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_ALIGNMENT_REQUESTED,
+                    energize_context) ||
+                !alignment_controller_start(
+                    &alignment_controller,
+                    &motor_alignment,
+                    commissioning_context.alignment_current_counts,
+                    now) ||
+                !alignment_controller_get_reference_counts(
+                    &alignment_controller,
+                    &current_a_reference_counts,
+                    &current_b_reference_counts) ||
+                !current_loop_backend_set_reference_counts(
+                    current_a_reference_counts,
+                    current_b_reference_counts) ||
+                !current_loop_backend_start())
+            {
+                alignment_controller_abort(
+                    &alignment_controller, now);
+                (void)current_loop_backend_stop();
+                bridge_ready = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+            }
+            diagnostics_due = true;
         }
 
         bridge_was_active = bridge_characterizer.active;
@@ -1248,6 +1548,20 @@ int main(void)
             board_bridge_force_low_zero();
             platform_panic(PANIC_INTERNAL_INVARIANT);
         }
+        if (alignment_controller_is_active(&alignment_controller) &&
+            ((drive_supervisor.state != APP_STATE_ALIGN) ||
+             (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
+             !app_supervisor_bridge_authorized(&drive_supervisor)))
+        {
+            alignment_controller_abort(&alignment_controller, now);
+            (void)current_loop_backend_stop();
+            (void)app_supervisor_handle_event(
+                &drive_supervisor,
+                APP_EVENT_FAULT_DETECTED,
+                (app_transition_context_t){0});
+            board_bridge_force_low_zero();
+            platform_panic(PANIC_INTERNAL_INVARIANT);
+        }
 
         if (app_supervisor_bridge_authorized(&drive_supervisor) &&
             (drive_supervisor.authority == APP_AUTHORITY_DIAGNOSTIC) &&
@@ -1335,32 +1649,126 @@ int main(void)
                             estimator_sample_interval_us;
                     }
                 }
-                if ((sample.flags == 0u) &&
-                    !angle_tracker_push(
-                        &angle_tracker,
-                        sample.angle_raw,
-                        encoder_timestamp_us))
+                if (sample.flags == 0u)
                 {
-                    estimator_fault_flags |=
-                        ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE;
-                    bridge_characterizer_stop(&bridge_characterizer);
-                    commissioning_context.remote_authority_active = false;
-                    commissioning_context.remote_start_requested = false;
-                    commissioning_context.remote_stop_requested = false;
-                    if (app_supervisor_bridge_authorized(
-                            &drive_supervisor) &&
-                        !current_loop_backend_stop())
+                    if (!angle_tracker_push(
+                            &angle_tracker,
+                            sample.angle_raw,
+                            encoder_timestamp_us))
                     {
+                        estimator_fault_flags |=
+                            ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE;
+                        bridge_characterizer_stop(
+                            &bridge_characterizer);
+                        alignment_controller_abort(
+                            &alignment_controller, now);
+                        commissioning_context.remote_authority_active =
+                            false;
+                        commissioning_context.remote_start_requested =
+                            false;
+                        commissioning_context.remote_stop_requested =
+                            false;
+                        commissioning_context.alignment_start_requested =
+                            false;
+                        commissioning_context.alignment_stop_requested =
+                            false;
+                        if (app_supervisor_bridge_authorized(
+                                &drive_supervisor) &&
+                            !current_loop_backend_stop())
+                        {
+                            board_bridge_force_low_zero();
+                            platform_panic(
+                                PANIC_BRIDGE_CHARACTERIZER_INIT);
+                        }
+                        bridge_ready = false;
+                        (void)app_supervisor_handle_event(
+                            &drive_supervisor,
+                            APP_EVENT_FAULT_DETECTED,
+                            (app_transition_context_t){0});
                         board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                        diagnostics_due = true;
                     }
-                    bridge_ready = false;
-                    (void)app_supervisor_handle_event(
-                        &drive_supervisor,
-                        APP_EVENT_FAULT_DETECTED,
-                        (app_transition_context_t){0});
-                    board_bridge_force_low_zero();
-                    diagnostics_due = true;
+                    else if (alignment_controller_is_active(
+                                 &alignment_controller))
+                    {
+                        alignment_controller_event_t alignment_event;
+
+                        current_loop_backend_get_snapshot(
+                            &current_loop_snapshot);
+                        alignment_event = alignment_controller_update(
+                            &alignment_controller,
+                            now,
+                            true,
+                            sample.angle_raw,
+                            current_loop_snapshot.latest_output.
+                                current_a_measured_counts,
+                            current_loop_snapshot.latest_output.
+                                current_b_measured_counts,
+                            current_loop_snapshot.active);
+                        if (alignment_event ==
+                            ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED)
+                        {
+                            int16_t current_a_reference_counts;
+                            int16_t current_b_reference_counts;
+
+                            if (!alignment_controller_get_reference_counts(
+                                    &alignment_controller,
+                                    &current_a_reference_counts,
+                                    &current_b_reference_counts) ||
+                                !current_loop_backend_set_reference_counts(
+                                    current_a_reference_counts,
+                                    current_b_reference_counts))
+                            {
+                                alignment_controller_abort(
+                                    &alignment_controller, now);
+                                bridge_ready = false;
+                                (void)current_loop_backend_stop();
+                                (void)app_supervisor_handle_event(
+                                    &drive_supervisor,
+                                    APP_EVENT_FAULT_DETECTED,
+                                    (app_transition_context_t){0});
+                                board_bridge_force_low_zero();
+                            }
+                            diagnostics_due = true;
+                        }
+                        else if ((alignment_event ==
+                                  ALIGNMENT_CONTROLLER_EVENT_COMPLETED) ||
+                                 (alignment_event ==
+                                  ALIGNMENT_CONTROLLER_EVENT_FAILED))
+                        {
+                            app_event_t supervisor_event =
+                                (alignment_event ==
+                                 ALIGNMENT_CONTROLLER_EVENT_COMPLETED) ?
+                                    APP_EVENT_ALIGNMENT_COMPLETED :
+                                    APP_EVENT_AUTHORITY_RELEASED;
+
+                            if (!current_loop_backend_stop())
+                            {
+                                board_bridge_force_low_zero();
+                                platform_panic(
+                                    PANIC_BRIDGE_CHARACTERIZER_INIT);
+                            }
+                            current_loop_backend_get_snapshot(
+                                &current_loop_snapshot);
+                            if (current_loop_snapshot.fault_flags != 0u)
+                            {
+                                bridge_ready = false;
+                                supervisor_event =
+                                    APP_EVENT_FAULT_DETECTED;
+                                board_bridge_force_low_zero();
+                            }
+                            if (!app_supervisor_handle_event(
+                                    &drive_supervisor,
+                                    supervisor_event,
+                                    (app_transition_context_t){0}))
+                            {
+                                board_bridge_force_low_zero();
+                                platform_panic(
+                                    PANIC_INTERNAL_INVARIANT);
+                            }
+                            diagnostics_due = true;
+                        }
+                    }
                 }
             }
             else
@@ -1423,10 +1831,14 @@ int main(void)
                 adc_ready = false;
                 adc_snapshot_valid = false;
                 bridge_characterizer_stop(&bridge_characterizer);
+                alignment_controller_abort(
+                    &alignment_controller, now);
                 commissioning_context.remote_authority_active = false;
                 bridge_ready = false;
                 commissioning_context.remote_start_requested = false;
                 commissioning_context.remote_stop_requested = false;
+                commissioning_context.alignment_start_requested = false;
+                commissioning_context.alignment_stop_requested = false;
                 (void)app_supervisor_handle_event(
                     &drive_supervisor,
                     APP_EVENT_FAULT_DETECTED,
@@ -1451,9 +1863,13 @@ int main(void)
                 if (current_loop_snapshot.fault_flags != 0u)
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
+                    alignment_controller_abort(
+                        &alignment_controller, now);
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.remote_start_requested = false;
                     commissioning_context.remote_stop_requested = false;
+                    commissioning_context.alignment_start_requested = false;
+                    commissioning_context.alignment_stop_requested = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
                         &drive_supervisor,
@@ -1469,10 +1885,14 @@ int main(void)
                         next_display_refresh = now;
                     }
                 }
-                else if (bridge_characterizer.active &&
+                else if ((bridge_characterizer.active ||
+                          alignment_controller_is_active(
+                              &alignment_controller)) &&
                          !current_loop_snapshot.active)
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
+                    alignment_controller_abort(
+                        &alignment_controller, now);
                     commissioning_context.remote_authority_active = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
@@ -1517,9 +1937,13 @@ int main(void)
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
+                    alignment_controller_abort(
+                        &alignment_controller, now);
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.remote_start_requested = false;
                     commissioning_context.remote_stop_requested = false;
+                    commissioning_context.alignment_start_requested = false;
+                    commissioning_context.alignment_stop_requested = false;
                     if (!current_loop_backend_stop())
                     {
                         board_bridge_force_low_zero();
