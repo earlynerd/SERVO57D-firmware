@@ -137,7 +137,7 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.1
+Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.2
 is the current host/Arm-validated hardware candidate. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
@@ -166,10 +166,11 @@ is the current host/Arm-validated hardware candidate. It:
     saved automatically only after backend and authority release; no active
     operation or startup ADC zero is persisted.
 19. Enters `RUN` motion authority only for a valid aligned q-current request,
-    starts the existing 20 kHz backend at zero demand, and updates signed A/B
+    waits for a newly accepted encoder sample, starts the existing 20 kHz
+    backend at zero demand from that sample, and updates signed A/B
     references from calibrated 1 kHz electrical phase under independent current,
     slew, velocity, acceleration, feedback-age, duration, and fault contracts.
-20. Publishes firmware `0.23.1`, authoritative drive state, reset cause,
+20. Publishes firmware `0.23.2`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -201,10 +202,10 @@ validated Debug image uses 36,188 bytes of the 124 KiB application region and
 5,476 bytes of SRAM1; Release uses 32,148 bytes and the same SRAM1, with zero
 allocation in both configuration slots and SRAM2.
 
-The 0.23.1 candidate passes portable controller, byte-exact native protocol,
+The 0.23.2 candidate passes portable controller, byte-exact native protocol,
 Debug Arm, Release Arm, and host builds. Its signed multi-second deadline,
 direction, STOP, Menu, expanded-current, and encoder/readiness-loss hardware
-gate remains pending. Debug uses 39,856 bytes of the 124 KiB application region;
-Release uses 35,032 bytes, and
+gate remains pending. Debug uses 39,876 bytes of the 124 KiB application region;
+Release uses 35,024 bytes, and
 both use 5,476 bytes of SRAM1 with zero allocation in the configuration slots
 and SRAM2.

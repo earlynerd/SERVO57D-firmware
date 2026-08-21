@@ -60,17 +60,19 @@ shaft and use the current-limited supply procedure in
 
 ## Current operating envelope
 
-Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.1 /
-protocol 1.7 is the current host- and Arm-validated hardware candidate; it adds
-bounded signed encoder-aligned q-current through the same supervisor, current
-backend, and ZERO-vector fault path, and replaces the initial one-second torque
-ceiling with the full wrap-safe finite-deadline range. Firmware 0.22.0 adds protocol
-1.6 and power-loss-safe dual-slot motor-configuration storage; its host, Arm,
-first-save, unchanged-save, power-cycle restore, persistent-clear, and no-
-restored-authority gates pass. The firmware runs from the fitted
+Firmware 0.24.13 / protocol 1.7 is the current bench-validated product build. It
+provides bounded signed encoder-aligned q-current through the same supervisor,
+current backend, and ZERO-vector fault path, and accepts the full wrap-safe
+finite-deadline range. Torque activation is seeded only by newly accepted
+encoder feedback so command-processing latency is not mistaken for an active
+feedback overrun. Firmware 0.22.0's power-loss-safe dual-slot motor-
+configuration storage remains accepted through first-save, unchanged-save,
+power-cycle restore, persistent-clear, and no-restored-authority gates. The
+firmware runs from the fitted
 8 MHz crystal at a bench-proven 64 MHz system clock, closes independent A/B
-winding-current loops at 20 kHz, schedules timestamped encoder acquisition at
-1 kHz in foreground, updates the OLED, and serves native RS-485 telemetry,
+winding-current loops at 20 kHz, releases timestamped encoder acquisition at
+1 kHz from TIM6, transfers each frame through SPI1 DMA channels 2/3, defers
+decode and rotor-runtime work through PendSV, updates the OLED, and serves native RS-485 telemetry,
 automatic alignment, persistent configuration in protocol 1.6, and the bounded
 20 kHz startup-trace service.
 Two 757.4 mA automatic alignments and a generic-STOP abort passed on the tested
@@ -79,6 +81,12 @@ supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
 deadline release and at 151.5 mA / 5 Hz through an explicit STOP. The new 1 kHz
 estimator is bench-proven at idle and during a 757 mA / 20 Hz bounded run;
 readiness-loss fault injection still requires hardware regression.
+
+The deterministic rotor-feedback path is bench-proven during a 606 mA aligned-
+torque command lasting five seconds: it completed 100,000 current-loop updates,
+held encoder intervals to 1000-1001 us, reported zero encoder, DMA, estimator,
+backend, or control faults, and returned all references and bridge duties to
+zero at the deadline.
 
 The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
 calibration, initialized current control, and a healthy encoder move the product

@@ -14,7 +14,6 @@
 #include "mks57d/board_inputs.h"
 #include "mks57d/boot_self_test.h"
 #include "mks57d/bridge_characterizer.h"
-#include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_flash.h"
 #include "mks57d/configuration_store.h"
@@ -29,6 +28,7 @@
 #include "mks57d/platform.h"
 #include "mks57d/rs485.h"
 #include "mks57d/rotating_current_test.h"
+#include "mks57d/rotor_control_runtime.h"
 #include "mks57d/spi1.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/timebase.h"
@@ -60,6 +60,8 @@ enum
 };
 
 static uint8_t s_display_frame[DISPLAY_FRAME_BYTES];
+static rotor_control_runtime_t rotor_control_runtime;
+static rotor_control_snapshot_t rotor_control_snapshot;
 
 enum
 {
@@ -95,6 +97,7 @@ typedef struct
     motor_alignment_t* motor_alignment;
     alignment_controller_t* alignment_controller;
     aligned_torque_controller_t* aligned_torque_controller;
+    rotor_control_runtime_t* rotor_control_runtime;
     configuration_store_t* configuration_store;
     bridge_characterizer_t* bridge_characterizer;
     uint32_t* raw_input_levels;
@@ -767,6 +770,7 @@ static bool configuration_write_allowed(
         (commissioning->motor_alignment == NULL) ||
         (commissioning->alignment_controller == NULL) ||
         (commissioning->aligned_torque_controller == NULL) ||
+        (commissioning->rotor_control_runtime == NULL) ||
         (commissioning->bridge_characterizer == NULL) ||
         (commissioning->supervisor == NULL))
     {
@@ -920,6 +924,11 @@ static command_status_t configuration_clear_calibration(void* context)
     if (configuration_store_save(
             commissioning->configuration_store,
             &configuration) != CONFIGURATION_STORE_RESULT_OK)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!rotor_control_runtime_clear_alignment(
+            commissioning->rotor_control_runtime))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
@@ -1204,42 +1213,13 @@ static void update_current_loop_diagnostics(
         snapshot->latest_output.duty_permille[3];
 }
 
-static void aligned_torque_fail_safe(
-    aligned_torque_controller_t* controller,
-    bool* bridge_ready,
-    uint32_t now_millis,
-    uint32_t encoder_timestamp_us,
-    bool phase_valid,
-    bool backend_active)
-{
-    if (!aligned_torque_controller_is_active(controller))
-    {
-        return;
-    }
-
-    (void)aligned_torque_controller_update(
-        controller,
-        now_millis,
-        encoder_timestamp_us,
-        phase_valid,
-        0u,
-        0,
-        backend_active);
-    if (!current_loop_backend_stop())
-    {
-        board_bridge_force_low_zero();
-        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-    }
-    *bridge_ready = false;
-    board_bridge_force_low_zero();
-}
-
 int main(void)
 {
     enum
     {
         ENCODER_POWER_UP_DELAY_MS = 20u,
-        ENCODER_SAMPLE_PERIOD_MS = 1u,
+        ENCODER_READ_BURST_BYTES = 4u,
+        ENCODER_READ_ANGLE_COMMAND = 0x83u,
         ENCODER_MAXIMUM_SAMPLE_INTERVAL_US = 20000u,
         ENCODER_COUNTS_PER_REVOLUTION = 16384u,
         MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION = 50u,
@@ -1356,6 +1336,9 @@ int main(void)
             ALIGNMENT_MAXIMUM_CURRENT_ERROR_COUNTS,
     };
     aligned_torque_controller_t aligned_torque_controller;
+    const uint8_t encoder_request[ENCODER_READ_BURST_BYTES] = {
+        ENCODER_READ_ANGLE_COMMAND, 0u, 0u, 0u,
+    };
     const aligned_torque_config_t aligned_torque_config = {
         .maximum_current_counts =
             ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS,
@@ -1401,7 +1384,6 @@ int main(void)
     current_loop_backend_snapshot_t current_loop_snapshot = {0};
     rotating_current_test_t current_test_generator = {0};
     i2c_bus_t display_bus = {0};
-    spi_bus_t encoder_bus = {0};
     bool display_ready = false;
     bool adc_ready = false;
     bool adc_snapshot_valid = false;
@@ -1420,7 +1402,9 @@ int main(void)
     bool rs485_ready = false;
     uint32_t heartbeat_count = 0u;
     uint32_t next_heartbeat;
-    uint32_t next_encoder_sample;
+    uint32_t last_encoder_diagnostics_sample_count = 0u;
+    uint32_t last_encoder_diagnostics_error_count = 0u;
+    uint32_t last_rotor_snapshot_millis = UINT32_MAX;
     uint32_t next_adc_sample;
     uint32_t next_input_sample;
     uint32_t next_current_reference;
@@ -1452,6 +1436,7 @@ int main(void)
         .motor_alignment = &motor_alignment,
         .alignment_controller = &alignment_controller,
         .aligned_torque_controller = &aligned_torque_controller,
+        .rotor_control_runtime = &rotor_control_runtime,
         .configuration_store = &configuration_store,
         .bridge_characterizer = &bridge_characterizer,
         .raw_input_levels = &raw_input_levels,
@@ -1537,6 +1522,17 @@ int main(void)
     {
         (void)motor_alignment_restore(
             &motor_alignment, &stored_configuration.alignment);
+    }
+    if (!rotor_control_runtime_init(
+            &rotor_control_runtime,
+            &angle_tracker,
+            &motor_alignment,
+            &alignment_controller,
+            &aligned_torque_controller) ||
+        !rotor_control_runtime_get_snapshot(
+            &rotor_control_runtime, &rotor_control_snapshot))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
     }
 
     boot_self_test_init(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
@@ -1659,17 +1655,27 @@ int main(void)
     /* Current feedback is proven before bridge authority is restored. */
     bridge_ready = false;
 
-    encoder_spi_ready = spi1_init(platform_apb2_clock_hz());
-    if (encoder_spi_ready)
+    encoder_spi_ready =
+        spi1_init(platform_apb2_clock_hz()) &&
+        spi1_periodic_exchange_start(
+            encoder_request,
+            sizeof(encoder_request),
+            platform_apb1_timer_clock_hz(),
+            ENCODER_POWER_UP_DELAY_MS,
+            rotor_control_runtime_spi_callback,
+            &rotor_control_runtime);
+    if (!encoder_spi_ready)
     {
-        encoder_bus = spi1_bus();
-    }
-    else
-    {
-        encoder_diagnostics.status = MT6816_STATUS_TRANSPORT_ERROR;
-        encoder_diagnostics.transport_status = SPI_STATUS_NOT_READY;
-        encoder_diagnostics.error_count = 1u;
-        encoder_diagnostics.last_attempt_millis = uptime_millis;
+        rotor_control_runtime_spi_callback(
+            &rotor_control_runtime,
+            SPI_STATUS_NOT_READY,
+            NULL,
+            0u,
+            timebase_micros());
+        (void)rotor_control_runtime_get_snapshot(
+            &rotor_control_runtime, &rotor_control_snapshot);
+        encoder_diagnostics =
+            rotor_control_snapshot.encoder_diagnostics;
     }
     diagnostics_publish_encoder(&encoder_diagnostics);
 
@@ -1744,17 +1750,112 @@ int main(void)
                         (uint32_t)watchdog_status,
                         &self_test);
     next_heartbeat = timebase_millis() + 250u;
-    next_encoder_sample = timebase_millis() + ENCODER_POWER_UP_DELAY_MS;
     next_adc_sample = timebase_millis();
     next_input_sample = timebase_millis();
     next_current_reference = timebase_millis();
-    next_display_refresh = next_encoder_sample;
+    next_display_refresh =
+        timebase_millis() + ENCODER_POWER_UP_DELAY_MS;
 
     for (;;)
     {
         bool diagnostics_due = false;
         const uint32_t now = timebase_millis();
+        const uint32_t rotor_events =
+            rotor_control_runtime_take_events(&rotor_control_runtime);
         bool bridge_was_active;
+
+        if ((now != last_rotor_snapshot_millis) ||
+            (rotor_events != ROTOR_CONTROL_EVENT_NONE))
+        {
+            if (!rotor_control_runtime_get_snapshot(
+                    &rotor_control_runtime, &rotor_control_snapshot))
+            {
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            encoder_diagnostics =
+                rotor_control_snapshot.encoder_diagnostics;
+            angle_tracker = rotor_control_snapshot.angle_tracker;
+            motor_alignment = rotor_control_snapshot.motor_alignment;
+            alignment_controller =
+                rotor_control_snapshot.alignment_controller;
+            aligned_torque_controller =
+                rotor_control_snapshot.torque_controller;
+            estimator_fault_flags =
+                rotor_control_snapshot.estimator_fault_flags;
+            estimator_sample_interval_us =
+                rotor_control_snapshot.estimator_sample_interval_us;
+            estimator_maximum_sample_interval_us =
+                rotor_control_snapshot.
+                    estimator_maximum_sample_interval_us;
+            last_rotor_snapshot_millis = now;
+            if (encoder_diagnostics.sample_count !=
+                    last_encoder_diagnostics_sample_count ||
+                encoder_diagnostics.error_count !=
+                    last_encoder_diagnostics_error_count)
+            {
+                last_encoder_diagnostics_sample_count =
+                    encoder_diagnostics.sample_count;
+                last_encoder_diagnostics_error_count =
+                    encoder_diagnostics.error_count;
+                diagnostics_publish_encoder(&encoder_diagnostics);
+                diagnostics_due = true;
+            }
+        }
+
+        if ((rotor_events & ROTOR_CONTROL_EVENT_FAULT) != 0u)
+        {
+            bridge_characterizer_stop(&bridge_characterizer);
+            commissioning_context.remote_authority_active = false;
+            commissioning_context.remote_start_requested = false;
+            commissioning_context.remote_stop_requested = false;
+            commissioning_context.alignment_start_requested = false;
+            commissioning_context.alignment_stop_requested = false;
+            commissioning_context.torque_start_requested = false;
+            commissioning_context.torque_stop_requested = false;
+            bridge_ready = false;
+            (void)app_supervisor_handle_event(
+                &drive_supervisor,
+                APP_EVENT_FAULT_DETECTED,
+                (app_transition_context_t){0});
+            board_bridge_force_low_zero();
+            diagnostics_due = true;
+        }
+        else if ((rotor_events &
+                  ROTOR_CONTROL_EVENT_ALIGNMENT_COMPLETED) != 0u)
+        {
+            commissioning_context.alignment_start_requested = false;
+            commissioning_context.alignment_stop_requested = false;
+            if (!app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_ALIGNMENT_COMPLETED,
+                    (app_transition_context_t){0}))
+            {
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            (void)configuration_save_active(&commissioning_context);
+            diagnostics_due = true;
+        }
+        else if ((rotor_events &
+                  ROTOR_CONTROL_EVENT_AUTHORITY_RELEASED) != 0u)
+        {
+            commissioning_context.alignment_start_requested = false;
+            commissioning_context.alignment_stop_requested = false;
+            commissioning_context.torque_start_requested = false;
+            commissioning_context.torque_stop_requested = false;
+            if (app_supervisor_bridge_authorized(&drive_supervisor) &&
+                (drive_supervisor.authority == APP_AUTHORITY_MOTION) &&
+                !app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_AUTHORITY_RELEASED,
+                    (app_transition_context_t){0}))
+            {
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            diagnostics_due = true;
+        }
 
         raw_input_levels = board_inputs_read_raw();
         if (inputs_ready &&
@@ -1801,8 +1902,9 @@ int main(void)
         {
             commissioning_context.alignment_stop_requested = true;
         }
-        if (aligned_torque_controller_is_active(
-                &aligned_torque_controller) &&
+        if ((commissioning_context.torque_start_requested ||
+             aligned_torque_controller_is_active(
+                 &aligned_torque_controller)) &&
             ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
         {
             commissioning_context.torque_stop_requested = true;
@@ -1810,41 +1912,11 @@ int main(void)
 
         if (commissioning_context.alignment_stop_requested)
         {
-            const bool alignment_was_active =
-                alignment_controller_is_active(&alignment_controller);
-
             commissioning_context.alignment_start_requested = false;
             commissioning_context.alignment_stop_requested = false;
-            if (alignment_was_active)
-            {
-                alignment_controller_abort(
-                    &alignment_controller, now);
-                if (!current_loop_backend_stop())
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                }
-                current_loop_backend_get_snapshot(
-                    &current_loop_snapshot);
-                if (current_loop_snapshot.fault_flags != 0u)
-                {
-                    bridge_ready = false;
-                    (void)app_supervisor_handle_event(
-                        &drive_supervisor,
-                        APP_EVENT_FAULT_DETECTED,
-                        (app_transition_context_t){0});
-                    board_bridge_force_low_zero();
-                }
-                else if (!app_supervisor_handle_event(
-                             &drive_supervisor,
-                             APP_EVENT_AUTHORITY_RELEASED,
-                             (app_transition_context_t){0}))
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_INTERNAL_INVARIANT);
-                }
-                diagnostics_due = true;
-            }
+            rotor_control_runtime_request_stop(
+                &rotor_control_runtime);
+            diagnostics_due = true;
         }
 
         if (commissioning_context.alignment_start_requested)
@@ -1857,31 +1929,15 @@ int main(void)
                         &angle_tracker,
                         estimator_fault_flags),
             };
-            int16_t current_a_reference_counts;
-            int16_t current_b_reference_counts;
-
             commissioning_context.alignment_start_requested = false;
             if (!app_supervisor_handle_event(
                     &drive_supervisor,
                     APP_EVENT_ALIGNMENT_REQUESTED,
                     energize_context) ||
-                !alignment_controller_start(
-                    &alignment_controller,
-                    &motor_alignment,
-                    commissioning_context.alignment_current_counts,
-                    now) ||
-                !alignment_controller_get_reference_counts(
-                    &alignment_controller,
-                    &current_a_reference_counts,
-                    &current_b_reference_counts) ||
-                !current_loop_backend_set_reference_counts(
-                    current_a_reference_counts,
-                    current_b_reference_counts) ||
-                !current_loop_backend_start())
+                !rotor_control_runtime_request_alignment(
+                    &rotor_control_runtime,
+                    commissioning_context.alignment_current_counts))
             {
-                alignment_controller_abort(
-                    &alignment_controller, now);
-                (void)current_loop_backend_stop();
                 bridge_ready = false;
                 (void)app_supervisor_handle_event(
                     &drive_supervisor,
@@ -1894,84 +1950,34 @@ int main(void)
 
         if (commissioning_context.torque_stop_requested)
         {
-            const bool torque_was_active =
-                aligned_torque_controller_is_active(
-                    &aligned_torque_controller);
-
             commissioning_context.torque_start_requested = false;
             commissioning_context.torque_stop_requested = false;
-            if (torque_was_active)
-            {
-                (void)aligned_torque_controller_stop(
-                    &aligned_torque_controller, now);
-                if (!current_loop_backend_stop())
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                }
-                current_loop_backend_get_snapshot(&current_loop_snapshot);
-                if (current_loop_snapshot.fault_flags != 0u)
-                {
-                    bridge_ready = false;
-                    (void)app_supervisor_handle_event(
-                        &drive_supervisor,
-                        APP_EVENT_FAULT_DETECTED,
-                        (app_transition_context_t){0});
-                    board_bridge_force_low_zero();
-                }
-                else if (!app_supervisor_handle_event(
-                             &drive_supervisor,
-                             APP_EVENT_AUTHORITY_RELEASED,
-                             (app_transition_context_t){0}))
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_INTERNAL_INVARIANT);
-                }
-                diagnostics_due = true;
-            }
+            rotor_control_runtime_request_stop(
+                &rotor_control_runtime);
+            diagnostics_due = true;
         }
 
         if (commissioning_context.torque_start_requested)
         {
-            uint32_t electrical_phase_q32 = 0u;
-            const bool phase_valid =
-                motor_alignment_electrical_phase_q32(
-                    &motor_alignment,
-                    (uint16_t)encoder_diagnostics.angle_raw,
-                    &electrical_phase_q32);
             const app_transition_context_t energize_context = {
                 .safe_to_energize =
-                    bridge_ready && adc_snapshot_valid && phase_valid &&
+                    bridge_ready && adc_snapshot_valid &&
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
                         estimator_fault_flags),
             };
-            const int32_t velocity_q16_16 = float_to_q16_16(
-                angle_tracker.velocity_revolutions_per_second);
 
             commissioning_context.torque_start_requested = false;
             if (!app_supervisor_handle_event(
                     &drive_supervisor,
                     APP_EVENT_MOTION_RUN_REQUESTED,
                     energize_context) ||
-                !aligned_torque_controller_start(
-                    &aligned_torque_controller,
+                !rotor_control_runtime_request_torque(
+                    &rotor_control_runtime,
                     commissioning_context.torque_q_current_counts,
-                    commissioning_context.torque_duration_millis,
-                    now,
-                    angle_tracker.last_timestamp_us,
-                    velocity_q16_16) ||
-                !current_loop_backend_set_reference_counts(0, 0) ||
-                !current_loop_backend_start())
+                    commissioning_context.torque_duration_millis))
             {
-                if (aligned_torque_controller_is_active(
-                        &aligned_torque_controller))
-                {
-                    (void)aligned_torque_controller_stop(
-                        &aligned_torque_controller, now);
-                }
-                (void)current_loop_backend_stop();
                 bridge_ready = false;
                 (void)app_supervisor_handle_event(
                     &drive_supervisor,
@@ -2084,23 +2090,6 @@ int main(void)
                     int16_t current_a_reference_counts;
                     int16_t current_b_reference_counts;
 
-                    if (display_ready &&
-                        (!bridge_display_render(
-                             s_display_frame,
-                             BRIDGE_DISPLAY_FRAME_BYTES,
-                             bridge_characterizer.selected_leg,
-                             true) ||
-                         (ssd1306_write_pages(
-                              &display_bus,
-                              &SSD1306_PANEL_SERVO57D_CANDIDATE,
-                              BRIDGE_DISPLAY_START_PAGE,
-                              BRIDGE_DISPLAY_PAGE_COUNT,
-                              s_display_frame,
-                              BRIDGE_DISPLAY_FRAME_BYTES) != I2C_STATUS_OK)))
-                    {
-                        display_ready = false;
-                    }
-
                     if (!rotating_current_test_init(
                             &current_test_generator,
                             (int16_t)commissioning_context.
@@ -2152,8 +2141,8 @@ int main(void)
              (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
              !app_supervisor_bridge_authorized(&drive_supervisor)))
         {
-            alignment_controller_abort(&alignment_controller, now);
-            (void)current_loop_backend_stop();
+            rotor_control_runtime_force_fault(
+                &rotor_control_runtime, timebase_micros());
             (void)app_supervisor_handle_event(
                 &drive_supervisor,
                 APP_EVENT_FAULT_DETECTED,
@@ -2167,9 +2156,8 @@ int main(void)
              (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
              !app_supervisor_bridge_authorized(&drive_supervisor)))
         {
-            (void)aligned_torque_controller_stop(
-                &aligned_torque_controller, now);
-            (void)current_loop_backend_stop();
+            rotor_control_runtime_force_fault(
+                &rotor_control_runtime, timebase_micros());
             (void)app_supervisor_handle_event(
                 &drive_supervisor,
                 APP_EVENT_FAULT_DETECTED,
@@ -2232,272 +2220,6 @@ int main(void)
                 now + CURRENT_TEST_REFERENCE_PERIOD_MS;
         }
 
-        if (encoder_spi_ready &&
-            ((int32_t)(now - next_encoder_sample) >= 0))
-        {
-            mt6816_sample_t sample;
-            spi_status_t transport_status = SPI_STATUS_OK;
-            const mt6816_status_t encoder_status = mt6816_read_angle(
-                &encoder_bus,
-                &sample,
-                &transport_status);
-            const uint32_t encoder_timestamp_us = timebase_micros();
-
-            encoder_diagnostics.status = (uint32_t)encoder_status;
-            encoder_diagnostics.transport_status =
-                (uint32_t)transport_status;
-            encoder_diagnostics.last_attempt_millis = now;
-            if (encoder_status == MT6816_STATUS_OK)
-            {
-                encoder_diagnostics.angle_raw = sample.angle_raw;
-                encoder_diagnostics.flags = sample.flags;
-                ++encoder_diagnostics.sample_count;
-                if ((sample.flags == 0u) && angle_tracker.initialized)
-                {
-                    estimator_sample_interval_us =
-                        encoder_timestamp_us -
-                        angle_tracker.last_timestamp_us;
-                    if (estimator_sample_interval_us >
-                        estimator_maximum_sample_interval_us)
-                    {
-                        estimator_maximum_sample_interval_us =
-                            estimator_sample_interval_us;
-                    }
-                }
-                if (sample.flags == 0u)
-                {
-                    if (!angle_tracker_push(
-                            &angle_tracker,
-                            sample.angle_raw,
-                            encoder_timestamp_us))
-                    {
-                        estimator_fault_flags |=
-                            ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE;
-                        bridge_characterizer_stop(
-                            &bridge_characterizer);
-                        alignment_controller_abort(
-                            &alignment_controller, now);
-                        current_loop_backend_get_snapshot(
-                            &current_loop_snapshot);
-                        aligned_torque_fail_safe(
-                            &aligned_torque_controller,
-                            &bridge_ready,
-                            now,
-                            encoder_timestamp_us,
-                            false,
-                            current_loop_snapshot.active);
-                        commissioning_context.remote_authority_active =
-                            false;
-                        commissioning_context.remote_start_requested =
-                            false;
-                        commissioning_context.remote_stop_requested =
-                            false;
-                        commissioning_context.alignment_start_requested =
-                            false;
-                        commissioning_context.alignment_stop_requested =
-                            false;
-                        commissioning_context.torque_start_requested =
-                            false;
-                        commissioning_context.torque_stop_requested =
-                            false;
-                        if (app_supervisor_bridge_authorized(
-                                &drive_supervisor) &&
-                            !current_loop_backend_stop())
-                        {
-                            board_bridge_force_low_zero();
-                            platform_panic(
-                                PANIC_BRIDGE_CHARACTERIZER_INIT);
-                        }
-                        bridge_ready = false;
-                        (void)app_supervisor_handle_event(
-                            &drive_supervisor,
-                            APP_EVENT_FAULT_DETECTED,
-                            (app_transition_context_t){0});
-                        board_bridge_force_low_zero();
-                        diagnostics_due = true;
-                    }
-                    else if (alignment_controller_is_active(
-                                 &alignment_controller))
-                    {
-                        alignment_controller_event_t alignment_event;
-
-                        current_loop_backend_get_snapshot(
-                            &current_loop_snapshot);
-                        alignment_event = alignment_controller_update(
-                            &alignment_controller,
-                            now,
-                            true,
-                            sample.angle_raw,
-                            current_loop_snapshot.latest_output.
-                                current_a_measured_counts,
-                            current_loop_snapshot.latest_output.
-                                current_b_measured_counts,
-                            current_loop_snapshot.active);
-                        if (alignment_event ==
-                            ALIGNMENT_CONTROLLER_EVENT_REFERENCE_CHANGED)
-                        {
-                            int16_t current_a_reference_counts;
-                            int16_t current_b_reference_counts;
-
-                            if (!alignment_controller_get_reference_counts(
-                                    &alignment_controller,
-                                    &current_a_reference_counts,
-                                    &current_b_reference_counts) ||
-                                !current_loop_backend_set_reference_counts(
-                                    current_a_reference_counts,
-                                    current_b_reference_counts))
-                            {
-                                alignment_controller_abort(
-                                    &alignment_controller, now);
-                                bridge_ready = false;
-                                (void)current_loop_backend_stop();
-                                (void)app_supervisor_handle_event(
-                                    &drive_supervisor,
-                                    APP_EVENT_FAULT_DETECTED,
-                                    (app_transition_context_t){0});
-                                board_bridge_force_low_zero();
-                            }
-                            diagnostics_due = true;
-                        }
-                        else if ((alignment_event ==
-                                  ALIGNMENT_CONTROLLER_EVENT_COMPLETED) ||
-                                 (alignment_event ==
-                                  ALIGNMENT_CONTROLLER_EVENT_FAILED))
-                        {
-                            app_event_t supervisor_event =
-                                (alignment_event ==
-                                 ALIGNMENT_CONTROLLER_EVENT_COMPLETED) ?
-                                    APP_EVENT_ALIGNMENT_COMPLETED :
-                                    APP_EVENT_AUTHORITY_RELEASED;
-
-                            if (!current_loop_backend_stop())
-                            {
-                                board_bridge_force_low_zero();
-                                platform_panic(
-                                    PANIC_BRIDGE_CHARACTERIZER_INIT);
-                            }
-                            current_loop_backend_get_snapshot(
-                                &current_loop_snapshot);
-                            if (current_loop_snapshot.fault_flags != 0u)
-                            {
-                                bridge_ready = false;
-                                supervisor_event =
-                                    APP_EVENT_FAULT_DETECTED;
-                                board_bridge_force_low_zero();
-                            }
-                            if (!app_supervisor_handle_event(
-                                    &drive_supervisor,
-                                    supervisor_event,
-                                    (app_transition_context_t){0}))
-                            {
-                                board_bridge_force_low_zero();
-                                platform_panic(
-                                    PANIC_INTERNAL_INVARIANT);
-                            }
-                            if (supervisor_event ==
-                                APP_EVENT_ALIGNMENT_COMPLETED)
-                            {
-                                (void)configuration_save_active(
-                                    &commissioning_context);
-                            }
-                            diagnostics_due = true;
-                        }
-                    }
-                    else if (aligned_torque_controller_is_active(
-                                 &aligned_torque_controller))
-                    {
-                        aligned_torque_event_t torque_event;
-                        aligned_torque_status_t torque_status;
-                        uint32_t electrical_phase_q32 = 0u;
-                        const bool phase_valid =
-                            motor_alignment_electrical_phase_q32(
-                                &motor_alignment,
-                                sample.angle_raw,
-                                &electrical_phase_q32);
-
-                        current_loop_backend_get_snapshot(
-                            &current_loop_snapshot);
-                        torque_event = aligned_torque_controller_update(
-                            &aligned_torque_controller,
-                            now,
-                            encoder_timestamp_us,
-                            phase_valid,
-                            electrical_phase_q32,
-                            float_to_q16_16(
-                                angle_tracker.
-                                    velocity_revolutions_per_second),
-                            current_loop_snapshot.active);
-                        if (torque_event ==
-                            ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED)
-                        {
-                            aligned_torque_controller_get_status(
-                                &aligned_torque_controller,
-                                &torque_status);
-                            if (!current_loop_backend_set_reference_counts(
-                                    torque_status.
-                                        current_a_reference_counts,
-                                    torque_status.
-                                        current_b_reference_counts))
-                            {
-                                (void)aligned_torque_controller_reference_rejected(
-                                    &aligned_torque_controller, now);
-                                torque_event =
-                                    ALIGNED_TORQUE_EVENT_FAILED;
-                            }
-                            diagnostics_due = true;
-                        }
-                        if ((torque_event ==
-                             ALIGNED_TORQUE_EVENT_COMPLETED) ||
-                            (torque_event ==
-                             ALIGNED_TORQUE_EVENT_FAILED))
-                        {
-                            app_event_t supervisor_event =
-                                (torque_event ==
-                                 ALIGNED_TORQUE_EVENT_COMPLETED) ?
-                                    APP_EVENT_AUTHORITY_RELEASED :
-                                    APP_EVENT_FAULT_DETECTED;
-
-                            if (!current_loop_backend_stop())
-                            {
-                                board_bridge_force_low_zero();
-                                platform_panic(
-                                    PANIC_BRIDGE_CHARACTERIZER_INIT);
-                            }
-                            current_loop_backend_get_snapshot(
-                                &current_loop_snapshot);
-                            if (current_loop_snapshot.fault_flags != 0u)
-                            {
-                                bridge_ready = false;
-                                supervisor_event =
-                                    APP_EVENT_FAULT_DETECTED;
-                            }
-                            if (supervisor_event ==
-                                APP_EVENT_FAULT_DETECTED)
-                            {
-                                board_bridge_force_low_zero();
-                            }
-                            if (!app_supervisor_handle_event(
-                                    &drive_supervisor,
-                                    supervisor_event,
-                                    (app_transition_context_t){0}))
-                            {
-                                board_bridge_force_low_zero();
-                                platform_panic(
-                                    PANIC_INTERNAL_INVARIANT);
-                            }
-                            diagnostics_due = true;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                ++encoder_diagnostics.error_count;
-            }
-            diagnostics_publish_encoder(&encoder_diagnostics);
-            next_encoder_sample = now + ENCODER_SAMPLE_PERIOD_MS;
-        }
-
         if (adc_ready &&
             ((int32_t)(now - next_adc_sample) >= 0))
         {
@@ -2550,15 +2272,8 @@ int main(void)
                 adc_ready = false;
                 adc_snapshot_valid = false;
                 bridge_characterizer_stop(&bridge_characterizer);
-                alignment_controller_abort(
-                    &alignment_controller, now);
-                aligned_torque_fail_safe(
-                    &aligned_torque_controller,
-                    &bridge_ready,
-                    now,
-                    timebase_micros(),
-                    true,
-                    false);
+                rotor_control_runtime_force_fault(
+                    &rotor_control_runtime, timebase_micros());
                 commissioning_context.remote_authority_active = false;
                 bridge_ready = false;
                 commissioning_context.remote_start_requested = false;
@@ -2571,12 +2286,6 @@ int main(void)
                     &drive_supervisor,
                     APP_EVENT_FAULT_DETECTED,
                     (app_transition_context_t){0});
-                if (current_loop_initialized &&
-                    !current_loop_backend_stop())
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                }
                 board_bridge_force_low_zero();
                 diagnostics_due = true;
             }
@@ -2591,15 +2300,8 @@ int main(void)
                 if (current_loop_snapshot.fault_flags != 0u)
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
-                    alignment_controller_abort(
-                        &alignment_controller, now);
-                    aligned_torque_fail_safe(
-                        &aligned_torque_controller,
-                        &bridge_ready,
-                        now,
-                        timebase_micros(),
-                        true,
-                        false);
+                    rotor_control_runtime_force_fault(
+                        &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.remote_start_requested = false;
                     commissioning_context.remote_stop_requested = false;
@@ -2630,15 +2332,8 @@ int main(void)
                          !current_loop_snapshot.active)
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
-                    alignment_controller_abort(
-                        &alignment_controller, now);
-                    aligned_torque_fail_safe(
-                        &aligned_torque_controller,
-                        &bridge_ready,
-                        now,
-                        timebase_micros(),
-                        true,
-                        false);
+                    rotor_control_runtime_force_fault(
+                        &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.torque_start_requested = false;
                     commissioning_context.torque_stop_requested = false;
@@ -2689,17 +2384,8 @@ int main(void)
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
-                    alignment_controller_abort(
-                        &alignment_controller, now);
-                    current_loop_backend_get_snapshot(
-                        &current_loop_snapshot);
-                    aligned_torque_fail_safe(
-                        &aligned_torque_controller,
-                        &bridge_ready,
-                        now,
-                        timebase_micros(),
-                        false,
-                        current_loop_snapshot.active);
+                    rotor_control_runtime_force_fault(
+                        &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.remote_start_requested = false;
                     commissioning_context.remote_stop_requested = false;
@@ -2707,11 +2393,6 @@ int main(void)
                     commissioning_context.alignment_stop_requested = false;
                     commissioning_context.torque_start_requested = false;
                     commissioning_context.torque_stop_requested = false;
-                    if (!current_loop_backend_stop())
-                    {
-                        board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                    }
                 }
                 if (!app_supervisor_handle_event(
                         &drive_supervisor,
@@ -2762,6 +2443,7 @@ int main(void)
         }
 
         if (display_ready &&
+            !app_supervisor_bridge_authorized(&drive_supervisor) &&
             ((int32_t)(now - next_display_refresh) >= 0))
         {
             bool rendered;

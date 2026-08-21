@@ -100,7 +100,7 @@ storage result. `save-configuration` is an idempotent explicit retry;
 calibration. Both write operations are rejected while any drive operation or
 pending start/stop owns the safe-state boundary.
 
-On firmware 0.23.1 / protocol 1.7, `torque-status` reads the complete aligned
+On firmware 0.23.2 / protocol 1.7, `torque-status` reads the complete aligned
 q-current state and firmware-owned policy without energizing the bridge.
 `torque` accepts signed counts or signed milliamperes, preflights the absolute
 current and duration against that reported policy, starts the supervisor-owned

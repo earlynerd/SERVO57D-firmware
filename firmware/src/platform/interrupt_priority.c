@@ -18,6 +18,9 @@ _Static_assert(INTERRUPT_PRIORITY_CONTROL_GUARDIAN <
 _Static_assert(INTERRUPT_PRIORITY_FAST_CURRENT <
                    INTERRUPT_PRIORITY_ROTOR_FEEDBACK,
                "current control must preempt rotor feedback");
+_Static_assert(INTERRUPT_PRIORITY_ROTOR_FEEDBACK <
+                   INTERRUPT_PRIORITY_COMMUNICATIONS,
+               "rotor capture must preempt communications transfer");
 _Static_assert(INTERRUPT_PRIORITY_COMMUNICATIONS <
                    INTERRUPT_PRIORITY_SLOW_RELEASE,
                "communications transfer must preempt optional slow release");

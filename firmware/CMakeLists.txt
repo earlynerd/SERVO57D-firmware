@@ -46,6 +46,7 @@ set(PROJECT_SOURCES
     src/app/app_state.c
     src/app/command_service.c
     src/app/diagnostics.c
+    src/app/rotor_control_runtime.c
     src/board/board.c
     src/board/board_inputs.c
     src/control/aligned_torque_controller.c
@@ -59,7 +60,6 @@ set(PROJECT_SOURCES
     src/drivers/adc_display.c
     src/drivers/adc_sample.c
     src/drivers/bridge_characterizer.c
-    src/drivers/bridge_display.c
     src/drivers/dma_ring.c
     src/drivers/encoder_display.c
     src/drivers/input_display.c
@@ -134,9 +134,11 @@ target_compile_options(${FIRMWARE_TARGET} PRIVATE
 # interrupt path optimized in diagnostic builds; -O2 appears after the
 # target-wide -Og and therefore governs these translation units.
 set_source_files_properties(
+    src/app/rotor_control_runtime.c
     src/control/phase_current_loop.c
     src/platform/adc1.c
     src/platform/current_loop_backend.c
+    src/platform/spi1.c
     src/platform/tim2_current_trigger.c
     src/platform/tim3_bridge_pwm.c
     PROPERTIES COMPILE_OPTIONS -O2

@@ -1,14 +1,18 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.23.1 schedules encoder reads at 1 kHz in foreground,
-including during current-loop operation, assigns accepted samples microsecond
-timestamps, and feeds the shared mechanical angle/velocity estimator and
+Status: firmware 0.24.13 releases encoder reads at 1 kHz from TIM6, performs
+bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
+through DMA channels 2/3, and defers decode/runtime publication through PendSV.
+Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator and
 automatic-alignment and aligned-torque controllers. Native protocol 1.7 exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and the aligned q-current phase and
 motion-policy evidence. The 1 kHz schedule passed its
 initial idle and active hardware regression; two automatic alignments reproduced
 the accepted geometry and zero exactly, and STOP preserved the valid calibration.
+Aligned torque acquires authority only in the successful-sample path: that
+sample seeds phase, velocity, and timestamp, and the next accepted sample is the
+first active feedback update.
 
 ## Evidence and confidence
 
@@ -33,19 +37,21 @@ warning in register `0x05`. Typical sensor power-up time is 16 ms.
 
 ## Implemented transaction
 
-`spi1_init()` configures a conservative 500 kHz-or-lower SPI1 clock. The
-foreground waits 20 ms after initialization, then schedules one sample every
-1 ms. Every sample is a single coherent four-byte burst:
+`spi1_init()` configures a conservative 500 kHz-or-lower SPI1 clock. SCK is
+held at its mode-3 high idle level before SPI is enabled. After the MT6816's
+20 ms power-up allowance, the scheduler performs and discards one bounded DMA
+exchange as transport priming, then releases one production sample every 1 ms.
+Every exchange is a single coherent four-byte burst:
 
 ```text
 MOSI:  0x83  0x00  0x00  0x00
 MISO:  ----  reg03 reg04 reg05
 ```
 
-PB6 remains low for the entire burst. Fixed guard delays cover the datasheet's
-chip-select setup and hold requirements at every supported core clock through
-64 MHz. Each flag wait and the overall transfer length are bounded; SPI uses
-neither DMA nor interrupts in this milestone.
+PB6 remains low for the entire burst. TIM7 provides two-microsecond chip-select
+setup and hold intervals. SPI1 RX/TX DMA channels are armed before their
+requests are exposed; completion and error paths return CS high and the
+scheduler to an explicit idle state.
 
 The decoder accepts a sample only when the combined 16 bits from registers
 `0x03` and `0x04` have even parity. The published raw angle is:
@@ -62,19 +68,20 @@ count. Electrical phase remains invalid until the controlled alignment service
 accepts a phase-zero and quarter-phase observation; no bench-specific raw zero
 is compiled into the product.
 
-## Foreground behavior
+## Runtime behavior
 
-Encoder initialization and acquisition are active in normal boot. An SPI or
+Encoder initialization and acquisition are active in normal boot. TIM6/TIM7
+and DMA ISRs perform only bounded transport/state work. PendSV validates and
+publishes the frame through `rotor_control_runtime`; foreground consumes
+sequence-protected snapshots and command mailboxes. An SPI or
 parity failure does not fail the boot ledger or stop watchdog service, but it
 removes drive readiness and is a fault if authority is active. The foreground
 records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
-The 1 kHz reader is still cooperative foreground work. It reports its latest
-and maximum accepted-sample intervals so the bench regression can decide from
-evidence whether it is adequate or whether the planned timer-released SPI/DMA
-capture is required. The estimator's 20 ms accepted-sample interval threshold
+The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
+estimator's 20 ms accepted-sample interval threshold
 is a scheduling/feedback validity check, not a motor speed command limit. Its
 20 revolutions/second plausibility threshold is 20 times the current diagnostic
 mechanical-speed endpoint and is likewise not exposed as a motion set-point
@@ -112,7 +119,7 @@ electrical cycles per revolution and negative raw direction for positive
 electrical phase. The earlier 303 mA sequence independently produced -87, -78,
 and -83 count steps.
 
-Firmware 0.20.0 passed the initial 1 kHz estimator regression. One hundred
+Firmware 0.20.0 passed the initial foreground estimator regression. One hundred
 stationary protocol samples over five seconds showed raw angle fixed at 13926,
 zero reported velocity, estimator-ready throughout, no fault, and a 5.162 ms
 cumulative worst-case sample interval under polling load. During a bounded
@@ -123,10 +130,16 @@ settled velocity averaged -0.3953 revolution/s, consistent with the independentl
 derived -23.51 RPM and the -24 RPM command. No encoder or estimator fault
 occurred.
 
+Firmware 0.24.13 passed the deterministic-scheduler regression. At idle it
+reported zero errors across more than 54,000 samples, a 1000 us latest interval,
+and a 1001 us maximum interval. A 606 mA aligned-torque command then ran for
+five seconds, completed 100,000 current-loop samples, preserved zero encoder,
+DMA, estimator, backend, and control faults, and returned all duties and
+references to zero at deadline.
+
 Remaining work is to test the no-magnet/readiness-loss and Menu-abort paths.
 The bench-validated supervisor-owned automatic alignment procedure
 establishes the per-motor electrical zero transactionally before motion can use
-electrical phase; persistence across power cycles remains separate work.
-Foreground acquisition remains subject to revalidation
-after outer-loop compute is added; timer-released SPI/DMA remains available if
-that later load makes its jitter unsuitable.
+electrical phase; accepted calibration persists through the dual-slot production
+configuration service. Scheduler latency remains subject to revalidation as
+velocity and position compute are added.

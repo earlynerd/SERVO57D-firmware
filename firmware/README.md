@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.23.1 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.23.2 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor and adds a bounded automatic alignment service
 to the product's timestamped 1 kHz mechanical estimator and measured
 50-electrical-cycle alignment geometry. It also adds versioned, CRC-protected,
@@ -24,12 +24,15 @@ be exercised.
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
 restore, persistent clear, and no-restored-authority behavior pass on COM14.
-The 0.23.1 aligned-torque controller, protocol, and Debug/Release Arm builds pass
+The 0.23.2 aligned-torque controller, protocol, and Debug/Release Arm builds pass
 host validation. Its duration contract accepts explicit finite deadlines through
 the wrap-safe 32-bit half-range instead of imposing the initial one-second
 candidate ceiling. The shared backend and torque request path also admit the
 attached motor's 2.999 A nominal rated-current evaluation point while retaining
-an independent 3.635 A raw trip; the signed deadline/STOP/fault and
+an independent 3.635 A raw trip. A pending torque request begins only on a newly
+accepted encoder sample and is first updated by the following sample, preserving
+the 2 ms active-feedback watchdog without charging serial-service latency to it;
+the signed deadline/STOP/fault and
 expanded-current hardware gates remain pending.
 
 ## Current operating contract

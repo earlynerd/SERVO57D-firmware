@@ -274,3 +274,30 @@
 ### Follow-up — Evaluation permission expanded to the stated motor/speed boundary
 
 The first correction still stopped at half of the motor's rated current and proposed fixing phase-refresh quality before permitting a higher speed. That retained the same validation-before-evaluation mistake. The final 0.23.1 candidate instead permits 2.999 A nominal, 5 rev/s, 1,000 rev/s² observed acceleration, 10,000 counts/s slew, and 250 electrical Hz so the present 1 kHz phase-refresh and current-loop boundaries can be measured directly. Independent current trip, voltage/duty timing, feedback freshness, finite deadline, STOP, supervisor, and common fault shutdown remain active.
+
+## 2026-08-21 — Torque start charged command latency to feedback timing
+
+- **Observation:** On freshly flashed firmware 0.23.1, a 5-count, 5,000 ms aligned-torque request was accepted but entered `failed / feedback_timing` at zero elapsed milliseconds after only four 20 kHz backend samples. No current reference was applied, the backend reported no current-loop fault, and the bridge returned to `ZERO`. Encoder health remained clean at a 1,000 us latest interval but reported a 5,117 us cumulative maximum against the controller's 2,000 us active-feedback contract.
+- **Root cause:** `firmware/src/main.c` consumed the torque request in the protocol-processing portion of the foreground loop and seeded `aligned_torque_controller_start()` from the prior `angle_tracker.last_timestamp_us`. The next controller update occurred only after the encoder read later in the loop, so request receive/parse latency was incorrectly included in the first active feedback interval. `firmware/src/control/aligned_torque_controller.c` correctly rejected that stale interval; the watchdog was not the defect.
+- **Fix:** Firmware 0.23.2 keeps the request pending until a new encoder sample has been accepted, seeds phase/velocity/timestamp and starts the zero-reference backend from that observation, and uses the following accepted sample as the first controller update. Menu now cancels a pending start as well as an active run. A host regression locks the no-same-sample-update contract.
+- **Class:** pre-authority-command-latency-counted-as-feedback-age
+- **Recently-touched?** yes — the 0.23.0 aligned-torque integration introduced the protocol-loop start ordering.
+- **Status:** Resolved in source; host and clean Debug/Release Arm validation pass, COM14 confirmation pending.
+
+## 2026-08-21 — Cold estimator configuration was mistaken for invalid configuration
+
+- **Observation:** Firmware 0.24.0 entered the platform panic path before normal service after moving rotor-control initialization into the new runtime owner.
+- **Root cause:** Startup required an angle tracker to be sample-ready even though a correctly configured tracker is intentionally not ready until its first accepted encoder observation.
+- **Fix:** Firmware 0.24.1 validates the tracker configuration independently from first-sample readiness and retains readiness as a runtime state.
+- **Class:** cold-state-validity-conflation
+- **Recently-touched?** yes
+- **Status:** Resolved; host regression and subsequent 0.24.x hardware boots pass with no retained panic.
+
+## 2026-08-21 — Forced timer updates duplicated the encoder transaction
+
+- **Observation:** The first timer/DMA encoder images produced one failed transfer per millisecond. DMA channels 2/3 showed simultaneous `ERRF`; the interrupt-driven SPI isolation image failed similarly. Later images reduced this to one startup-only error followed by exact 1 kHz operation.
+- **Root cause:** TIM7 update interrupts were enabled while `EVTGEN.UDGN` force-loaded the one-shot timer, creating a synthetic pending interrupt in addition to the real CS delay. The duplicate interrupt re-entered the transport during `TRANSFER`. TIM6 initialization had the same forced-update exposure. The N32L40x also demonstrates a first-transfer DMA anomaly, and mode-3 SCK was not explicitly held high before SPI enable.
+- **Fix:** Firmware 0.24.13 masks timer update interrupts around forced loads, drains peripheral/NVIC pending state with barriers, arms both DMA channels before exposing SPI requests, holds SCK at the CPOL-high idle level before enabling SPI, and treats one post-power-up DMA exchange as initialization priming rather than a rotor sample. Every later error remains reportable.
+- **Class:** encoder-timer-dma-startup-order
+- **Recently-touched?** yes
+- **Status:** Resolved and bench-proven. Idle operation reported zero errors across more than 54,000 samples at 1000-1001 us intervals. A 606 mA aligned-torque run then completed 100,000 current-loop samples over five seconds with zero encoder, DMA, estimator, backend, control, reset, or panic faults and returned every duty/reference to zero at deadline.

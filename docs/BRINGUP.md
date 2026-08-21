@@ -286,13 +286,13 @@ available and the ordinary/STOP runs have passed.
 
 ### Aligned q-current hardware gate
 
-Firmware 0.23.1 connects signed torque-producing current to the calibrated
+Firmware 0.23.2 connects signed torque-producing current to the calibrated
 electrical phase through the production `RUN`/motion-authority path. This is not
 a speed or position command: an unloaded shaft can accelerate. Keep clear of
 the motor, use 12 V and the current-limited supply, start at or below the accepted
 757 mA envelope, and keep generic STOP plus immediate supply cutoff available.
 
-Confirm 0.23.1 / protocol 1.7, restored alignment, `READY`, and the complete
+Confirm 0.23.2 / protocol 1.7, restored alignment, `READY`, and the complete
 firmware policy before energizing:
 
 ```powershell
@@ -327,7 +327,10 @@ Acceptance requires `ramping`/`holding` samples followed by `complete` with
 result `deadline`; motion authority and backend are active only during the run,
 the A/B reference rotates with calibrated electrical phase, and the terminal
 state is supervisor `READY` with zero backend/torque/estimator faults and no new
-panic or reset. A safety result such as `overacceleration` is a successful
+panic or reset. Torque activation waits for a newly accepted encoder sample;
+the following sample is the first active feedback interval, so foreground
+serial-service time before authority cannot create an immediate timing fault.
+A safety result such as `overacceleration` is a successful
 shutdown-path observation but does not pass the normal-run gate; preserve its
 telemetry and tune only from measured evidence.
 

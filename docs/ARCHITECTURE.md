@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.23.1 implements the reset-safe foundation, continuous
+Status: firmware 0.23.2 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
@@ -17,9 +17,11 @@ two successful runs plus generic STOP are bench-proven, while Menu and
 readiness-loss injection remain open.
 The 0.22.0 build adds versioned, CRC-protected, dual-slot motor configuration
 storage and boot-time alignment restore and passes its power-cycle gate. The
-0.23.1 host/Arm candidate adds signed aligned q-current as the first production
+0.23.2 host/Arm candidate adds signed aligned q-current as the first production
 `RUN` motion interface and accepts caller-selected finite durations across the
-wrap-safe deadline range; its hardware gate remains open.
+wrap-safe deadline range. Motion authority is acquired only from a newly
+accepted encoder sample, and the following sample is the first feedback interval
+checked by the active controller; its hardware gate remains open.
 
 ## Design priorities
 
@@ -53,7 +55,8 @@ The current image implements:
 - A 1 kHz monotonic SysTick timebase.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder on a
-  timestamped 1 kHz foreground schedule, feeding the shared angle unwrap and
+  timestamped 1 kHz TIM6/TIM7/SPI-DMA schedule with PendSV-deferred decode,
+  feeding the shared angle unwrap and
   velocity estimator and reporting current/maximum observed sample intervals.
 - A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
   sustained 50 Hz two-page transactions are proven and the current-loop display uses 5 Hz.
@@ -180,7 +183,9 @@ flowchart LR
 ## Real-time timing domains
 
 - **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
-- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 1 kHz candidate reader runs cooperatively in foreground and exposes its latest and maximum observed intervals for the hardware scheduling decision.
+- **Encoder transport ISRs:** TIM6 releases the 1 kHz transaction, TIM7 bounds
+  CS setup/hold, and SPI DMA completion publishes deferred work. PendSV decodes
+  and advances the rotor runtime; foreground consumes snapshots and mailboxes.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
 
@@ -190,9 +195,9 @@ masked, the bridge forced to `ZERO`, no backend activity, and no supervisor
 authority. The old slot remains valid throughout the new-slot transaction.
 
 The active current loop runs at 20 kHz from DMA completion after a TIM2 compare
-at 80% of the TIM3 carrier. Encoder acquisition is scheduled at 1 kHz in
-foreground. Hardware regression will determine whether that cooperative path
-has acceptable jitter or must become timer-released SPI/DMA. See [Real-time and control
+at 80% of the TIM3 carrier. Encoder acquisition is timer-released through SPI
+DMA at 1 kHz, with decode and aligned-q-current updates deferred through PendSV
+below the hard real-time current path. See [Real-time and control
 architecture](REALTIME_ARCHITECTURE.md).
 
 ## Product application states

@@ -129,7 +129,7 @@ service and a generic STOP operation; successful, repeatable alignment and STOP
 are bench-proven on the tested motor. Firmware 0.22.0 / protocol 1.6 adds the
 versioned dual-slot configuration record and its production service commands;
 its host, target, reset, power-cycle, persistent-clear, and wear-avoidance gates
-pass. Firmware 0.23.1 / protocol 1.7 adds the first production motion
+pass. Firmware 0.23.2 / protocol 1.7 provides the first production motion
 interface: signed encoder-aligned q-current through the proven A/B current
 backend with independent current, slew, velocity, acceleration, feedback-age,
 and duration contracts. It is host- and Arm-build validated and awaits its
@@ -191,7 +191,7 @@ phase references through the same bounded current PI and bridge shutdown path
 used by alignment and the production diagnostic. Positive q-current maps to
 `A=-Iq*sin(theta), B=Iq*cos(theta)` under the accepted motor convention.
 
-The 0.23.1 evaluation policy is ±495 counts (±2.999 A nominal on the tested
+The 0.23.2 evaluation policy is ±495 counts (±2.999 A nominal on the tested
 current front end), 10,000 counts/s current slew (about 60.59 A/s), 5 mechanical
 rev/s (300 RPM), 1,000 rev/s² observed acceleration, at most 2,000 us between
 accepted feedback samples, and an explicit
@@ -532,7 +532,7 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.23.1 links the mechanical estimator, transactional alignment
+target; firmware 0.23.2 links the mechanical estimator, transactional alignment
 controller, persistent configuration, and the first supervisor-authorized
 aligned q-current motion operation. The general velocity/position motion shell
 remains excluded.

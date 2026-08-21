@@ -2783,7 +2783,10 @@ static void test_angle_tracker_unwraps_in_both_directions(void)
     angle_tracker_t tracker;
 
     EXPECT_TRUE(angle_tracker_init(&tracker, &config));
+    EXPECT_TRUE(!tracker.initialized);
+    EXPECT_TRUE(angle_tracker_config_is_valid(&tracker.config));
     EXPECT_TRUE(angle_tracker_push(&tracker, 16380u, 0u));
+    EXPECT_TRUE(tracker.initialized);
     EXPECT_TRUE(angle_tracker_push(&tracker, 4u, 1000u));
     EXPECT_TRUE(tracker.position_revolutions > 1.0f);
     EXPECT_TRUE(tracker.position_revolutions < 1.001f);
@@ -4821,6 +4824,31 @@ static void test_aligned_torque_rejects_unsafe_feedback_and_backend(void)
     EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_BACKEND_INACTIVE);
 }
 
+static void test_aligned_torque_requires_feedback_after_seed_sample(void)
+{
+    const aligned_torque_config_t config = test_aligned_torque_config();
+    aligned_torque_controller_t controller;
+    aligned_torque_status_t status;
+
+    EXPECT_TRUE(aligned_torque_controller_init(&controller, &config));
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 10u, 5000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 10u, 5000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_FEEDBACK_TIMING);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 20u, 6000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 21u, 7000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == ALIGNED_TORQUE_STATE_RAMPING);
+    EXPECT_TRUE(status.applied_q_current_counts == 1);
+}
+
 static void test_aligned_torque_accepts_motor_rated_evaluation_envelope(void)
 {
     const aligned_torque_config_t config = {
@@ -4935,6 +4963,7 @@ int main(void)
     test_phase_current_reference_maps_signed_quadrants();
     test_aligned_torque_ramps_signed_q_current_and_deadlines();
     test_aligned_torque_rejects_unsafe_feedback_and_backend();
+    test_aligned_torque_requires_feedback_after_seed_sample();
     test_aligned_torque_accepts_motor_rated_evaluation_envelope();
     test_motion_manager_enforces_authority_and_idempotency();
     test_motion_manager_lease_expiry_stops_then_disables();

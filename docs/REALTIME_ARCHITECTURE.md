@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.23.1 implements the fast path, production alignment layer,
+Status: firmware 0.23.2 implements the fast path, production alignment layer,
 safe-state configuration maintenance, and the first aligned torque-current
 motion client:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
@@ -49,8 +49,8 @@ The numeric assignments below reserve gaps for sources discovered during bring-u
 | 4 | Rotor feedback capture | Encoder SPI/DMA completion | Validate and publish a timestamped angle snapshot; never run position or current control here |
 | 6 | Motion-command capture | Step-counter overflow or input-capture maintenance | Extend hardware counts and publish input state; do not interpret a complete motion command |
 | 8 | Communications transfer | USART and communications DMA | Move bytes, acknowledge errors, and publish buffer ownership only |
-| 12 | Optional slow-loop release | Dedicated scheduler timer, if measurements justify it | Set a due flag or run a strictly bounded slow-control step |
-| 15 | Timekeeping/deferred work | SysTick and optional PendSV | Maintain coarse time and release lowest-priority foreground work |
+| 12 | Deferred rotor control | PendSV from SPI completion | Decode the completed frame, update the estimator/controller, and publish snapshots/mailbox commands |
+| 15 | Timekeeping | SysTick | Maintain coarse time and foreground liveness accounting |
 
 NMI and fault exceptions retain their architectural priorities. Core faults and unexpected interrupts continue to converge on the project panic path. The active bridge backend invokes the same idempotent all-low fault primitive before recording diagnostics and halting.
 
@@ -76,7 +76,7 @@ Every ISR must meet these rules:
 | Object | Normal writer | Readers | Publication method |
 | --- | --- | --- | --- |
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
-| Encoder angle/status/timestamp | Foreground product-readiness reader; future encoder completion ISR | Supervisor and diagnostics now; fast and slow loops later | Sequence-numbered snapshot; readers retry if publication changes |
+| Encoder angle/status/timestamp | PendSV-deferred rotor runtime after SPI DMA | Supervisor, diagnostics, and motion control | Sequence-numbered snapshot; readers retry if publication changes |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
@@ -115,16 +115,16 @@ should place the synchronous sample path first:
 | Provisional channel | Request/role | DMA priority | Policy |
 | ---: | --- | --- | --- |
 | 1 | ADC current-sample capture | Very high | Circular capture of one complete A/B sample set; interrupt only when the accepted set is complete |
-| 2 | Encoder SPI receive | High | Publish one timestamped frame at completion; never wait for SPI in the current ISR |
-| 3 | Encoder SPI transmit/start | High | Reserve only if measurements show that DMA is preferable to one bounded CPU write |
+| 2 | Encoder SPI receive | High | Active; completion closes the transaction and releases deferred rotor work |
+| 3 | Encoder SPI transmit | Low | Active; supplies the fixed request while RX owns completion |
 | 4 | USART1 receive | Medium | Move bytes into a bounded circular or block buffer; parse only in foreground |
 | 5 | USART1 transmit | Medium | Transmit a validated frame; RS-485 direction changes only after USART transmission-complete, not merely DMA completion |
 | 6 | Optional TIM3 burst update | High | Reserved for measurement; not used by the initial PWM backend |
 | 7-8 | Spare or safe-state-only service | Low | No new `RUN` consumer without a channel-budget and latency review |
 
 The table is a capacity and priority plan, not authorization to enable a
-peripheral. SPI1 is the documented encoder instance; its future DMA request
-mapping and every final channel assignment remain bench-verification items.
+peripheral. SPI1 DMA channel assignments are bench-verified; any new consumer
+still requires a channel-budget and latency review.
 
 ### Use by subsystem
 
@@ -135,11 +135,10 @@ mapping and every final channel assignment remain bench-verification items.
   documented extra-sample workaround. A missing, duplicate, late, clipped, or
   transfer-error sample is a fast-loop fault rather than permission to reuse an
   earlier duty request.
-- **Encoder SPI:** DMA is valuable when it removes a busy wait and publishes a
-  precisely completed transaction. Because an encoder frame is small, DMA
-  setup can cost more cycles than a bounded register operation; foreground
-  polling is used for initial bring-up, and DMA is adopted only after both paths
-  are measured.
+- **Encoder SPI:** TIM6 releases a 1 kHz transaction, TIM7 enforces CS setup and
+  hold, DMA channels 2/3 move the fixed four-byte frame, and PendSV performs
+  decode/runtime work. One post-power-up exchange is explicitly primed and
+  discarded; subsequent errors are reported normally.
 - **USART1/RS-485:** RX and TX DMA eliminate per-byte interrupt work. DMA owns
   byte movement only; framing, CRC, address checks, command validation, timeout
   policy, and PC13 direction turnaround remain explicit software behavior.
@@ -173,22 +172,21 @@ initial targets.
 | --- | ---: | --- | --- |
 | PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
-| Encoder acquisition | 1 kHz candidate | Foreground now; timer-released SPI/DMA if measured jitter requires it | Timestamped mechanical-angle snapshot and interval telemetry |
-| Aligned q-current mapping | 1 kHz candidate | Accepted foreground encoder sample | Slew-limited A/B references for the 20 kHz backend |
+| Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
+| Aligned q-current mapping | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited A/B references for the 20 kHz backend |
 | Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded torque-current request |
 | Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
 The active 20 kHz rate has completed roughly 160,000 recent fault-free loop
-samples. Firmware 0.20.0 schedules encoder acquisition at 1 kHz, timestamps each
+samples. Firmware 0.24.13 schedules encoder acquisition at 1 kHz, timestamps each
 accepted sample in microseconds, and reports the latest and maximum observed
-interval. The initial hardware regression accepted this foreground schedule:
-active observations during a 757 mA / 20 Hz run were 981-1001 us, with a
-5.450 ms cumulative worst case since boot and no estimator fault against the
-20 ms validity threshold. This must be revalidated after outer-loop compute is
-added; timer-released SPI/DMA remains the next step if the resulting jitter or
-CPU budget is not fit for purpose.
+interval. The deterministic hardware regression accepted this schedule: idle
+operation held the latest/worst interval to 1000/1001 us with zero errors, and
+a 606 mA five-second aligned-torque run completed 100,000 current-loop updates
+with zero encoder, estimator, DMA, backend, or control faults. This must be
+revalidated as velocity and position compute are added.
 
 ## Processor and cycle budget
 
@@ -272,7 +270,7 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-  exact Arm target. Firmware 0.23.1 integrates the authoritative drive
+  exact Arm target. Firmware 0.23.2 integrates the authoritative drive
   supervisor, mechanical angle tracker, measured stepper-alignment geometry,
   and a signed q-current actuator; the outer velocity/position shell remains
   excluded while the proven phase-current backend is active:
