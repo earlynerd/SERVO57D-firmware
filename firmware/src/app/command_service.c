@@ -273,6 +273,44 @@ void command_service_dispatch(const command_service_context_t* context,
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 
+        case COMMAND_OPERATION_START_ALIGNED_TORQUE:
+            if (request->payload_length != 6u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->aligned_torque.start == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->aligned_torque.start(
+                context->aligned_torque.context,
+                (int16_t)read_u16_be(request->payload),
+                read_u32_be(&request->payload[2]));
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
+        case COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->aligned_torque.get_status == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->aligned_torque.get_status(
+                context->aligned_torque.context,
+                &response->data.aligned_torque_status);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS;
+            }
+            return;
+
         case COMMAND_OPERATION_GET_BOOT_STATUS:
             if (request->payload_length != 0u)
             {

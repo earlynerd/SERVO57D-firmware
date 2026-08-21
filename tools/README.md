@@ -16,9 +16,9 @@ cannot directly own the bridge. The historical commissioning-image and
 bridge-characterization build aliases have been removed.
 
 The local phase selector and its OLED view remain transitional diagnostic UI
-clients of the supervisor. They are to be replaced by the aligned motor
-diagnostic/motion interface, then removed if they have no independent service
-role. No new feature should extend them into a second control path.
+clients of the supervisor. The aligned motor interface now exists; after its
+hardware gate, retain this UI only if it has an independent service role. No
+new feature should extend it into a second control path.
 
 `motor_test.py` is the normal human-facing motor diagnostic and regression loop. It runs one
 firmware-bounded rotating-current move, captures the diagnostic stream and
@@ -67,6 +67,8 @@ py tools/mks57d_rs485.py --port COM14 configuration
 py tools/mks57d_rs485.py --port COM14 align --current-ma 757.5 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 save-configuration
 py tools/mks57d_rs485.py --port COM14 clear-calibration
+py tools/mks57d_rs485.py --port COM14 torque-status
+py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
@@ -97,6 +99,16 @@ storage result. `save-configuration` is an idempotent explicit retry;
 `clear-calibration` first persists the invalid state and then clears the live
 calibration. Both write operations are rejected while any drive operation or
 pending start/stop owns the safe-state boundary.
+
+On firmware 0.23.0 / protocol 1.7, `torque-status` reads the complete aligned
+q-current state and firmware-owned policy without energizing the bridge.
+`torque` accepts signed counts or signed milliamperes, preflights the absolute
+current and duration against that reported policy, starts the supervisor-owned
+bounded operation, and streams state until deadline, STOP, or fault. Ctrl+C
+sends generic STOP. The initial policy permits ±125 counts (±757.4 mA nominal),
+but the first hardware gate deliberately starts at ±25 counts (±151.5 mA) for
+250 ms. This command produces torque and can accelerate the shaft; it does not
+request or regulate velocity.
 
 Protocol 1.3 and later firmware also records the first 256 current-loop samples
 after each start. Run a nearly stationary reference for a clean startup step,

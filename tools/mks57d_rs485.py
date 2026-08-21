@@ -32,6 +32,8 @@ COMMAND_STOP_DRIVE = 0x0202
 COMMAND_GET_CONFIGURATION_STATUS = 0x0300
 COMMAND_SAVE_CONFIGURATION = 0x0301
 COMMAND_CLEAR_CALIBRATION = 0x0302
+COMMAND_START_ALIGNED_TORQUE = 0x0400
+COMMAND_GET_ALIGNED_TORQUE_STATUS = 0x0401
 
 STATUS_NAMES = {
     0: "ok",
@@ -187,12 +189,52 @@ CONFIGURATION_RESULT_NAMES = {
     4: "verify_error",
 }
 
+TORQUE_STATE_NAMES = {
+    0: "idle",
+    1: "ramping",
+    2: "holding",
+    3: "complete",
+    4: "stopped",
+    5: "failed",
+}
+
+TORQUE_RESULT_NAMES = {
+    0: "none",
+    1: "deadline",
+    2: "stopped",
+    3: "phase_invalid",
+    4: "feedback_timing",
+    5: "overspeed",
+    6: "overacceleration",
+    7: "backend_inactive",
+    8: "reference_rejected",
+}
+
+TORQUE_FLAG_NAMES = {
+    0: "active",
+    1: "authority_active",
+    2: "backend_active",
+    3: "alignment_valid",
+    4: "phase_valid",
+    5: "demand_at_target",
+}
+
+TORQUE_FAULT_NAMES = {
+    0: "phase_invalid",
+    1: "feedback_timing",
+    2: "overspeed",
+    3: "overacceleration",
+    4: "backend_inactive",
+    5: "reference_rejected",
+}
+
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
 CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
+ALIGNED_TORQUE_STATUS_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -706,6 +748,91 @@ def query_configuration(client: Client) -> dict[str, Any]:
     }
 
 
+def query_aligned_torque(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_ALIGNED_TORQUE_STATUS)
+    if len(body) != ALIGNED_TORQUE_STATUS_BODY.size:
+        raise ProtocolError(
+            "aligned-torque-status response has an unexpected length"
+        )
+    (
+        schema,
+        state,
+        result,
+        flags,
+        fault_flags,
+        requested_q_current_counts,
+        applied_q_current_counts,
+        current_a_reference_counts,
+        current_b_reference_counts,
+        electrical_phase_q32,
+        velocity_q16_16,
+        acceleration_q16_16,
+        elapsed_millis,
+        remaining_millis,
+        maximum_current_counts,
+        maximum_current_slew_counts_per_second,
+        maximum_velocity_q16_16,
+        maximum_acceleration_q16_16,
+        maximum_feedback_interval_us,
+        minimum_duration_millis,
+        maximum_duration_millis,
+        backend_fault_flags,
+    ) = ALIGNED_TORQUE_STATUS_BODY.unpack(body)
+    return {
+        "schema": schema,
+        "state": TORQUE_STATE_NAMES.get(state, f"state_{state}"),
+        "result": TORQUE_RESULT_NAMES.get(result, f"result_{result}"),
+        "flags_hex": f"0x{flags:02X}",
+        "flags": active_names(flags, TORQUE_FLAG_NAMES),
+        "fault_flags_hex": f"0x{fault_flags:08X}",
+        "faults": active_names(fault_flags, TORQUE_FAULT_NAMES),
+        "requested_q_current_counts": requested_q_current_counts,
+        "requested_q_current_nominal_milliamperes": round(
+            requested_q_current_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "applied_q_current_counts": applied_q_current_counts,
+        "applied_q_current_nominal_milliamperes": round(
+            applied_q_current_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "phase_current_reference_counts": {
+            "a": current_a_reference_counts,
+            "b": current_b_reference_counts,
+        },
+        "electrical_phase_q32_hex": f"0x{electrical_phase_q32:08X}",
+        "velocity_revolutions_per_second": velocity_q16_16 / 65536.0,
+        "acceleration_revolutions_per_second2": (
+            acceleration_q16_16 / 65536.0
+        ),
+        "elapsed_millis": elapsed_millis,
+        "remaining_millis": remaining_millis,
+        "backend_fault_flags_hex": f"0x{backend_fault_flags:08X}",
+        "policy": {
+            "maximum_current_counts": maximum_current_counts,
+            "maximum_current_nominal_milliamperes": round(
+                maximum_current_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "maximum_current_slew_counts_per_second": (
+                maximum_current_slew_counts_per_second
+            ),
+            "maximum_current_slew_amperes_per_second": round(
+                maximum_current_slew_counts_per_second
+                * COUNTS_TO_MILLIAMPERES
+                / 1000.0,
+                3,
+            ),
+            "maximum_velocity_revolutions_per_second": (
+                maximum_velocity_q16_16 / 65536.0
+            ),
+            "maximum_acceleration_revolutions_per_second2": (
+                maximum_acceleration_q16_16 / 65536.0
+            ),
+            "maximum_feedback_interval_us": maximum_feedback_interval_us,
+            "minimum_duration_millis": minimum_duration_millis,
+            "maximum_duration_millis": maximum_duration_millis,
+        },
+    }
+
+
 def stop_drive(client: Client) -> None:
     try:
         client.transact(COMMAND_STOP_DRIVE)
@@ -741,6 +868,9 @@ def make_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "clear-calibration", help="persistently invalidate motor alignment"
     )
+    commands.add_parser(
+        "torque-status", help="read aligned q-current progress and policy"
+    )
     trace = commands.add_parser(
         "trace", help="read the completed 20 kHz current-loop startup trace"
     )
@@ -763,6 +893,15 @@ def make_parser() -> argparse.ArgumentParser:
     alignment_current.add_argument("--counts", type=int)
     alignment_current.add_argument("--current-ma", type=float)
     align.add_argument("--interval", type=float, default=0.1)
+
+    torque = commands.add_parser(
+        "torque", help="run a bounded encoder-aligned q-current demand"
+    )
+    torque_current = torque.add_mutually_exclusive_group(required=True)
+    torque_current.add_argument("--counts", type=int)
+    torque_current.add_argument("--current-ma", type=float)
+    torque.add_argument("--duration-ms", type=int, default=250)
+    torque.add_argument("--interval", type=float, default=0.05)
 
     watch = commands.add_parser("watch", help="stream status as JSON lines")
     watch.add_argument("--interval", type=float, default=0.2)
@@ -867,6 +1006,8 @@ def main() -> int:
         elif args.command == "clear-calibration":
             client.transact(COMMAND_CLEAR_CALIBRATION)
             print_json(query_configuration(client))
+        elif args.command == "torque-status":
+            print_json(query_aligned_torque(client))
         elif args.command == "trace":
             samples = read_current_trace(client)
             if args.output:
@@ -949,6 +1090,66 @@ def main() -> int:
                     time.sleep(args.interval)
             except KeyboardInterrupt:
                 stop_drive(client)
+                print_json(query_alignment(client))
+                print("stopped", file=sys.stderr)
+                return 130
+        elif args.command == "torque":
+            if args.counts is not None:
+                q_current_counts = args.counts
+            else:
+                if args.current_ma is None or args.current_ma == 0.0:
+                    raise ProtocolError("--current-ma must be nonzero")
+                q_current_counts = round(
+                    args.current_ma / COUNTS_TO_MILLIAMPERES
+                )
+            if not -0x8000 <= q_current_counts <= 0x7FFF:
+                raise ProtocolError(
+                    "q-current must encode as a signed 16-bit count"
+                )
+            if q_current_counts == 0:
+                raise ProtocolError("q-current demand must be nonzero")
+            if not 0.01 <= args.interval <= 2.0:
+                raise ProtocolError(
+                    "--interval must be in the range 0.01..2.0 seconds"
+                )
+            torque_status = query_aligned_torque(client)
+            policy = torque_status["policy"]
+            if abs(q_current_counts) > policy["maximum_current_counts"]:
+                raise ProtocolError(
+                    "q-current is outside the firmware-reported range "
+                    f"-{policy['maximum_current_counts']}.."
+                    f"{policy['maximum_current_counts']} counts"
+                )
+            if not (
+                policy["minimum_duration_millis"]
+                <= args.duration_ms
+                <= policy["maximum_duration_millis"]
+            ):
+                raise ProtocolError(
+                    "duration is outside the firmware-reported range "
+                    f"{policy['minimum_duration_millis']}.."
+                    f"{policy['maximum_duration_millis']} ms"
+                )
+            client.transact(
+                COMMAND_START_ALIGNED_TORQUE,
+                struct.pack(">hI", q_current_counts, args.duration_ms),
+            )
+            try:
+                while True:
+                    torque_status = query_aligned_torque(client)
+                    torque_status["drive"] = query_status(client)
+                    torque_status["encoder"] = query_encoder(client)
+                    print(json.dumps(torque_status, sort_keys=True), flush=True)
+                    if torque_status["state"] in {
+                        "complete",
+                        "stopped",
+                        "failed",
+                    }:
+                        return 0 if torque_status["state"] == "complete" else 3
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                stop_drive(client)
+                print_json(query_aligned_torque(client))
                 print("stopped", file=sys.stderr)
                 return 130
         elif args.command == "watch":

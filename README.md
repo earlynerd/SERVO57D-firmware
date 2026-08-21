@@ -17,8 +17,8 @@ Operating limits are expanded deliberately from bench evidence, and every
 accepted point remains motor-, supply-, board-, cooling-, and enclosure-specific.
 The rotating-current operation is retained as a production motor-diagnostic
 client of the same drive supervisor used by motion control. It is the measured
-foundation for aligned torque control, not a parallel authority path or the
-final motion interface.
+foundation used by the 0.23 aligned torque candidate, not a parallel authority
+path or the final velocity/position interface.
 
 ## Run a test move and view plots
 
@@ -40,11 +40,30 @@ without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
 This interface currently commands a positive-frequency rotating current vector;
 `--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
 closed-loop shaft-speed, signed-direction, or position command. Those controls
-are the next motor-control milestone.
+remain separate from this diagnostic; closed-loop velocity is the next
+motor-control milestone after the aligned-torque hardware gate.
+
+The 0.23 candidate adds the first production motion command: a signed,
+calibrated q-current demand with firmware-reported current, slew, velocity,
+acceleration, feedback-age, and duration bounds. After flashing, the initial
+bench gate starts at 151.5 mA for 250 ms:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 torque-status
+py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
+```
+
+The command uses `RUN` motion authority and the existing 20 kHz current backend;
+it is torque-producing current, not a velocity request, so keep clear of the
+shaft and use the current-limited supply procedure in
+[the bring-up guide](docs/BRINGUP.md).
 
 ## Current operating envelope
 
-Firmware 0.22.0 is the current bench-validated product build. It adds protocol
+Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.0 /
+protocol 1.7 is the current host- and Arm-validated hardware candidate; it adds
+bounded signed encoder-aligned q-current through the same supervisor, current
+backend, and ZERO-vector fault path. Firmware 0.22.0 adds protocol
 1.6 and power-loss-safe dual-slot motor-configuration storage; its host, Arm,
 first-save, unchanged-save, power-cycle restore, persistent-clear, and no-
 restored-authority gates pass. The firmware runs from the fitted
@@ -150,8 +169,8 @@ generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional milestone is the aligned
-torque/current interface followed by velocity and position control. Remaining characterization
+accepted. The next functional milestone after the 0.23 hardware gate is
+low-gain velocity control followed by position control. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

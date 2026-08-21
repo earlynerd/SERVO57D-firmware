@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.22.0 implements the reset-safe foundation, continuous
+Status: firmware 0.23.0 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
@@ -15,10 +15,10 @@ mechanical estimator and measured stepper geometry and passed its initial
 hardware regression. Firmware 0.21.0 adds transactional automatic alignment;
 two successful runs plus generic STOP are bench-proven, while Menu and
 readiness-loss injection remain open.
-The 0.22.0 candidate adds versioned, CRC-protected, dual-slot motor
-configuration storage and boot-time alignment restore; host tests and Arm
-builds pass, while reset/power-cycle behavior remains to be accepted on the
-board.
+The 0.22.0 build adds versioned, CRC-protected, dual-slot motor configuration
+storage and boot-time alignment restore and passes its power-cycle gate. The
+0.23.0 host/Arm candidate adds signed aligned q-current as the first production
+`RUN` motion interface; its hardware gate remains open.
 
 ## Design priorities
 
@@ -64,8 +64,8 @@ The current image implements:
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
   adapter serving discovery, boot and encoder telemetry, and supervisor-gated
-  current diagnostics and automatic alignment from foreground, including
-  status and generic STOP while active.
+  current diagnostics, automatic alignment, and bounded aligned q-current from
+  foreground, including status and generic STOP while active.
 - A project-owned persistent-configuration service using the final two 2 KiB
   Flash pages as alternating records. Schema, length, generation, CRC-32,
   semantic validation, and a commit-last marker protect boot loading; a newer
@@ -90,6 +90,11 @@ The current image implements:
   authority, pending work, leases, faults, or startup current-sensor zeros;
   explicit safe-state save and persistent-clear operations use the same
   production configuration service.
+- A portable fixed-point aligned-torque controller that slews signed q-current,
+  maps it from calibrated electrical phase into A/B references, reports its
+  complete policy/evidence, and independently faults invalid phase, feedback
+  timing, velocity, acceleration, backend state, or reference acceptance before
+  the existing current backend can retain authority.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
@@ -110,17 +115,20 @@ envelope expands.
 The portable control, application, and configuration-service modules live under
 `firmware/src/control/`, `firmware/src/app/`, and `firmware/src/services/`.
 They are compiled for both the
-host and the exact Arm target. The fixed-point phase loop, rotating current
-reference, angle tracker, and alignment geometry are linked into `mks57d`; the
-outer application, trajectory, and d/q servo path remain excluded. Their contracts use
+host and the exact Arm target. The fixed-point phase loop, shared polar phase
+reference, angle tracker, alignment geometry, and aligned q-current controller
+are linked into `mks57d`; the outer application, trajectory, velocity/position,
+and d/q voltage-control path remain excluded. Their contracts use
 revolutions, seconds, amperes, volts, and radians explicitly. The outer servo
 core accepts timestamped raw
 encoder samples and emits a hard-clamped torque-current request; stale input,
 missed control deadlines, excessive following error, implausible encoder
 motion, and invalid arithmetic latch the output invalid. The current-control
 core accepts stationary measured current plus d/q references and emits a
-bounded stationary voltage vector. The proven two-phase backend will adapt
-these contracts to the board as the outer loops are integrated.
+bounded stationary voltage vector. Firmware 0.23 deliberately does not connect
+that unqualified voltage output to PWM: q-current is transformed into A/B
+current references and regulated by the proven board-specific backend. The
+outer loops will drive this torque interface first.
 
 The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
 contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),

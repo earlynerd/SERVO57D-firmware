@@ -9,6 +9,7 @@
 #include "mks57d/adc1.h"
 #include "mks57d/adc_calibration.h"
 #include "mks57d/adc_display.h"
+#include "mks57d/aligned_torque_controller.h"
 #include "mks57d/alignment_controller.h"
 #include "mks57d/application_core.h"
 #include "mks57d/angle_tracker.h"
@@ -33,6 +34,7 @@
 #include "mks57d/motor_alignment.h"
 #include "mks57d/pi_controller.h"
 #include "mks57d/phase_current_loop.h"
+#include "mks57d/phase_current_reference.h"
 #include "mks57d/rotating_current_test.h"
 #include "mks57d/pulse_input_display.h"
 #include "mks57d/servo_core.h"
@@ -96,6 +98,7 @@ typedef struct
     command_current_trace_sample_t current_trace;
     command_alignment_status_t alignment_status;
     command_configuration_status_t configuration_status;
+    command_aligned_torque_status_t aligned_torque_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -112,8 +115,12 @@ typedef struct
     size_t configuration_status_calls;
     size_t configuration_save_calls;
     size_t calibration_clear_calls;
+    size_t aligned_torque_start_calls;
+    size_t aligned_torque_status_calls;
     uint16_t requested_trace_index;
     uint16_t requested_alignment_current_counts;
+    int16_t requested_q_current_counts;
+    uint32_t requested_torque_duration_millis;
 } mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
@@ -529,6 +536,30 @@ static command_status_t mock_calibration_clear(void* context)
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_aligned_torque_start(
+    void* context,
+    int16_t q_current_counts,
+    uint32_t duration_millis)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->aligned_torque_start_calls;
+    mock->requested_q_current_counts = q_current_counts;
+    mock->requested_torque_duration_millis = duration_millis;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_aligned_torque_get_status(
+    void* context,
+    command_aligned_torque_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->aligned_torque_status_calls;
+    *status = mock->aligned_torque_status;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -582,6 +613,11 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_status = mock_configuration_get_status,
             .save = mock_configuration_save,
             .clear_calibration = mock_calibration_clear,
+        },
+        .aligned_torque = {
+            .context = commissioning,
+            .start = mock_aligned_torque_start,
+            .get_status = mock_aligned_torque_get_status,
         },
     };
 
@@ -2021,6 +2057,31 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .active_quarter_step_error_counts = -2,
             .active_encoder_direction = -1,
         },
+        .aligned_torque_status = {
+            .schema_version = 1u,
+            .state = 2u,
+            .result = 0u,
+            .flags = 0x3Fu,
+            .fault_flags = 0x01020304u,
+            .requested_q_current_counts = -50,
+            .applied_q_current_counts = -49,
+            .current_a_reference_counts = 48,
+            .current_b_reference_counts = -47,
+            .electrical_phase_q32 = 0x11223344u,
+            .velocity_revolutions_per_second_q16_16 = -65536,
+            .acceleration_revolutions_per_second2_q16_16 = 0x00140000,
+            .elapsed_millis = 0x05060708u,
+            .remaining_millis = 0x090A0B0Cu,
+            .maximum_current_counts = 125u,
+            .maximum_current_slew_counts_per_second = 1000u,
+            .maximum_velocity_revolutions_per_second_q16_16 = 65536,
+            .maximum_acceleration_revolutions_per_second2_q16_16 =
+                20 * 65536,
+            .maximum_feedback_interval_us = 2000u,
+            .minimum_duration_millis = 100u,
+            .maximum_duration_millis = 1000u,
+            .backend_fault_flags = 0xA1B2C3D4u,
+        },
     };
     native_protocol_frame_t response;
     size_t wire_length;
@@ -2400,6 +2461,86 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(commissioning.calibration_clear_calls == 1u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    {
+        static const uint8_t torque_payload[] = {
+            0xFFu, 0xCEu, 0x00u, 0x00u, 0x01u, 0xF4u};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            33u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_START_ALIGNED_TORQUE,
+            torque_payload,
+            sizeof(torque_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.aligned_torque_start_calls == 1u);
+        EXPECT_TRUE(commissioning.requested_q_current_counts == -50);
+        EXPECT_TRUE(commissioning.requested_torque_duration_millis == 500u);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        34u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_ALIGNED_TORQUE_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.aligned_torque_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 63u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 2u);
+    EXPECT_TRUE(response.payload[4] == 0x3Fu);
+    EXPECT_TRUE(response.payload[5] == 0x01u);
+    EXPECT_TRUE(response.payload[8] == 0x04u);
+    EXPECT_TRUE(response.payload[9] == 0xFFu);
+    EXPECT_TRUE(response.payload[10] == 0xCEu);
+    EXPECT_TRUE(response.payload[11] == 0xFFu);
+    EXPECT_TRUE(response.payload[12] == 0xCFu);
+    EXPECT_TRUE(response.payload[13] == 0u);
+    EXPECT_TRUE(response.payload[14] == 48u);
+    EXPECT_TRUE(response.payload[15] == 0xFFu);
+    EXPECT_TRUE(response.payload[16] == 0xD1u);
+    EXPECT_TRUE(response.payload[17] == 0x11u);
+    EXPECT_TRUE(response.payload[20] == 0x44u);
+    EXPECT_TRUE(response.payload[21] == 0xFFu);
+    EXPECT_TRUE(response.payload[24] == 0u);
+    EXPECT_TRUE(response.payload[25] == 0u);
+    EXPECT_TRUE(response.payload[26] == 0x14u);
+    EXPECT_TRUE(response.payload[29] == 0x05u);
+    EXPECT_TRUE(response.payload[36] == 0x0Cu);
+    EXPECT_TRUE(response.payload[37] == 0u);
+    EXPECT_TRUE(response.payload[38] == 125u);
+    EXPECT_TRUE(response.payload[39] == 0x03u);
+    EXPECT_TRUE(response.payload[40] == 0xE8u);
+    EXPECT_TRUE(response.payload[41] == 0u);
+    EXPECT_TRUE(response.payload[43] == 0u);
+    EXPECT_TRUE(response.payload[44] == 0u);
+    EXPECT_TRUE(response.payload[45] == 0u);
+    EXPECT_TRUE(response.payload[46] == 0x14u);
+    EXPECT_TRUE(response.payload[49] == 0x07u);
+    EXPECT_TRUE(response.payload[50] == 0xD0u);
+    EXPECT_TRUE(response.payload[54] == 100u);
+    EXPECT_TRUE(response.payload[57] == 0x03u);
+    EXPECT_TRUE(response.payload[58] == 0xE8u);
+    EXPECT_TRUE(response.payload[59] == 0xA1u);
+    EXPECT_TRUE(response.payload[62] == 0xD4u);
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
@@ -4483,6 +4624,195 @@ static void test_rotating_current_test_generates_quadrature_references(void)
     EXPECT_TRUE(current_b == 0);
 }
 
+static aligned_torque_config_t test_aligned_torque_config(void)
+{
+    const aligned_torque_config_t config = {
+        .maximum_current_counts = 125u,
+        .maximum_current_slew_counts_per_second = 1000u,
+        .maximum_velocity_revolutions_per_second_q16_16 = 1 << 16,
+        .maximum_acceleration_revolutions_per_second2_q16_16 = 20 << 16,
+        .maximum_feedback_interval_us = 2000u,
+        .minimum_duration_millis = 100u,
+        .maximum_duration_millis = 1000u,
+    };
+
+    return config;
+}
+
+static void test_phase_current_reference_maps_signed_quadrants(void)
+{
+    int16_t reference_a = 0;
+    int16_t reference_b = 0;
+
+    EXPECT_TRUE(phase_current_reference_from_polar(
+        100, 0x00000000u, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 100);
+    EXPECT_TRUE(reference_b == 0);
+    EXPECT_TRUE(phase_current_reference_from_polar(
+        100, 0x40000000u, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 0);
+    EXPECT_TRUE(reference_b == 100);
+    EXPECT_TRUE(phase_current_reference_from_polar(
+        -100, 0x80000000u, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == 100);
+    EXPECT_TRUE(reference_b == 0);
+    EXPECT_TRUE(phase_current_reference_from_polar(
+        100, 0x20000000u, &reference_a, &reference_b));
+    EXPECT_TRUE((reference_a >= 70) && (reference_a <= 71));
+    EXPECT_TRUE((reference_b >= 70) && (reference_b <= 71));
+    EXPECT_TRUE(!phase_current_reference_from_polar(
+        100, 0u, NULL, &reference_b));
+    EXPECT_TRUE(phase_current_reference_from_polar(
+        INT16_MIN, 0x80000000u, &reference_a, &reference_b));
+    EXPECT_TRUE(reference_a == INT16_MAX);
+    EXPECT_TRUE(reference_b == 0);
+}
+
+static void test_aligned_torque_ramps_signed_q_current_and_deadlines(void)
+{
+    const aligned_torque_config_t config = test_aligned_torque_config();
+    aligned_torque_controller_t controller;
+    aligned_torque_status_t status;
+    uint32_t step;
+
+    EXPECT_TRUE(aligned_torque_config_is_valid(&config));
+    EXPECT_TRUE(aligned_torque_controller_init(&controller, &config));
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 100u, 1000u, 0));
+    for (step = 1u; step <= 50u; ++step)
+    {
+        EXPECT_TRUE(aligned_torque_controller_update(
+            &controller,
+            100u + step,
+            1000u + step * 1000u,
+            true,
+            0u,
+            0,
+            true) == ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    }
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == ALIGNED_TORQUE_STATE_HOLDING);
+    EXPECT_TRUE(status.applied_q_current_counts == 50);
+    EXPECT_TRUE(status.current_a_reference_counts == 0);
+    EXPECT_TRUE(status.current_b_reference_counts == 50);
+
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 151u, 52000u, true, 0x40000000u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.current_a_reference_counts == -50);
+    EXPECT_TRUE(status.current_b_reference_counts == 0);
+
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 300u, 53000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_COMPLETED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == ALIGNED_TORQUE_STATE_COMPLETE);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_DEADLINE);
+    EXPECT_TRUE(status.applied_q_current_counts == 0);
+    EXPECT_TRUE(status.current_a_reference_counts == 0);
+    EXPECT_TRUE(status.current_b_reference_counts == 0);
+    EXPECT_TRUE(!aligned_torque_controller_is_active(&controller));
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, -50, 100u, 400u, 60000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 401u, 61000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.applied_q_current_counts == -1);
+    EXPECT_TRUE(status.current_a_reference_counts == 0);
+    EXPECT_TRUE(status.current_b_reference_counts == -1);
+    EXPECT_TRUE(aligned_torque_controller_stop(&controller, 402u));
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == ALIGNED_TORQUE_STATE_STOPPED);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_STOPPED);
+}
+
+static void test_aligned_torque_rejects_unsafe_feedback_and_backend(void)
+{
+    const aligned_torque_config_t config = test_aligned_torque_config();
+    aligned_torque_config_t invalid_config = config;
+    aligned_torque_controller_t controller;
+    aligned_torque_status_t status;
+
+    invalid_config.maximum_feedback_interval_us = 0u;
+    EXPECT_TRUE(!aligned_torque_config_is_valid(&invalid_config));
+    invalid_config = config;
+    invalid_config.maximum_current_counts = 0u;
+    EXPECT_TRUE(!aligned_torque_config_is_valid(&invalid_config));
+    EXPECT_TRUE(aligned_torque_controller_init(&controller, &config));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, 0, 200u, 0u, 0u, 0));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, 126, 200u, 0u, 0u, 0));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, -126, 200u, 0u, 0u, 0));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, 50, 99u, 0u, 0u, 0));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, 50, 1001u, 0u, 0u, 0));
+    EXPECT_TRUE(!aligned_torque_controller_start(
+        &controller, 50, 200u, 0u, 0u, 65537));
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 0u, 1000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 1u, 2000u, false, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_PHASE_INVALID);
+    EXPECT_TRUE((status.fault_flags &
+                 ALIGNED_TORQUE_FAULT_PHASE_INVALID) != 0u);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 10u, 3000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 11u, 6001u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_FEEDBACK_TIMING);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 20u, 7000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 21u, 8000u, true, 0u, 65537, true) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_OVERSPEED);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 30u, 9000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 31u, 10000u, true, 0u, 65536, true) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_OVERACCELERATION);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 40u, 11000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 41u, 12000u, true, 0u, 0, false) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_BACKEND_INACTIVE);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 200u, 50u, 13000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_reference_rejected(
+        &controller, 51u));
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_REFERENCE_REJECTED);
+
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, 50, 100u, 100u, 14000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 200u, 15000u, true, 0u, 0, false) ==
+        ALIGNED_TORQUE_EVENT_FAILED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == ALIGNED_TORQUE_RESULT_BACKEND_INACTIVE);
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -4563,6 +4893,9 @@ int main(void)
     test_phase_current_loop_rejects_excess_reference();
     test_phase_current_loop_anti_windup_recovers_from_saturation();
     test_rotating_current_test_generates_quadrature_references();
+    test_phase_current_reference_maps_signed_quadrants();
+    test_aligned_torque_ramps_signed_q_current_and_deadlines();
+    test_aligned_torque_rejects_unsafe_feedback_and_backend();
     test_motion_manager_enforces_authority_and_idempotency();
     test_motion_manager_lease_expiry_stops_then_disables();
     test_motion_manager_keepalive_is_explicit_and_retries_stay_safe();

@@ -1,14 +1,15 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.6, discovery, boot and encoder telemetry, the
+Status: native protocol 1.7, discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
-power-loss-safe motor-configuration storage are implemented and host-tested.
+power-loss-safe motor-configuration storage, and bounded aligned q-current are
+implemented and host-tested.
 Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
 the product drive supervisor and has passed both deadline-release and explicit-
 STOP motor regressions. Address
-provisioning, native-wire duplicate handling, motion control commands, Modbus
+provisioning, native-wire duplicate handling, velocity/position commands, Modbus
 RTU, and Makerbase compatibility remain future work.
 
 ## Decision
@@ -115,6 +116,8 @@ from causing reply storms.
 | `0x0300` | `GET_CONFIGURATION_STATUS` | Empty | Schema-1 persistent/active configuration status block described below |
 | `0x0301` | `SAVE_CONFIGURATION` | Empty | Empty |
 | `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
+| `0x0400` | `START_ALIGNED_TORQUE` | Signed q-current counts `i16`, duration milliseconds `u32` | Empty |
+| `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-1 aligned-torque state, evidence, and complete policy block described below |
 
 The product ID is `0x4D4B5335` (`MKS5`). Firmware 0.19.0 / protocol 1.3 is the
 bench-proven converged supervisor image. Firmware 0.20.0 / protocol 1.4 appends
@@ -125,7 +128,11 @@ decoding. Firmware 0.21.0 / protocol 1.5 adds the bounded automatic-alignment
 service and a generic STOP operation; successful, repeatable alignment and STOP
 are bench-proven on the tested motor. Firmware 0.22.0 / protocol 1.6 adds the
 versioned dual-slot configuration record and its production service commands;
-the host and target builds pass, while reset/power-cycle acceptance remains a
+its host, target, reset, power-cycle, persistent-clear, and wear-avoidance gates
+pass. Firmware 0.23.0 / protocol 1.7 adds the first production motion
+interface: signed encoder-aligned q-current through the proven A/B current
+backend with independent current, slew, velocity, acceleration, feedback-age,
+and duration contracts. It is host- and Arm-build validated and awaits its
 hardware gate. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
@@ -142,7 +149,8 @@ is already active, a fault is latched, or raw Menu is asserted. START requests
 diagnostic authority from the supervisor before the backend can switch.
 `STOP_CURRENT_TEST` remains a wire-compatible alias for generic stop behavior.
 `STOP_DRIVE` is the preferred name and is always accepted; either operation
-stops a current diagnostic or alignment before releasing its authority. A remote run also stops at its deadline, on raw Menu, or on an
+stops a current diagnostic, alignment, or aligned-torque operation before
+releasing its authority. A remote run also stops at its deadline, on raw Menu, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
 
@@ -172,6 +180,56 @@ samples, a 4 s total deadline, at most 8 raw counts of within-window span, 12
 counts of return-closure error, and 8 counts of current-tracking error. These
 values are explicitly subject to bench tuning and the project-wide limit
 inventory; they are not motor speed, current, or physical travel limits.
+
+`START_ALIGNED_TORQUE` is accepted only from supervisor `READY` with a valid
+persisted or newly accepted alignment, healthy timestamped encoder feedback,
+initialized current control, Menu released, no fault, and no other active or
+pending drive operation. It enters `RUN` with motion authority and starts the
+20 kHz backend at zero reference. Every accepted 1 kHz encoder sample maps the
+signed q-current to electrical phase plus 90 degrees and slews the resulting A/B
+phase references through the same bounded current PI and bridge shutdown path
+used by alignment and the production diagnostic. Positive q-current maps to
+`A=-Iq*sin(theta), B=Iq*cos(theta)` under the accepted motor convention.
+
+The initial 0.23 policy is ±125 counts (±757.4 mA nominal on the tested current
+front end), 1,000 counts/s current slew (about 6.06 A/s), 1 mechanical rev/s,
+20 rev/s², at most 2,000 us between accepted feedback samples, and 100-1,000 ms
+duration. The current point is the highest bench-proven operating point; the
+slew is deliberately slower than the measured current-loop rise. The other
+values are explicit initial motion-policy candidates, independently enforced,
+reported, and subject to replacement from bench distributions. They are not
+hardware or motor capability claims. Deadline and generic STOP release motion
+authority; invalid phase/timing, overspeed, overacceleration, backend loss,
+reference rejection, current-loop fault, or readiness loss enters the common
+fault/ZERO path.
+
+`GET_ALIGNED_TORQUE_STATUS` returns this 62-byte schema-1 body after the common
+status byte. All signed values use two's complement and all multi-byte fields
+are big-endian.
+
+| Body offset | Type | Aligned-torque schema-1 field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 1 |
+| 1 | `u8` | State: idle, ramping, holding, complete, stopped, or failed |
+| 2 | `u8` | Result: none, deadline, stopped, phase invalid, feedback timing, overspeed, overacceleration, backend inactive, or reference rejected |
+| 3 | `u8` | Active/authority/backend/alignment/phase/demand-at-target flags |
+| 4 | `u32` | Aligned-torque fault flags |
+| 8 | `i16` | Requested q-current counts |
+| 10 | `i16` | Applied, slew-limited q-current counts |
+| 12 | `i16,i16` | Applied A/B phase-current references |
+| 16 | `u32` | Latest calibrated electrical phase, Q0.32 turns |
+| 20 | `i32` | Mechanical velocity, Q16.16 rev/s |
+| 24 | `i32` | Absolute mechanical acceleration, Q16.16 rev/s² |
+| 28 | `u32` | Elapsed milliseconds |
+| 32 | `u32` | Remaining milliseconds while active |
+| 36 | `u16` | Maximum absolute q-current counts |
+| 38 | `u16` | Maximum q-current slew, counts/s |
+| 40 | `i32` | Maximum absolute mechanical velocity, Q16.16 rev/s |
+| 44 | `i32` | Maximum absolute mechanical acceleration, Q16.16 rev/s² |
+| 48 | `u16` | Maximum accepted feedback interval, microseconds |
+| 50 | `u32` | Minimum duration milliseconds |
+| 54 | `u32` | Maximum duration milliseconds |
+| 58 | `u32` | Current-backend fault flags |
 
 `GET_BOOT_STATUS` exposes the complete captured RCC reset-flag mask rather
 than only the IWDG summary in commissioning status. This distinguishes RAM,
@@ -281,7 +339,8 @@ The status body is 32 bytes and the complete successful response payload is 33
 bytes.
 
 `SAVE_CONFIGURATION` is accepted only with a valid active alignment and while
-the supervisor has no authority, the current backend and alignment controller
+the supervisor has no authority, the current backend, alignment controller,
+and aligned-torque controller
 are inactive, no start/stop request is pending, and the supervisor is in
 `READY` or `DIAGNOSTIC`. `CLEAR_CALIBRATION` has the same safe-state gate; it
 first commits a newer record with calibration invalid, then clears the RAM
@@ -359,6 +418,7 @@ the complete successful response payload is 64 bytes.
 | 12 | TIM3 bridge PWM and bounded current-loop operation |
 | 13 | Bounded production automatic alignment |
 | 14 | Versioned dual-slot persistent motor configuration |
+| 15 | Bounded encoder-aligned q-current operation |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -464,8 +524,9 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.22.0 links the mechanical estimator, transactional alignment
-controller, native alignment/STOP service, and persistent configuration, while the outer motion shell
+target; firmware 0.23.0 links the mechanical estimator, transactional alignment
+controller, persistent configuration, and the first supervisor-authorized
+aligned q-current motion operation. The general velocity/position motion shell
 remains excluded.
 
 ## Implementation sequence
@@ -475,8 +536,9 @@ remains excluded.
 2. **In progress:** the COBS/CRC native v1 framer, discovery commands, boot and
    encoder telemetry, current-loop console, and safe motor-configuration
    transaction are implemented. The motor diagnostics are bench-proven;
-   persistence passes its reset/power-cycle gate. General application and
-   motion status plus broader fuzz coverage remain.
+   persistence passes its reset/power-cycle gate, and aligned q-current is the
+   current hardware candidate. General velocity/position status plus broader
+   fuzz coverage remain.
 3. Add the Modbus RTU adapter and project-owned register map to the same
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
@@ -485,8 +547,9 @@ remains excluded.
    limits, command arbiter, retry history, lease, safe-stop, and completion
    behavior exist and have end-to-end simulated-plant tests. The hardware
    current-control state and automatic alignment are bench-proven, and
-   alignment persistence passes its power-cycle gate. Add
-   native velocity and position wire mappings after the aligned torque path.
+   alignment persistence passes its power-cycle gate, and the aligned torque
+   path is integrated. Add native velocity and position wire mappings after its
+   hardware gate.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

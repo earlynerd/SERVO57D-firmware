@@ -4,6 +4,7 @@ set(PORTABLE_CONTROL_SOURCES
     src/app/application_core.c
     src/app/motion_manager.c
     src/app/step_direction.c
+    src/control/aligned_torque_controller.c
     src/control/alignment_controller.c
     src/control/angle_tracker.c
     src/control/current_controller.c
@@ -11,6 +12,7 @@ set(PORTABLE_CONTROL_SOURCES
     src/control/motor_alignment.c
     src/control/pi_controller.c
     src/control/phase_current_loop.c
+    src/control/phase_current_reference.c
     src/control/rotating_current_test.c
     src/control/servo_core.c
     src/services/configuration_store.c
@@ -46,10 +48,12 @@ set(PROJECT_SOURCES
     src/app/diagnostics.c
     src/board/board.c
     src/board/board_inputs.c
+    src/control/aligned_torque_controller.c
     src/control/alignment_controller.c
     src/control/angle_tracker.c
     src/control/motor_alignment.c
     src/control/phase_current_loop.c
+    src/control/phase_current_reference.c
     src/control/rotating_current_test.c
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c

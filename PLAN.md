@@ -190,7 +190,13 @@ Goal: close the mechanical loop incrementally.
   direction, and velocity during a bounded run; move acquisition to a
   timer-released SPI/DMA path if later outer-loop load makes the initially
   accepted foreground schedule unfit for purpose.
-- [ ] Connect the existing bounded torque/current command layer to the proven phase-current backend.
+- [x] Connect signed, slew-limited, encoder-aligned q-current to the proven
+  phase-current backend through product `RUN`/motion authority, with independent
+  current, velocity, acceleration, feedback-age, duration, STOP, and fault
+  contracts plus machine-readable policy telemetry.
+- [ ] Bench-validate positive/negative aligned q-current through deadline,
+  explicit STOP, Menu, and induced encoder/readiness-loss shutdown before
+  closing the velocity loop.
 - [ ] Close the velocity loop at low gains and limited current.
 - [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.

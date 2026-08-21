@@ -1,11 +1,13 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.22.0 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.23.0 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor and adds a bounded automatic alignment service
 to the product's timestamped 1 kHz mechanical estimator and measured
 50-electrical-cycle alignment geometry. It also adds versioned, CRC-protected,
-dual-slot persistence for the accepted alignment. Two successful 757.4 mA alignments and
+dual-slot persistence for the accepted alignment and adds bounded signed
+encoder-aligned q-current as the first production `RUN` motion operation. Two
+successful 757.4 mA alignments and
 a generic-STOP abort are bench-proven on the tested motor with zero faults,
 reset, or retained panic. The
 0.19.0 supervisor path is bench-proven through a
@@ -22,14 +24,16 @@ be exercised.
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
 restore, persistent clear, and no-restored-authority behavior pass on COM14.
+The 0.23.0 aligned-torque controller, protocol, and Debug/Release Arm builds pass
+host validation; its signed deadline/STOP/fault hardware gate remains pending.
 
 ## Current operating contract
 
 - Startup verifies the reset-default 4 MHz MSI, then enables the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK. PCLK2 is 32 MHz, PCLK1 is 16 MHz, and TIM3 receives the doubled 32 MHz APB1 timer clock.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
-- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware 0.22.0 preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a 1 kHz foreground schedule, including while the motor runs. Accepted samples receive microsecond timestamps and feed the shared unwrap/velocity estimator. Native protocol 1.6 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, and persistent configuration state. The foreground rate is a hardware-validation candidate; a future timer-released SPI/DMA path remains available if measured jitter requires it.
+- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a 1 kHz foreground schedule, including while the motor runs. Accepted samples receive microsecond timestamps and feed the shared unwrap/velocity estimator. Native protocol 1.7 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, and aligned-torque state/policy. The foreground rate is a hardware-validation candidate; a future timer-released SPI/DMA path remains available if measured jitter requires it.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
@@ -76,6 +80,12 @@ restore, persistent clear, and no-restored-authority behavior pass on COM14.
   validate; it never restores authority, pending work, or current-sensor zeros.
   Explicit status/save/clear operations are available only through the same
   safe-state production command service.
+- Aligned q-current enters `RUN` motion authority only from a healthy `READY`
+  state with valid calibration. It starts the 20 kHz backend at zero, then each
+  accepted 1 kHz encoder sample slews signed q-current and maps phase plus 90
+  degrees into A/B references. Current, slew, velocity, acceleration, feedback
+  age, duration, STOP, backend, and reference limits are independently enforced
+  and reported; violations converge on the existing fault/`ZERO` path.
 
 ## Layout
 
@@ -97,6 +107,6 @@ the [command protocol](../docs/PROTOCOL.md),
 the [ADC contract](../docs/ADC.md), the
 [watchdog policy](../docs/WATCHDOG.md), the [boot self-test](../docs/BOOT_SELF_TEST.md),
 and the [debugger diagnostic record](../docs/DIAGNOSTICS.md). The next control
-integration step is the aligned torque/current interface and existing portable
-velocity and position modules; Menu and readiness-loss fault injection remain
-parallel hardware checks.
+integration step after the aligned-torque hardware gate is the existing portable
+velocity layer, followed by position control; Menu and readiness-loss fault
+injection remain parallel hardware checks.

@@ -1,10 +1,12 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.22.0 implements the fast path, production alignment layer,
-and safe-state configuration maintenance:
+Status: firmware 0.23.0 implements the fast path, production alignment layer,
+safe-state configuration maintenance, and the first aligned torque-current
+motion client:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
 fixed-point current control, a carrier deadline guardian, and a foreground
-automatic-alignment controller using the same backend and supervisor. The fast
+automatic-alignment and q-current controllers using the same backend and
+supervisor. The fast
 path is bench-proven with encoder-observed motor rotation; successful,
 repeatable alignment and generic STOP are also bench-proven. This document defines
 the next velocity and position layers.
@@ -172,7 +174,8 @@ initial targets.
 | PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
 | Encoder acquisition | 1 kHz candidate | Foreground now; timer-released SPI/DMA if measured jitter requires it | Timestamped mechanical-angle snapshot and interval telemetry |
-| Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded `Id`/`Iq` request |
+| Aligned q-current mapping | 1 kHz candidate | Accepted foreground encoder sample | Slew-limited A/B references for the 20 kHz backend |
+| Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded torque-current request |
 | Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
@@ -269,9 +272,10 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-exact Arm target. Firmware 0.20.0 integrates the authoritative drive supervisor,
-mechanical angle tracker, and measured stepper-alignment geometry; the outer
-servo shell remains excluded while the proven phase-current backend is active:
+  exact Arm target. Firmware 0.23.0 integrates the authoritative drive
+  supervisor, mechanical angle tracker, measured stepper-alignment geometry,
+  and a signed q-current actuator; the outer velocity/position shell remains
+  excluded while the proven phase-current backend is active:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -291,6 +295,14 @@ servo shell remains excluded while the proven phase-current backend is active:
 - deterministic mechanical and two-axis RL plant tests exercise the complete
   portable path through encoder wrapping, command arbitration, lease expiry,
   trajectory completion, saturation, fault recovery, and current regulation.
+
+The active 0.23 stepper path does not send the portable d/q controller's voltage
+output to PWM. At each accepted 1 kHz encoder sample it validates phase age,
+velocity, acceleration, backend state, and deadline, slews signed q-current,
+maps electrical phase plus 90 degrees to A/B current references, and hands them
+to the already-qualified 20 kHz A/B PI backend. This is the production actuator
+that the next velocity loop will command; direct d/q voltage integration remains
+future work requiring its own modulation and timing evidence.
 
 These tests establish signs, units, bounds, state ownership, and fault
 behavior. They do not establish loop gains, numerical representation,
@@ -409,7 +421,10 @@ Above that immediate primitive, the product drive supervisor is the sole
 application authority owner. It distinguishes diagnostic from motion authority,
 permits bridge switching only in `ALIGN` or `RUN`, clears authority on every
 fault transition, and treats encoder/current-path readiness loss during an
-energized state as `FAULT`.
+energized state as `FAULT`. Firmware 0.23 uses `RUN`/motion authority for aligned
+q-current; deadline and STOP release normally, while its independent feedback,
+motion, reference, and backend violations enter `FAULT` and the same all-low
+primitive.
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 

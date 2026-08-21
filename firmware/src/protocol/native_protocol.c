@@ -362,6 +362,12 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_CLEAR_CALIBRATION:
             *operation = COMMAND_OPERATION_CLEAR_CALIBRATION;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_START_ALIGNED_TORQUE:
+            *operation = COMMAND_OPERATION_START_ALIGNED_TORQUE;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_ALIGNED_TORQUE_STATUS:
+            *operation = COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS;
+            return true;
         default:
             return false;
     }
@@ -715,6 +721,59 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 response_frame->payload[32] =
                     (uint8_t)status->active_encoder_direction;
                 payload_length = 33u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS:
+            {
+                const command_aligned_torque_status_t* status =
+                    &command_response->data.aligned_torque_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->state;
+                response_frame->payload[3] = status->result;
+                response_frame->payload[4] = status->flags;
+                write_u32_be(&response_frame->payload[5],
+                             status->fault_flags);
+                write_u16_be(&response_frame->payload[9],
+                             (uint16_t)status->requested_q_current_counts);
+                write_u16_be(&response_frame->payload[11],
+                             (uint16_t)status->applied_q_current_counts);
+                write_u16_be(&response_frame->payload[13],
+                             (uint16_t)status->current_a_reference_counts);
+                write_u16_be(&response_frame->payload[15],
+                             (uint16_t)status->current_b_reference_counts);
+                write_u32_be(&response_frame->payload[17],
+                             status->electrical_phase_q32);
+                write_u32_be(&response_frame->payload[21],
+                             (uint32_t)status->
+                                 velocity_revolutions_per_second_q16_16);
+                write_u32_be(&response_frame->payload[25],
+                             (uint32_t)status->
+                                 acceleration_revolutions_per_second2_q16_16);
+                write_u32_be(&response_frame->payload[29],
+                             status->elapsed_millis);
+                write_u32_be(&response_frame->payload[33],
+                             status->remaining_millis);
+                write_u16_be(&response_frame->payload[37],
+                             status->maximum_current_counts);
+                write_u16_be(&response_frame->payload[39],
+                             status->maximum_current_slew_counts_per_second);
+                write_u32_be(&response_frame->payload[41],
+                             (uint32_t)status->
+                                 maximum_velocity_revolutions_per_second_q16_16);
+                write_u32_be(&response_frame->payload[45],
+                             (uint32_t)status->
+                                 maximum_acceleration_revolutions_per_second2_q16_16);
+                write_u16_be(&response_frame->payload[49],
+                             status->maximum_feedback_interval_us);
+                write_u32_be(&response_frame->payload[51],
+                             status->minimum_duration_millis);
+                write_u32_be(&response_frame->payload[55],
+                             status->maximum_duration_millis);
+                write_u32_be(&response_frame->payload[59],
+                             status->backend_fault_flags);
+                payload_length = 63u;
                 break;
             }
 

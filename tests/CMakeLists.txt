@@ -5,6 +5,7 @@ add_executable(host_unit_tests
     ../firmware/src/app/command_service.c
     ../firmware/src/app/motion_manager.c
     ../firmware/src/app/step_direction.c
+    ../firmware/src/control/aligned_torque_controller.c
     ../firmware/src/control/alignment_controller.c
     ../firmware/src/control/angle_tracker.c
     ../firmware/src/control/current_controller.c
@@ -12,6 +13,7 @@ add_executable(host_unit_tests
     ../firmware/src/control/motor_alignment.c
     ../firmware/src/control/pi_controller.c
     ../firmware/src/control/phase_current_loop.c
+    ../firmware/src/control/phase_current_reference.c
     ../firmware/src/control/rotating_current_test.c
     ../firmware/src/control/servo_core.c
     ../firmware/src/drivers/adc_calibration.c

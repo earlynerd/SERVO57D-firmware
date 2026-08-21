@@ -268,8 +268,9 @@ Persistent clear selected slot 1 at generation 2, remained invalid across a
 second power cycle, and did not restore authority. A final 757.4 mA alignment
 saved the accepted `9301 / -1 / 79` result in slot 0 at generation 3.
 
-Validate stop separately by starting `align` in one terminal and issuing the
-following from another during the first settle interval:
+Validate stop separately by starting `align` and pressing Ctrl+C during the
+first settle interval. The CLI sends the same generic command directly; the
+standalone equivalent is:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 stop
@@ -282,13 +283,70 @@ abort, while readiness loss during authority must enter the common fault path.
 Do not perform the readiness-loss injection until an immediate supply cutoff is
 available and the ordinary/STOP runs have passed.
 
+### Aligned q-current hardware gate
+
+Firmware 0.23.0 connects signed torque-producing current to the calibrated
+electrical phase through the production `RUN`/motion-authority path. This is not
+a speed or position command: an unloaded shaft can accelerate. Keep clear of
+the motor, use 12 V and the current-limited supply, start below the accepted
+757 mA envelope, and keep generic STOP plus immediate supply cutoff available.
+
+Confirm 0.23.0 / protocol 1.7, restored alignment, `READY`, and the complete
+firmware policy before energizing:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 identity
+py tools/mks57d_rs485.py --port COM14 configuration
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 torque-status
+```
+
+The initial status must report alignment valid, no active authority/backend,
+±125 counts maximum current, 1,000 counts/s slew, 1 rev/s velocity, 20 rev/s²
+acceleration, and 100-1,000 ms duration. These are the independently enforced
+0.23 candidate values, not physical capability claims.
+
+Begin with 5 counts (about 30.3 mA) for the minimum 100 ms, then inspect final
+drive, encoder, torque, fault, reset, and panic state:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 torque --counts 5 --duration-ms 100 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 encoder
+py tools/mks57d_rs485.py --port COM14 torque-status
+py tools/mks57d_rs485.py --port COM14 boot
+```
+
+Acceptance requires `ramping`/`holding` samples followed by `complete` with
+result `deadline`; motion authority and backend are active only during the run,
+the A/B reference rotates with calibrated electrical phase, and the terminal
+state is supervisor `READY` with zero backend/torque/estimator faults and no new
+panic or reset. A safety result such as `overacceleration` is a successful
+shutdown-path observation but does not pass the normal-run gate; preserve its
+telemetry and tune only from measured evidence.
+
+If clean, repeat at `--counts -5` and confirm the q-current and mechanical
+response reverse. Then progress through ±25 counts (151.5 mA) and ±50 counts
+(303 mA) at 100 ms. Do not advance after an unexpected fault, implausible phase
+reference, encoder discontinuity, heating, or supply-current step. The existing
+757 mA current/alignment evidence permits later expansion to ±125 counts, but
+does not guarantee that an unloaded open-torque run will remain below the
+independent velocity or acceleration limit.
+
+Validate explicit STOP separately by starting a 1,000 ms, 5-count `torque` run
+and pressing Ctrl+C while it is active. The CLI sends the same generic STOP as
+the standalone `py tools/mks57d_rs485.py --port COM14 stop` command.
+The result must become `stopped`, backend and authority must clear immediately,
+and alignment/configuration must remain unchanged. Repeat Menu and induced
+encoder/readiness-loss tests only after ordinary/deadline and STOP behavior pass;
+the latter must enter the common fault/ZERO path.
+
 After that gate, the next implementation sequence is:
 
-1. Connect the aligned torque/current command to the proven phase-current backend.
-2. Close the velocity loop at low gains and explicit current/velocity/acceleration bounds.
-3. Add position trajectories, following-error detection, step/direction
+1. Close the velocity loop at low gains and explicit current/velocity/acceleration bounds.
+2. Add position trajectories, following-error detection, step/direction
    capture, and native motion commands.
-4. Characterize the useful current, speed, acceleration, bus-voltage, and
+3. Characterize the useful current, speed, acceleration, bus-voltage, and
    thermal envelope with encoder tracking as the acceptance measure.
 
 ## Stop conditions during motor development
