@@ -14,9 +14,9 @@ set(PORTABLE_CONTROL_SOURCES
 )
 
 # Cross-compile the complete portable control core on every firmware build.
-# The fixed-point phase loop and rotating commissioning reference are also
-# linked explicitly below; the outer servo/application modules remain host-only
-# until their hardware timing and motor personality are commissioned.
+# The fixed-point phase loop and rotating diagnostic reference are also linked
+# explicitly below; outer servo/application integration proceeds through the
+# product supervisor as hardware timing and motor-personality contracts mature.
 add_library(mks57d_portable_control OBJECT ${PORTABLE_CONTROL_SOURCES})
 target_include_directories(mks57d_portable_control PRIVATE include)
 target_compile_features(mks57d_portable_control PRIVATE c_std_11)
@@ -93,16 +93,12 @@ target_include_directories(${FIRMWARE_TARGET} PRIVATE
 # the first image on reset-default 4 MHz MSI and does not configure HSI/HSE/PLL.
 target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     N32L40X
-    MKS57D_CURRENT_LOOP_COMMISSIONING_IMAGE=1
+    MKS57D_PRODUCT_IMAGE=1
     MKS57D_FIRMWARE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     MKS57D_FIRMWARE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
-# Keep explicit targets for the bounded commissioning image and its historical
-# bridge-characterization target name.
-add_custom_target(bridge-characterization DEPENDS ${FIRMWARE_TARGET})
-add_custom_target(current-loop-commissioning DEPENDS ${FIRMWARE_TARGET})
 add_custom_target(portable-control-arm DEPENDS mks57d_portable_control)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)

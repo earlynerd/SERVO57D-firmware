@@ -1,6 +1,6 @@
 # Debugger Diagnostic Record
 
-Status: firmware 0.17.8 publishes schema 5 continuously and the layout is
+Status: firmware 0.19.0 publishes schema 5 continuously and the layout is
 ABI-checked by host and post-link tests. Equivalent current, encoder, fault,
 and reset data are bench-proven through the OLED and native protocol; direct
 debugger inspection remains an optional validation path.
@@ -30,7 +30,7 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 4 | `schema_version` | Record schema, currently `5` |
 | 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.17.8` |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.19.0` |
 | 20 | `capabilities` | Bring-up, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, bridge-characterizer, and current-loop capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
@@ -126,7 +126,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 For a new board or diagnostic-schema validation:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.17.8`, schema is 5, and record size is 240;
+- confirm `firmware_version` decodes to `0.19.0`, schema is 5, and record size is 240;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;
@@ -139,7 +139,7 @@ For a new board or diagnostic-schema validation:
   agree with scoped PC13 and final-stop-bit timing;
 - send valid and deliberately malformed native frames and confirm response,
   COBS, length, CRC, address, broadcast, type, and TX-rejection counters;
-- during bounded current commissioning, confirm active, sample count,
+- during a bounded current diagnostic, confirm active, sample count,
   references, measured currents, staged duties, and any latched fault agree
   with the scoped signals;
 - leave PA6, PA7, PB0, PB1, and PB7 under oscilloscope observation throughout.

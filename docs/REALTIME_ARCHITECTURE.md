@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.18.2 implements the fast-path portion of this architecture:
+Status: firmware 0.19.0 implements the fast-path portion of this architecture:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
 fixed-point current control, and a carrier deadline guardian. The path is
 bench-proven with encoder-observed motor rotation. This document also defines
@@ -71,7 +71,7 @@ Every ISR must meet these rules:
 | Object | Normal writer | Readers | Publication method |
 | --- | --- | --- | --- |
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
-| Encoder angle/status/timestamp | Foreground bring-up reader; future encoder completion ISR | Diagnostics now; fast and slow loops later | Sequence-numbered snapshot; readers retry if publication changes |
+| Encoder angle/status/timestamp | Foreground product-readiness reader; future encoder completion ISR | Supervisor and diagnostics now; fast and slow loops later | Sequence-numbered snapshot; readers retry if publication changes |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
@@ -182,7 +182,7 @@ plant response, transaction time, noise, CPU budget, and switching losses.
 ## Processor and cycle budget
 
 Motor-control timing is budgeted in core cycles, not average foreground load.
-Firmware 0.17.8 runs the bench-proven 64 MHz clock tree and a 20 kHz fast
+Firmware 0.19.0 uses the bench-proven 64 MHz clock tree and a 20 kHz fast
 current path. The table gives the available cycle intervals; worst-case ISR
 instrumentation remains release work:
 
@@ -261,8 +261,9 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-exact Arm target. The outer servo shell remains excluded from firmware 0.17.8
-while the proven phase-current backend is active:
+exact Arm target. Firmware 0.19.0 integrates the authoritative drive supervisor;
+the outer servo shell remains excluded while the proven phase-current backend
+is active:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -323,7 +324,7 @@ Following error, velocity, acceleration, current, voltage request, and duty cycl
 
 The Nations 2.3.0 four-channel PWM example maps PA6, PA7, PB0, and PB1 to
 TIM3 channels 1-4 on AF2, matching the published schematic and the Delsian
-CAN-board project. Firmware 0.17.8 uses that edge-aligned 20 kHz mapping and
+CAN-board project. Firmware 0.19.0 uses that edge-aligned 20 kHz mapping and
 stages low-zero sign-magnitude current-loop duties. All four outputs, phase
 polarities, current quadrants, and attached-motor operation are proven on the
 purchased RS-485 board.
@@ -340,7 +341,7 @@ Because TIM3 channel 4 is also needed for PB1 bridge control, `TIM3_CC4` would p
 Timing strategies are therefore:
 
 1. **Active current-loop path:** edge-aligned TIM3 PWM with TIM2 reset
-   from update. TIM2 compare at 30% invokes a bounded ISR that software-starts
+   from update. TIM2 compare at 80% invokes a bounded ISR that software-starts
    the two-rank `currentB`/`currentA` regular sequence. This bypasses the
    unproven internal TIM2_CC2-to-ADC route while preserving timer-relative
    sampling.
@@ -368,7 +369,7 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or the immediate bridge fault primitive. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-Firmware 0.17.8 requests service every 100 ms with a nominal 1,000 ms IWDG
+Firmware 0.19.0 requests service every 100 ms with a nominal 1,000 ms IWDG
 timeout. A foreground polling gap above 250 ms, an invalid application state,
 or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) refuses further
 service and enters the panic path. A stopped timebase also prevents scheduled
@@ -395,6 +396,12 @@ It is not an all-FET-off state. The primitive is:
 - A short, bounded sequence of direct register operations.
 - Able to prevent staged PWM values from becoming active later.
 - Followed by a latched state that forbids re-enable without an explicit safe-state recovery sequence.
+
+Above that immediate primitive, the product drive supervisor is the sole
+application authority owner. It distinguishes diagnostic from motion authority,
+permits bridge switching only in `ALIGN` or `RUN`, clears authority on every
+fault transition, and treats encoder/current-path readiness loss during an
+energized state as `FAULT`.
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 

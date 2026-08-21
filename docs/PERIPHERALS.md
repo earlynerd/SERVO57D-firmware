@@ -32,7 +32,7 @@ Firmware holds PB2 low from passive initialization, then performs
 a bounded reset and initialization at address `0x3C`. The original 4 MHz PCLK
 and current 16 MHz PCLK both select dividers producing approximately 333.3 kHz.
 The fitted panel has drawn the expected pixels successfully. The transport has
-sustained 50 Hz two-page updates; firmware 0.17.8 uses a 5 Hz current-loop
+sustained 50 Hz two-page updates; firmware 0.19.0 uses a 5 Hz current-loop
 display. A display failure is non-fatal and stops further updates until reset.
 
 Display refresh belongs in foreground housekeeping. It must not run from
@@ -42,7 +42,7 @@ SysTick, a control ISR, or any safety path.
 
 The project retains a bounded polling ADC path for PA1 `currentB`, PA2
 `currentA`, and PA3 `vBus`. That path proved all three channels with
-all-or-nothing raw 12-bit samples. Firmware 0.17.8 instead dedicates PA1/PA2 to
+all-or-nothing raw 12-bit samples. Firmware 0.19.0 instead dedicates PA1/PA2 to
 the 20 kHz synchronous current sequence; periodic PA3 bus-voltage sampling is
 the next ADC integration item.
 
@@ -59,7 +59,7 @@ ADC work has two layers:
   reference accuracy, gain/sign, clipping, supply-range behavior, and settling
   remain to be measured.
 - **Synchronous current acquisition:** complete at 20 kHz using a TIM2 compare
-  at 30% of the TIM3 carrier and DMA completion. Missing, duplicate, clipped,
+  at 80% of the TIM3 carrier and DMA completion. Missing, duplicate, clipped,
   and late sequences are fault inputs.
 
 Current control uses the tested board's measured 3.3 V reference,
@@ -74,7 +74,9 @@ continues it during current-loop operation. SPI1 runs at 500 kHz or lower in mod
 registers `0x03` through `0x05` in one four-byte CS window every 10 ms after a
 20 ms power-up delay. The driver rejects odd parity and publishes no-magnet and
 over-speed flags with raw 14-bit angle and status counters in diagnostic schema
-2. Transport and parity failures remain non-fatal and are retried.
+2. The driver retries transport and parity failures; the product supervisor
+keeps an unready idle drive in `DIAGNOSTIC` and converts encoder-health loss
+during bridge authority into `FAULT`.
 
 GPIOB activation for SPI is constrained to PB3-PB6 before TIM3 claims PB0/PB1;
 PB7 `nEN` remains an input. Bench testing has proven stable rest readings,
@@ -85,7 +87,7 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.17.8 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
+Firmware 0.19.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
 PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
 three consecutive changed samples update each independently. The physical keys
 are left Next, center Enter, and right Menu, and both auxiliary inputs respond
@@ -105,9 +107,9 @@ bounded number of bytes into the native v1 COBS/CRC parser. TX uses channel 5
 and keeps PC13 high until USART transmission-complete, not merely DMA
 completion.
 
-Native protocol 1.2 replies to complete, CRC-valid address-1 discovery, boot,
+Native protocol 1.3 replies to complete, CRC-valid address-1 discovery, boot,
 encoder, and current-loop requests. Framing, address checks, command validation,
-and reply creation remain bounded foreground work; the current-loop service
+and reply creation remain bounded foreground work; the product drive supervisor
 owns bridge authority. Complete configuration, START, live status, encoder, and
 STOP exchanges have been observed through `485_A2`/`485_B2`; reset-time and
 turnaround waveforms remain to be scoped.
@@ -130,8 +132,8 @@ tracking in all four quadrants, and motor rotation.
 
 Firmware 0.12.1 attempted to select TIM3 update as `TRGO` for a two-rank
 `currentB`/`currentA` sequence, but DMA channel 1 reported `ERRF` on hardware.
-Firmware 0.17.8 uses the bench-proven two-rank `currentB/currentA` scan and
-arms ADC/DMA before TIM3 starts. TIM2 resets from TIM3 update; its 30%-phase
+Firmware 0.19.0 uses the bench-proven two-rank `currentB/currentA` scan and
+arms ADC/DMA before TIM3 starts. TIM2 resets from TIM3 update; its 80%-phase
 compare ISR software-starts one sequence into a two-halfword DMA buffer.
 After independent 32-sample startup zero
 calibration, the OLED and native protocol show both signed currents. The DMA

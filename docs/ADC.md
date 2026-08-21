@@ -1,6 +1,6 @@
 # ADC Bring-up
 
-Status: firmware 0.18.2 uses TIM2 compare at 80% of each 20 kHz carrier to
+Status: firmware 0.19.0 uses TIM2 compare at 80% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 16 MHz, 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.
@@ -53,7 +53,7 @@ differential shunt-voltage gain, not 7.65. The bus divider is 15.4 kOhm above
 1 kOhm. With the tested board's measured 3.3 V reference and fitted 20 mOhm
 shunts, these factors are 6.059 mA per current count and approximately
 13.22 mV per bus-voltage count. `adc_sample_convert()` accepts the ADC reference
-and independent A/B zero counts at runtime. Firmware 0.18.2 uses 3.3 V and
+and independent A/B zero counts at runtime. Firmware 0.19.0 uses 3.3 V and
 measures each zero from 32 synchronized samples over approximately 320 ms while
 bridge authority remains inhibited.
 
@@ -158,7 +158,7 @@ with no commanded current they dither near 0 mA and remain within approximately
 +/-12 mA. At 6.06 mA/count this is a roughly two-count residual, consistent
 with the observed ADC quantization/noise floor.
 
-Firmware 0.18.2 retains the proven ADC/DMA-before-TIM3 initialization order but
+Firmware 0.19.0 retains the proven ADC/DMA-before-TIM3 initialization order but
 does not reuse the carrier-boundary trigger for switched-current regulation.
 TIM2 is reset by TIM3 update, compares at 80% of the carrier, and its short ISR
 sets the ADC software-start bit. The current channels use 7.5-cycle apertures

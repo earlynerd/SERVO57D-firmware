@@ -1,6 +1,6 @@
 # Independent Watchdog Policy
 
-Status: implemented and active in firmware 0.17.8. Normal current-loop runs
+Status: implemented and active in firmware 0.19.0. Normal current-loop runs
 complete without watchdog or reset faults. Exact reset timing and bridge-pin
 waveforms during debugger halt remain characterization items; IWDG is a recovery
 layer, while the current-loop deadline path owns the immediate all-low response.
@@ -60,7 +60,7 @@ The `.noinit` panic code remains separate: it describes the last software panic 
 
 ## Debugger halt policy
 
-Firmware 0.17.8 clears `DBG_CTRL.IWDG_STOP`, `DBG_CTRL.TIM2_STOP`, and
+Firmware 0.19.0 clears `DBG_CTRL.IWDG_STOP`, `DBG_CTRL.TIM2_STOP`, and
 `DBG_CTRL.TIM3_STOP`; IWDG and both active timers continue while the Cortex-M4 is halted. A halt
 therefore preserves the last timer command until the nominal
 one-second watchdog reset returns the MCU pins to reset state. The tied HIN/LIN

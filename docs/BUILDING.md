@@ -94,7 +94,7 @@ ctest --preset host-debug
 
 ## Current image behavior
 
-Firmware 0.17.8 is current-regulated motor firmware. It:
+Firmware 0.19.0 is the converged current-regulated product firmware. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -102,24 +102,26 @@ Firmware 0.17.8 is current-regulated motor firmware. It:
 4. Verifies PA6, PA7, PB0, PB1, and PB7 begin input/no-pull in the reset-safe board state. This is an initial-state gate, not a permanent reservation of the bridge pins.
 5. Configures the active-high PD0 status LED output.
 6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15.
-7. Enters `APP_STATE_DIAGNOSTIC` and toggles the LED every 250 ms.
+7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and performs bounded foreground MT6816 burst reads every 10 ms after a 20 ms power-up delay.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.2 COBS/CRC frames in foreground and replies to valid address-1 discovery, boot, encoder, and current-loop requests, including live status and STOP while active.
+12. Parses native v1.3 COBS/CRC frames in foreground and replies to valid address-1 discovery, boot, encoder, and current-diagnostic requests, including live status and STOP while active.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
-14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 30%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
+14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
-16. Keeps the bridge in `ZERO` until zero calibration completes and Enter has first been observed released. Holding Enter then runs a bounded fixed-point A/B loop with a nominal 150 mA rotating reference; raw release or Menu returns to `ZERO`.
+16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. Holding Enter after the required release requests diagnostic authority for a bounded fixed-point A/B loop with a nominal 150 mA rotating reference; raw release or Menu stops the backend, releases authority, and returns to `ZERO`.
 17. Continues RS-485 foreground processing and 100 Hz encoder polling while active so current state, rotor motion, and STOP remain observable throughout a run.
-18. Publishes firmware `0.17.8`, boot state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, native-protocol counters, and current-loop state through the 240-byte schema-5 `g_diagnostics` RAM record.
+18. Publishes firmware `0.19.0`, authoritative drive state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, encoder state, RS-485 transport state, native-protocol counters, and current-loop state through the 240-byte schema-5 `g_diagnostics` RAM record.
 19. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
 20. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
-Firmware 0.17.8 provides local hold-to-run and duration-bounded RS-485 current
-operation. The timer AF mapping, all four bridge legs, 20 kHz DMA-completion
+Firmware 0.19.0 provides supervisor-authorized local hold-to-run and
+duration-bounded RS-485 current diagnostics. The timer AF mapping, all four bridge legs, 20 kHz DMA-completion
 loop, low-zero modulation, feedback signs, active encoder polling, remote STOP,
 and motor rotation are bench-proven. A 300 mA, 5 Hz electrical, three-second
 run completed 59,905 samples and measured 5.97 RPM from the encoder without a
-latched fault. Use the guarded wrapper for the same board/probe setup.
+latched fault on the earlier accepted current backend. The 0.19.0 supervisor
+integration still requires its hardware regression. Use the guarded wrapper for
+the same board/probe setup.

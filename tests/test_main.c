@@ -435,39 +435,141 @@ static size_t encode_native_request(uint8_t address,
 
 static void test_reset_only_enters_diagnostic_after_passive_init(void)
 {
-    const app_transition_context_t unsafe = {.safe_to_recover = false};
+    app_supervisor_t supervisor;
+    const app_transition_context_t unsafe = {0};
 
-    EXPECT_TRUE(app_state_transition(APP_STATE_RESET_SAFE,
-                                     APP_EVENT_FAULT_ACKNOWLEDGED,
-                                     unsafe) == APP_STATE_RESET_SAFE);
-    EXPECT_TRUE(app_state_transition(APP_STATE_RESET_SAFE,
-                                     APP_EVENT_PASSIVE_INIT_COMPLETE,
-                                     unsafe) == APP_STATE_DIAGNOSTIC);
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(supervisor.state == APP_STATE_RESET_SAFE);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
+    EXPECT_TRUE(!app_supervisor_foreground_service_allowed(&supervisor));
+    EXPECT_TRUE(!app_supervisor_handle_event(&supervisor,
+                                             APP_EVENT_FAULT_ACKNOWLEDGED,
+                                             unsafe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_PASSIVE_INIT_COMPLETE, unsafe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_DIAGNOSTIC);
+    EXPECT_TRUE(app_supervisor_foreground_service_allowed(&supervisor));
 }
 
 static void test_faults_converge_on_fault_state(void)
 {
-    const app_transition_context_t unsafe = {.safe_to_recover = false};
+    app_supervisor_t supervisor;
+    const app_transition_context_t safe = {.safe_to_energize = true};
 
-    EXPECT_TRUE(app_state_transition(APP_STATE_RESET_SAFE,
-                                     APP_EVENT_FAULT_DETECTED,
-                                     unsafe) == APP_STATE_FAULT);
-    EXPECT_TRUE(app_state_transition(APP_STATE_RUN,
-                                     APP_EVENT_FAULT_DETECTED,
-                                     unsafe) == APP_STATE_FAULT);
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_PASSIVE_INIT_COMPLETE, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_MOTION_RUN_REQUESTED, safe));
+    EXPECT_TRUE(app_supervisor_bridge_authorized(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_FAULT_DETECTED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_FAULT);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
+    EXPECT_TRUE(!app_supervisor_bridge_authorized(&supervisor));
+    EXPECT_TRUE(app_supervisor_foreground_service_allowed(&supervisor));
 }
 
 static void test_fault_recovery_requires_explicit_safe_context(void)
 {
-    const app_transition_context_t unsafe = {.safe_to_recover = false};
+    app_supervisor_t supervisor;
+    const app_transition_context_t unsafe = {0};
     const app_transition_context_t safe = {.safe_to_recover = true};
 
-    EXPECT_TRUE(app_state_transition(APP_STATE_FAULT,
-                                     APP_EVENT_FAULT_ACKNOWLEDGED,
-                                     unsafe) == APP_STATE_FAULT);
-    EXPECT_TRUE(app_state_transition(APP_STATE_FAULT,
-                                     APP_EVENT_FAULT_ACKNOWLEDGED,
-                                     safe) == APP_STATE_DIAGNOSTIC);
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_FAULT_DETECTED, unsafe));
+    EXPECT_TRUE(!app_supervisor_handle_event(
+        &supervisor, APP_EVENT_FAULT_ACKNOWLEDGED, unsafe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_FAULT);
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_FAULT_ACKNOWLEDGED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_DIAGNOSTIC);
+}
+
+static void test_drive_supervisor_owns_diagnostic_and_motion_authority(void)
+{
+    app_supervisor_t supervisor;
+    const app_transition_context_t unsafe = {0};
+    const app_transition_context_t safe = {.safe_to_energize = true};
+
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_PASSIVE_INIT_COMPLETE, unsafe));
+    EXPECT_TRUE(!app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, unsafe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_DIAGNOSTIC);
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_READY);
+
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_RUN);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_DIAGNOSTIC);
+    EXPECT_TRUE(app_supervisor_bridge_authorized(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_AUTHORITY_RELEASED, unsafe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_READY);
+    EXPECT_TRUE(!app_supervisor_bridge_authorized(&supervisor));
+
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_ALIGNMENT_REQUESTED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_ALIGN);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_MOTION);
+    EXPECT_TRUE(app_supervisor_bridge_authorized(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_ALIGNMENT_COMPLETED, unsafe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_READY);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
+}
+
+static void test_readiness_loss_deauthorizes_or_faults(void)
+{
+    app_supervisor_t supervisor;
+    const app_transition_context_t safe = {.safe_to_energize = true};
+
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_PASSIVE_INIT_COMPLETE, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_LOST, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_DIAGNOSTIC);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
+
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_LOST, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_FAULT);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
+    EXPECT_TRUE(!app_supervisor_bridge_authorized(&supervisor));
+}
+
+static void test_drive_supervisor_rejects_state_authority_mismatch(void)
+{
+    app_supervisor_t supervisor;
+    const app_transition_context_t safe = {.safe_to_energize = true};
+
+    EXPECT_TRUE(app_supervisor_init(&supervisor));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_PASSIVE_INIT_COMPLETE, safe));
+    EXPECT_TRUE(app_supervisor_handle_event(
+        &supervisor, APP_EVENT_READINESS_CONFIRMED, safe));
+    supervisor.authority = APP_AUTHORITY_MOTION;
+
+    EXPECT_TRUE(!app_supervisor_bridge_authorized(&supervisor));
+    EXPECT_TRUE(!app_supervisor_foreground_service_allowed(&supervisor));
+    EXPECT_TRUE(!app_supervisor_handle_event(
+        &supervisor, APP_EVENT_MOTION_RUN_REQUESTED, safe));
+    EXPECT_TRUE(supervisor.state == APP_STATE_FAULT);
+    EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
 }
 
 static void test_fault_latch_preserves_first_fault_and_accumulates_flags(void)
@@ -3455,6 +3557,9 @@ int main(void)
     test_reset_only_enters_diagnostic_after_passive_init();
     test_faults_converge_on_fault_state();
     test_fault_recovery_requires_explicit_safe_context();
+    test_drive_supervisor_owns_diagnostic_and_motion_authority();
+    test_readiness_loss_deauthorizes_or_faults();
+    test_drive_supervisor_rejects_state_authority_mismatch();
     test_fault_latch_preserves_first_fault_and_accumulates_flags();
     test_watchdog_policy_services_only_on_schedule();
     test_watchdog_policy_latches_failed_health();

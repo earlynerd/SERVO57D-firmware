@@ -15,8 +15,10 @@ current, voltage, speed, or motion ceilings.
 
 Operating limits are expanded deliberately from bench evidence, and every
 accepted point remains motor-, supply-, board-, cooling-, and enclosure-specific.
-The present rotating-current test is the development foundation for aligned
-torque control and closed-loop motion; it is not the final user interface.
+The rotating-current operation is retained as a production motor-diagnostic
+client of the same drive supervisor used by motion control. It is the measured
+foundation for aligned torque control, not a parallel authority path or the
+final motion interface.
 
 ## Run a test move and view plots
 
@@ -28,8 +30,9 @@ analyzes the result, and opens a self-contained plot report:
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
-The firmware still owns the current, voltage, duty, duration, deadline, and
-fault limits. Press Ctrl+C to send STOP. Each run is saved under ignored
+The firmware supervisor still owns readiness and bridge authority, while the
+current backend independently owns current, voltage, duty, duration, deadline,
+and fault limits. Press Ctrl+C to send STOP. Each run is saved under ignored
 `scratch/motor-runs/`, and the tool restores the preceding inactive test
 configuration unless `--keep-config` is requested. Use `--no-open` to capture
 without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
@@ -41,21 +44,27 @@ are the next motor-control milestone.
 
 ## Current operating envelope
 
-Firmware 0.18.2 is working current-regulated motor firmware. It runs from the
+Firmware 0.19.0 is the converged current-regulated product image. It runs from the
 fitted 8 MHz crystal at a bench-proven 64 MHz system clock, closes independent
 A/B winding-current loops at 20 kHz, samples the encoder at 100 Hz, updates the
 OLED, and serves a native RS-485 protocol-1.3 control, telemetry, and bounded
-20 kHz startup-trace console.
+20 kHz startup-trace service. The underlying 0.18.2 current path is bench-proven;
+the new supervisor integration is build- and host-test-validated and awaits a
+hardware regression run.
 
-The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. After independent
-zero calibration, a released-then-held Enter button can grant bridge authority
-to the fixed-point current loop. Next selects the initial electrical phase;
+The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
+calibration, initialized current control, and a healthy encoder move the product
+supervisor from `DIAGNOSTIC` to `READY`. A released-then-held Enter button can
+then request diagnostic bridge authority through that supervisor. Next selects
+the initial electrical phase;
 raw Enter release or Menu returns to `ZERO`. The local rotating reference is
 151.5 mA. RS-485 can configure 1-165 ADC counts (about 6.06 mA-1.00 A)
 and 0.001-50 Hz electrical frequency, start a 0.1-60 second run, stream current,
 duty, fault, reset, and encoder state, or stop local or remote authority. The
 independent raw-current trip is about 1.212 A, phase voltage is limited to 70%
-of the bus, and the timer guardian latches missed current-loop updates.
+of the bus, and the timer guardian latches missed current-loop updates. Loss of
+readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
+backend and enters `FAULT`.
 
 The loop starts from all-low `ZERO` and uses low-zero sign-magnitude PWM: for
 each winding, only the leg selected by the voltage-command sign switches while
@@ -72,8 +81,9 @@ work; they no longer block bounded motor operation on the tested board.
 
 A separate portable application/control build exercises motion ownership,
 remote lease expiry, step/direction behavior, bounded trajectories, servo
-behavior, and fault recovery against host-side deterministic plants. It is not
-linked into the hardware image.
+behavior, and fault recovery against host-side deterministic plants. Its outer
+servo path is not yet linked into the hardware image; the authoritative state,
+readiness, and authority supervisor now is.
 
 ## Current project status
 
@@ -96,6 +106,11 @@ Bench-proven on the tested board:
   8% overshoot, and 14.0 mA tail RMS error; 606 mA / 15 Hz tracks -17.78 RPM
   versus -18 RPM commanded, and 757 mA / 20 Hz tracks 1.97 revolutions over
   five seconds versus 2.00 commanded with 25.2% peak voltage effort.
+
+Host- and build-validated in firmware 0.19.0: one product drive supervisor owns
+`RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT`, separates diagnostic
+from motion authority, gates energization on current-path and encoder readiness,
+and deauthorizes every fault transition.
 
 The next functional milestone is encoder/electrical-angle alignment followed
 by velocity and position control. Remaining characterization includes

@@ -70,7 +70,7 @@ On the tested board, the physical button order is:
 All three buttons and both isolated M_IN1/M_IN2 inputs have been observed to
 change their corresponding active-low OLED state independently.
 
-Firmware 0.17.8 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
+Firmware 0.19.0 also samples PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` as
 high-impedance inputs without MCU pull resistors. The OLED exposes their
 debounced raw electrical levels as `S D E`. This is only a pin and polarity
 check: it does not count step pulses or assign motion or bridge-enable
@@ -187,7 +187,7 @@ expected selected-phase magnitude and polarity while the unselected phase
 remained at zero. This bench-proves TIM3 channels 1-4 on AF2 for PA6, PA7,
 PB0, and PB1 on the tested board.
 
-Firmware 0.17.8 closes the next hardware milestone: the two-rank A/B ADC path,
+Firmware 0.19.0 retains the closed hardware milestone: the two-rank A/B ADC path,
 20 kHz DMA-completion PI loop, phase-specific current signs, low-zero
 modulation, all four current quadrants, and continuous encoder observation are
 bench-proven with an attached motor. The accepted 300 mA, 5 Hz electrical run

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MKS57D native-v1 RS-485 commissioning console."""
+"""MKS57D native-v1 RS-485 product service and diagnostic console."""
 
 from __future__ import annotations
 
@@ -451,7 +451,7 @@ def make_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="list serial ports")
     commands.add_parser("identity", help="read product and firmware identity")
-    commands.add_parser("status", help="read one commissioning snapshot")
+    commands.add_parser("status", help="read one drive-diagnostic snapshot")
     commands.add_parser("boot", help="read reset cause, panic, and uptime")
     commands.add_parser("encoder", help="read live encoder position and health")
     trace = commands.add_parser(

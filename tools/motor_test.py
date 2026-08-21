@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one bounded MKS57D test move, capture it, analyze it, and open plots."""
+"""Run one bounded MKS57D motor diagnostic, capture it, and open plots."""
 
 from __future__ import annotations
 
@@ -422,6 +422,8 @@ def _preflight(status: dict[str, Any], counts: int) -> None:
         raise ProtocolError(
             "device has latched faults: " + ", ".join(status["loop"]["faults"])
         )
+    if "fault_present" in flags:
+        raise ProtocolError("device supervisor reports a latched fault")
     maximum = int(status["test"]["maximum_amplitude_counts"])
     if counts > maximum:
         raise ProtocolError(
@@ -578,6 +580,7 @@ def main() -> int:
     restored_status: dict[str, Any] = {}
     completed = False
     started = False
+    stop_succeeded = True
     restore_error: str | None = None
     with open_serial(args) as port:
         client = Client(port, args.address)
@@ -623,9 +626,14 @@ def main() -> int:
             if started and not completed:
                 try:
                     client.transact(COMMAND_STOP_CURRENT_TEST)
-                except (ProtocolError, OSError):
-                    pass
-            if not args.keep_config:
+                except (ProtocolError, OSError) as error:
+                    stop_succeeded = False
+                    print(
+                        "error: STOP was not acknowledged; rely on the firmware "
+                        f"deadline or assert Menu: {error}",
+                        file=sys.stderr,
+                    )
+            if not args.keep_config and stop_succeeded:
                 try:
                     _configure(client, original_counts, original_frequency_hz)
                     restored_status = query_status(client)
@@ -651,13 +659,14 @@ def main() -> int:
         / ELECTRICAL_CYCLES_PER_REVOLUTION,
         "leg": args.leg,
     }
-    faults = sorted(
-        {
-            fault
-            for sample in samples
-            for fault in sample.get("loop", {}).get("faults", [])
-        }
-    )
+    observed_faults = {
+        fault
+        for sample in samples
+        for fault in sample.get("loop", {}).get("faults", [])
+    }
+    if any("fault_present" in sample.get("flags", []) for sample in samples):
+        observed_faults.add("drive_supervisor_fault")
+    faults = sorted(observed_faults)
     bundle = {
         "schema": 1,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),

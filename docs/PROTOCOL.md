@@ -1,10 +1,12 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.2, discovery, boot and encoder telemetry, and the
-current-loop console are implemented, host-tested, and bench-proven. The
-console has configured, started, observed, and stopped encoder-verified motor
-runs. Address provisioning, duplicate request handling, motion control leases,
-Modbus RTU, and Makerbase compatibility remain future work.
+Status: native protocol 1.3, discovery, boot and encoder telemetry, and the
+current diagnostic service are implemented and host-tested. Firmware 0.18.2
+configured, started, observed, traced, and stopped encoder-verified motor runs
+on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
+the product drive supervisor and awaits a hardware regression. Address
+provisioning, native-wire duplicate handling, motion control commands, Modbus
+RTU, and Makerbase compatibility remain future work.
 
 ## Decision
 
@@ -54,6 +56,12 @@ stored high byte first. The COBS-encoded frame ends with one `0x00` delimiter.
 The frame `version` is the protocol major version and is currently `1`;
 compatible minor revisions are reported by `GET_IDENTITY`.
 
+The `COMMISSIONING` and `CURRENT_TEST` names in protocol 1.3 are retained wire
+compatibility labels. They denote bounded product diagnostics, not a separate
+firmware personality or a bridge-authority owner. New protocol work should use
+product motion, service, and diagnostic names while preserving these encodings
+for compatible clients.
+
 The decoded header is 8 bytes, the maximum decoded frame is 74 bytes, and the
 maximum on-wire frame including the delimiter is 76 bytes. Frames with an
 invalid COBS encoding, inconsistent length, bad CRC, unsupported version, or
@@ -100,20 +108,23 @@ from causing reply storms.
 | `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema `u8`, captured count `u16`, echoed index `u16`, loop sample count `u32`, A/B references `i16`, A/B measurements `i16`, A/B voltage commands `i16` |
 
 The product ID is `0x4D4B5335` (`MKS5`). The bench-proven image reports firmware
-0.18.2 and protocol 1.3. It adds the bounded current trace validated through
+0.18.2 and protocol 1.3. Firmware 0.19.0 keeps protocol 1.3 and identifies the
+converged product image. Protocol 1.3 adds the bounded current trace validated through
 complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
 
-The current-loop commands are the present low-level motor-operation service;
-they are not yet a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
+The current-loop commands are the present low-level motor-diagnostic service;
+they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-165 ADC counts and frequency to
 1-50000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
 `2=B1`, and `3=B2`, with a duration from 100 to 60000 ms. It is unavailable
-until ADC zero calibration and current-loop initialization complete, or while
-authority is already active, a fault is latched, or raw Menu is asserted.
-`STOP_CURRENT_TEST` is always accepted and stops either local or remote test
-authority. A remote run also stops at its deadline, on raw Menu, or on an
+until the product supervisor reaches `READY` from calibrated current feedback,
+initialized current control, and a healthy encoder sample, or while authority
+is already active, a fault is latched, or raw Menu is asserted. START requests
+diagnostic authority from the supervisor before the backend can switch.
+`STOP_CURRENT_TEST` is always accepted and releases either local or remote
+diagnostic authority after stopping the backend. A remote run also stops at its deadline, on raw Menu, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
 
@@ -124,7 +135,7 @@ causes and reports the current boot uptime.
 
 `GET_ENCODER_STATUS` exposes the latest parity-valid 14-bit magnetic angle,
 encoder and SPI status, sensor flags, accepted-sample count, error count, and
-last-attempt time. The host commissioning console queries it alongside each
+last-attempt time. The host product-service console queries it alongside each
 current-loop snapshot so rotor displacement can be separated from successful
 stator-current commutation.
 
@@ -143,7 +154,7 @@ complement.
 | Body offset | Type | Field |
 | ---: | --- | --- |
 | 0 | `u8` | Schema version, currently 2 |
-| 1 | `u32` | Readiness, authority, pending-action, and fault flags |
+| 1 | `u32` | Readiness, supervisor authority, pending-action, and fault flags; `FAULT_PRESENT` covers either a current-backend fault or product-supervisor `FAULT` |
 | 5 | `u8` | Raw electrical input levels; clear means asserted |
 | 6 | `u8` | Debounced electrical input levels; clear means asserted |
 | 7 | `u8` | `adc1_status_t` |
@@ -288,7 +299,7 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target but the outer motion shell remains excluded from firmware 0.17.8.
+target but the outer motion shell remains excluded from firmware 0.19.0.
 
 ## Implementation sequence
 

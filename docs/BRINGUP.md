@@ -58,8 +58,8 @@ Stage 6 within the measured operating envelope.
 5. Use the guarded J-Link wrapper to build, program, independently verify,
    reset, and start the image.
 6. Confirm an unserviced running image resets near the measured IWDG interval and exposes `RCC_CTRLSTS_IWDGRSTF` in `g_platform_boot_diagnostics.reset_flags` after reboot.
-7. Confirm a debugger halt does not pause IWDG, TIM2, or TIM3 in firmware 0.17.8; capture PA6/PA7/PB0/PB1, gate outputs, and the watchdog reset transition.
-8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `5`, size `240`, firmware version `0.17.8`, and an even stable sequence.
+7. Confirm a debugger halt does not pause IWDG, TIM2, or TIM3 in firmware 0.19.0; capture PA6/PA7/PB0/PB1, gate outputs, and the watchdog reset transition.
+8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `5`, size `240`, firmware version `0.19.0`, and an even stable sequence.
 9. Scope PD0 and confirm the active-high heartbeat without button contention on PB9.
 10. Scope PB3-PB6 and confirm the bounded MT6816 mode-3 burst described in [encoder bring-up](ENCODER.md), including non-fatal no-magnet behavior.
 11. Compare the diagnostic reset and retained-panic fields across power-on, NRST, software panic, and IWDG reset cases.
@@ -92,9 +92,11 @@ the already-tested board.
 
 ## Stage 6 — Current-regulated motor operation
 
-Firmware 0.18.2 operates an attached two-phase stepper through independent
+Firmware 0.19.0 operates an attached two-phase stepper through independent
 20 kHz winding-current loops. Local Enter remains hold-to-run; release or Menu
-commands `ZERO`. RS-485 provides configurable current amplitude, electrical
+commands `ZERO`. Both local and RS-485 operations request diagnostic authority
+from the product drive supervisor after current-path and encoder readiness.
+RS-485 provides configurable current amplitude, electrical
 frequency, initial phase, run duration, STOP, and live current plus encoder
 telemetry. Timeout, Menu, transport failure, or STOP ends authority.
 
@@ -158,7 +160,7 @@ for this open-loop rotating vector. It does not yet regulate mechanical speed,
 select direction, or command position; use encoder agreement and the generated
 plots as the acceptance evidence until the aligned outer loops exist.
 
-Firmware 0.18.2 uses `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 mA startup
+Firmware 0.19.0 retains the 0.18.2 `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 mA startup
 step has 6.53 ms rise time and 8% overshoot. The tested motor tracked 606 mA /
 15 Hz at -17.78 RPM and completed 1.97 revolutions during a five-second 757 mA /
 20 Hz run, with zero faults and 25.2% peak voltage effort. Operation through
@@ -171,7 +173,7 @@ closing the housing, repeat the longest intended bounded duty cycle while
 recording supply current and board, driver, and motor temperature, then inspect
 the idle `status` and reset record again.
 
-Firmware 0.18.2 displays a current-loop shutdown as persistent `F####`. The
+Firmware 0.19.0 displays a current-loop shutdown as persistent `F####`. The
 number is the one-based fault-bit position: `F0002`/`F0003` are A/B raw
 overcurrent, `F0017` ADC/DMA, `F0018` PWM, `F0019` deadline, and `F0020`
 internal backend failure.

@@ -31,8 +31,8 @@
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
 
-#if !defined(MKS57D_CURRENT_LOOP_COMMISSIONING_IMAGE)
-#error "This entry point is reserved for the current-loop commissioning image"
+#if !defined(MKS57D_PRODUCT_IMAGE)
+#error "This entry point builds the MKS57D product firmware image"
 #endif
 
 _Static_assert((unsigned int)NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE <=
@@ -67,6 +67,7 @@ enum
 
 typedef struct
 {
+    app_supervisor_t* supervisor;
     bool* adc_ready;
     bool* adc_snapshot_valid;
     bool* adc_calibration_ready;
@@ -90,6 +91,17 @@ typedef struct
     uint32_t remote_start_duration_millis;
     uint32_t remote_run_deadline_millis;
 } commissioning_command_context_t;
+
+static bool encoder_control_ready(
+    const diagnostics_encoder_t* encoder_diagnostics)
+{
+    return (encoder_diagnostics != NULL) &&
+           (encoder_diagnostics->status == (uint32_t)MT6816_STATUS_OK) &&
+           (encoder_diagnostics->transport_status ==
+            (uint32_t)SPI_STATUS_OK) &&
+           (encoder_diagnostics->flags == 0u) &&
+           (encoder_diagnostics->sample_count != 0u);
+}
 
 static uint32_t current_test_initial_phase(
     bridge_characterizer_leg_t selected_leg)
@@ -154,7 +166,7 @@ static command_status_t commissioning_get_status(
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_BRIDGE_READY;
     }
-    if (commissioning->bridge_characterizer->active)
+    if (app_supervisor_bridge_authorized(commissioning->supervisor))
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_AUTHORITY_ACTIVE;
     }
@@ -174,7 +186,9 @@ static command_status_t commissioning_get_status(
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_REMOTE_STOP_PENDING;
     }
-    if (loop.fault_flags != 0u)
+    if ((loop.fault_flags != 0u) ||
+        ((commissioning->supervisor != NULL) &&
+         (commissioning->supervisor->state == APP_STATE_FAULT)))
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT;
     }
@@ -260,7 +274,8 @@ static command_status_t commissioning_configure(
     {
         return COMMAND_STATUS_INVALID_PAYLOAD;
     }
-    if (commissioning->bridge_characterizer->active ||
+    if (app_supervisor_bridge_authorized(commissioning->supervisor) ||
+        commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested)
     {
         return COMMAND_STATUS_UNAVAILABLE;
@@ -292,7 +307,11 @@ static command_status_t commissioning_start(
     }
 
     current_loop_backend_get_snapshot(&loop);
-    if (!*commissioning->bridge_ready ||
+    if ((commissioning->supervisor == NULL) ||
+        (commissioning->supervisor->state != APP_STATE_READY) ||
+        (commissioning->supervisor->authority != APP_AUTHORITY_NONE) ||
+        !*commissioning->bridge_ready ||
+        app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
         (loop.fault_flags != 0u) ||
@@ -587,7 +606,7 @@ int main(void)
     _Static_assert((CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE + 100u) <=
                        TIM2_CURRENT_TRIGGER_PHASE_PERMILLE,
                    "phase voltage must leave a 5 us ADC quiet interval");
-    app_state_t state = APP_STATE_RESET_SAFE;
+    app_supervisor_t drive_supervisor;
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
         .status = MT6816_STATUS_NOT_ATTEMPTED,
@@ -648,6 +667,7 @@ int main(void)
     watchdog_supervisor_t watchdog;
     watchdog_status_t watchdog_status = WATCHDOG_STATUS_NOT_STARTED;
     commissioning_command_context_t commissioning_context = {
+        .supervisor = &drive_supervisor,
         .adc_ready = &adc_ready,
         .adc_snapshot_valid = &adc_snapshot_valid,
         .adc_calibration_ready = &adc_calibration_ready,
@@ -691,9 +711,14 @@ int main(void)
         platform_panic(PANIC_EARLY_PLATFORM_INIT);
     }
 
+    if (!app_supervisor_init(&drive_supervisor))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
+
     boot_self_test_init(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_EARLY_MEMORY);
-    diagnostics_init((uint32_t)state,
+    diagnostics_init((uint32_t)drive_supervisor.state,
                      uptime_millis,
                      heartbeat_count,
                      (uint32_t)watchdog_status,
@@ -702,7 +727,7 @@ int main(void)
     if (platform_clock_init() != PLATFORM_BOOT_READY)
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_CLOCK);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             uptime_millis,
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -710,7 +735,7 @@ int main(void)
         platform_panic(PANIC_CLOCK_INIT);
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_CLOCK);
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         uptime_millis,
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -719,7 +744,7 @@ int main(void)
     if (!interrupt_priority_init())
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_INTERRUPT_POLICY);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             uptime_millis,
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -727,7 +752,7 @@ int main(void)
         platform_panic(PANIC_INTERRUPT_PRIORITY_INIT);
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_INTERRUPT_POLICY);
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         uptime_millis,
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -737,7 +762,7 @@ int main(void)
     if (!board_passive_invariants_hold())
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             uptime_millis,
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -745,7 +770,7 @@ int main(void)
         platform_panic(PANIC_PASSIVE_BOARD_INVARIANT);
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_PASSIVE_BOARD);
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         uptime_millis,
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -754,7 +779,7 @@ int main(void)
     if (!timebase_init())
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_TIMEBASE);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             uptime_millis,
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -763,7 +788,7 @@ int main(void)
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_TIMEBASE);
     uptime_millis = timebase_millis();
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         uptime_millis,
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -852,15 +877,18 @@ int main(void)
     update_protocol_diagnostics(&protocol_server, &protocol_diagnostics);
     diagnostics_publish_protocol(&protocol_diagnostics);
 
-    state = app_state_transition(
-        state,
-        APP_EVENT_PASSIVE_INIT_COMPLETE,
-        (app_transition_context_t){.safe_to_recover = false});
+    if (!app_supervisor_handle_event(
+            &drive_supervisor,
+            APP_EVENT_PASSIVE_INIT_COMPLETE,
+            (app_transition_context_t){0}))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
 
-    if (state != APP_STATE_DIAGNOSTIC)
+    if (drive_supervisor.state != APP_STATE_DIAGNOSTIC)
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_APPLICATION_STATE);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             uptime_millis,
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -868,7 +896,7 @@ int main(void)
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_APPLICATION_STATE);
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         uptime_millis,
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -878,7 +906,7 @@ int main(void)
     if (watchdog_status != WATCHDOG_STATUS_READY)
     {
         boot_self_test_fail(&self_test, BOOT_SELF_TEST_WATCHDOG);
-        diagnostics_publish((uint32_t)state,
+        diagnostics_publish((uint32_t)drive_supervisor.state,
                             timebase_millis(),
                             heartbeat_count,
                             (uint32_t)watchdog_status,
@@ -887,7 +915,7 @@ int main(void)
     }
     boot_self_test_pass(&self_test, BOOT_SELF_TEST_WATCHDOG);
 
-    diagnostics_publish((uint32_t)state,
+    diagnostics_publish((uint32_t)drive_supervisor.state,
                         timebase_millis(),
                         heartbeat_count,
                         (uint32_t)watchdog_status,
@@ -978,9 +1006,13 @@ int main(void)
             }
             else if (!commissioning_context.remote_authority_active)
             {
-                (void)bridge_characterizer_update(&bridge_characterizer,
-                                                  raw_input_levels,
-                                                  input_levels);
+                if (drive_supervisor.state == APP_STATE_READY)
+                {
+                    (void)bridge_characterizer_update(
+                        &bridge_characterizer,
+                        raw_input_levels,
+                        input_levels);
+                }
             }
 
             if (bridge_was_active && !bridge_characterizer.active)
@@ -990,13 +1022,43 @@ int main(void)
                     board_bridge_force_low_zero();
                     platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
                 }
+                current_loop_backend_get_snapshot(&current_loop_snapshot);
                 commissioning_context.remote_authority_active = false;
+                if (current_loop_snapshot.fault_flags != 0u)
+                {
+                    bridge_ready = false;
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                }
+                else if (!app_supervisor_handle_event(
+                             &drive_supervisor,
+                             APP_EVENT_AUTHORITY_RELEASED,
+                             (app_transition_context_t){0}))
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_INTERNAL_INVARIANT);
+                }
+                diagnostics_due = true;
             }
             else if (bridge_characterizer.active && !bridge_was_active)
             {
-                if (!adc_snapshot_valid)
+                const app_transition_context_t energize_context = {
+                    .safe_to_energize =
+                        bridge_ready && adc_snapshot_valid &&
+                        encoder_control_ready(&encoder_diagnostics),
+                };
+
+                if (!adc_snapshot_valid ||
+                    !app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED,
+                        energize_context))
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
+                    commissioning_context.remote_authority_active = false;
                     if (!current_loop_backend_stop())
                     {
                         board_bridge_force_low_zero();
@@ -1044,16 +1106,37 @@ int main(void)
                         !current_loop_backend_start())
                     {
                         bridge_characterizer_stop(&bridge_characterizer);
+                        commissioning_context.remote_authority_active = false;
+                        (void)app_supervisor_handle_event(
+                            &drive_supervisor,
+                            APP_EVENT_FAULT_DETECTED,
+                            (app_transition_context_t){0});
                         board_bridge_force_low_zero();
                         platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
                     }
                     next_current_reference =
                         now + CURRENT_TEST_REFERENCE_PERIOD_MS;
+                    diagnostics_due = true;
                 }
             }
         }
 
         if (bridge_characterizer.active &&
+            !app_supervisor_bridge_authorized(&drive_supervisor))
+        {
+            bridge_characterizer_stop(&bridge_characterizer);
+            commissioning_context.remote_authority_active = false;
+            (void)app_supervisor_handle_event(
+                &drive_supervisor,
+                APP_EVENT_FAULT_DETECTED,
+                (app_transition_context_t){0});
+            board_bridge_force_low_zero();
+            platform_panic(PANIC_INTERNAL_INVARIANT);
+        }
+
+        if (app_supervisor_bridge_authorized(&drive_supervisor) &&
+            (drive_supervisor.authority == APP_AUTHORITY_DIAGNOSTIC) &&
+            bridge_characterizer.active &&
             ((int32_t)(now - next_current_reference) >= 0))
         {
             int16_t current_a_reference_counts;
@@ -1076,6 +1159,10 @@ int main(void)
                 bridge_characterizer_stop(&bridge_characterizer);
                 commissioning_context.remote_authority_active = false;
                 bridge_ready = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
                 if ((current_loop_snapshot.fault_flags == 0u) ||
                     !current_loop_backend_stop())
                 {
@@ -1095,6 +1182,7 @@ int main(void)
                             current_loop_snapshot.fault_flags);
                     next_display_refresh = now;
                 }
+                diagnostics_due = true;
             }
             next_current_reference =
                 now + CURRENT_TEST_REFERENCE_PERIOD_MS;
@@ -1182,7 +1270,20 @@ int main(void)
                 bridge_characterizer_stop(&bridge_characterizer);
                 commissioning_context.remote_authority_active = false;
                 bridge_ready = false;
+                commissioning_context.remote_start_requested = false;
+                commissioning_context.remote_stop_requested = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                if (current_loop_initialized &&
+                    !current_loop_backend_stop())
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                }
                 board_bridge_force_low_zero();
+                diagnostics_due = true;
             }
             if (current_loop_initialized)
             {
@@ -1192,23 +1293,91 @@ int main(void)
                     &current_loop_diagnostics);
                 diagnostics_publish_current_loop(
                     &current_loop_diagnostics);
-                if ((current_loop_snapshot.fault_flags != 0u) &&
-                    (current_loop_fault_code == 0u))
+                if (current_loop_snapshot.fault_flags != 0u)
                 {
-                    current_loop_fault_code =
-                        current_loop_fault_display_code(
-                            current_loop_snapshot.fault_flags);
-                    next_display_refresh = now;
+                    bridge_characterizer_stop(&bridge_characterizer);
+                    commissioning_context.remote_authority_active = false;
+                    commissioning_context.remote_start_requested = false;
+                    commissioning_context.remote_stop_requested = false;
+                    bridge_ready = false;
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                    diagnostics_due = true;
+                    if (current_loop_fault_code == 0u)
+                    {
+                        current_loop_fault_code =
+                            current_loop_fault_display_code(
+                                current_loop_snapshot.fault_flags);
+                        next_display_refresh = now;
+                    }
                 }
-                if (bridge_characterizer.active &&
-                    !current_loop_snapshot.active)
+                else if (bridge_characterizer.active &&
+                         !current_loop_snapshot.active)
                 {
                     bridge_characterizer_stop(&bridge_characterizer);
                     commissioning_context.remote_authority_active = false;
                     bridge_ready = false;
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                    diagnostics_due = true;
                 }
             }
             next_adc_sample = now + ADC_SNAPSHOT_PERIOD_MS;
+        }
+
+        {
+            const bool drive_prerequisites_ready =
+                bridge_ready && current_loop_initialized &&
+                adc_snapshot_valid &&
+                encoder_control_ready(&encoder_diagnostics);
+
+            if ((drive_supervisor.state == APP_STATE_DIAGNOSTIC) &&
+                drive_prerequisites_ready)
+            {
+                if (!app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_READINESS_CONFIRMED,
+                        (app_transition_context_t){
+                            .safe_to_energize = true,
+                        }))
+                {
+                    platform_panic(PANIC_INTERNAL_INVARIANT);
+                }
+                diagnostics_due = true;
+            }
+            else if (((drive_supervisor.state == APP_STATE_READY) ||
+                      (drive_supervisor.state == APP_STATE_ALIGN) ||
+                      (drive_supervisor.state == APP_STATE_RUN)) &&
+                     !drive_prerequisites_ready)
+            {
+                if (app_supervisor_bridge_authorized(&drive_supervisor))
+                {
+                    bridge_characterizer_stop(&bridge_characterizer);
+                    commissioning_context.remote_authority_active = false;
+                    commissioning_context.remote_start_requested = false;
+                    commissioning_context.remote_stop_requested = false;
+                    if (!current_loop_backend_stop())
+                    {
+                        board_bridge_force_low_zero();
+                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    }
+                }
+                if (!app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_READINESS_LOST,
+                        (app_transition_context_t){0}))
+                {
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_INTERNAL_INVARIANT);
+                }
+                diagnostics_due = true;
+            }
         }
 
         if ((int32_t)(now - next_heartbeat) >= 0)
@@ -1222,11 +1391,11 @@ int main(void)
         watchdog_status = watchdog_supervisor_poll(
             &watchdog,
             now,
-            (state == APP_STATE_DIAGNOSTIC) &&
+            app_supervisor_foreground_service_allowed(&drive_supervisor) &&
                 boot_self_test_ready(&self_test));
         if (watchdog_status != WATCHDOG_STATUS_READY)
         {
-            diagnostics_publish((uint32_t)state,
+            diagnostics_publish((uint32_t)drive_supervisor.state,
                                 now,
                                 heartbeat_count,
                                 (uint32_t)watchdog_status,
@@ -1238,7 +1407,7 @@ int main(void)
         {
             diagnostics_publish_rs485(&rs485_diagnostics);
             diagnostics_publish_protocol(&protocol_diagnostics);
-            diagnostics_publish((uint32_t)state,
+            diagnostics_publish((uint32_t)drive_supervisor.state,
                                 now,
                                 heartbeat_count,
                                 (uint32_t)watchdog_status,

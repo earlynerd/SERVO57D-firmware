@@ -1,12 +1,15 @@
 # Firmware Architecture
 
-Status: firmware 0.18.2 implements the reset-safe foundation, continuous
+Status: firmware 0.19.0 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
-transport, native commissioning protocol, and a 20 kHz fixed-point A/B current
+transport, native product diagnostics, an authoritative drive supervisor, and a
+20 kHz fixed-point A/B current
 loop. Low-zero sign-magnitude modulation, 80%-carrier sampling, raw overcurrent
 trips, and the carrier deadline guardian are bench-proven with an attached
 motor. An encoder-observed 757 mA, 20 Hz electrical run produced smooth motion
-at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault.
+at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault
+on 0.18.2. The 0.19.0 supervisor integration is host/build validated and needs a
+hardware regression run before inheriting that evidence.
 
 ## Design priorities
 
@@ -17,7 +20,7 @@ at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset faul
 4. Testable control math and protocol parsing.
 5. Useful motion features built on the proven current-control foundation.
 
-## Candidate layering
+## Product layering
 
 | Layer | Responsibility |
 | --- | --- |
@@ -49,9 +52,8 @@ The current image implements:
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
-  adapter serving discovery, boot and encoder telemetry, and current-loop
-  status/configure/start/stop from foreground, including status and STOP while
-  active.
+  adapter serving discovery, boot and encoder telemetry, and supervisor-gated
+  current diagnostics from foreground, including status and STOP while active.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - An edge-aligned 20 kHz TIM3 backend mapping channels 1-4 to
@@ -60,7 +62,9 @@ The current image implements:
 - A fixed-point A/B PI current loop with conditional anti-windup,
   low-zero sign-magnitude H-bridge modulation, independent reference/raw-current/voltage/
   duty bounds, and DMA/PWM/deadline fault latching.
-- Hardware-independent application-state and fault-latch modules with native tests.
+- An authoritative drive supervisor with native tests. It owns readiness,
+  `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
+  diagnostic and motion authority, and bridge deauthorization on faults.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
@@ -70,8 +74,9 @@ The current image implements:
   disable, lease, completion, and recovery contracts; and drives the servo core
   in end-to-end simulated-plant tests.
 
-The current-loop bridge module owns TIM3, DMA channel 1 completion, and the
-common all-low fault path. Its feedback signs, delayed sample observability,
+The drive supervisor is the only application-level bridge authority. The
+current-loop backend owns TIM3, DMA channel 1 completion, independent electrical
+bounds, and the common all-low fault path. Its feedback signs, delayed sample observability,
 active encoder polling, remote stop path, and bounded run behavior are proven
 on the tested board. Calibration accuracy, analog bandwidth, switching-edge
 margin, and protection latency remain characterization work as the operating
@@ -119,7 +124,7 @@ The initial bring-up should be bare-metal. An RTOS can be reconsidered only if m
 
 ```mermaid
 flowchart LR
-    CMD["RS-485 or step/direction command"] --> AUTH["Motion authority, lease, and completion"]
+    CMD["RS-485 or step/direction command"] --> AUTH["Drive supervisor, authority, lease, and completion"]
     AUTH --> MOTION["Trajectory, position, and velocity limits"]
     ENC["SPI magnetic encoder"] --> EST["Angle unwrap, velocity, and electrical angle"]
     EST --> MOTION
@@ -140,28 +145,34 @@ flowchart LR
 ## Real-time timing domains
 
 - **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
-- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 100 Hz bring-up reader runs cooperatively in foreground.
+- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 100 Hz product-readiness reader runs cooperatively in foreground.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
 
 The active current loop runs at 20 kHz from DMA completion after a TIM2 compare
-at 30% of the TIM3 carrier. Encoder acquisition currently runs at 100 Hz in
+at 80% of the TIM3 carrier. Encoder acquisition currently runs at 100 Hz in
 foreground. Outer-loop and higher-rate encoder scheduling will be selected
 from measured execution time and signal quality. See [Real-time and control
 architecture](REALTIME_ARCHITECTURE.md).
 
-## Candidate application states
+## Product application states
 
 | State | Bridge | Purpose |
 | --- | --- | --- |
 | `RESET_SAFE` | Disabled | Establish clocks, safe GPIO, watchdog, and RAM invariants |
-| `DIAGNOSTIC` | Disabled | Communications, measurements, board identification |
+| `DIAGNOSTIC` | Disabled | Communications, measurements, board identification, readiness acquisition |
 | `READY` | Disabled | Valid configuration and encoder present |
 | `ALIGN` | Current-limited | Determine motor/encoder electrical alignment |
 | `RUN` | Enabled | Execute bounded motion commands |
 | `FAULT` | Disabled | Latch fault information and require explicit recovery |
 
 No reset cause should transition directly to `ALIGN` or `RUN`.
+`READY` requires initialized current feedback/control and a healthy accepted
+encoder sample. Diagnostic current operation and future motion obtain distinct
+authority through the supervisor. Readiness loss in `READY` returns to
+`DIAGNOSTIC`; readiness loss in `ALIGN` or `RUN` removes authority and enters
+`FAULT`. Expected fault reporting remains alive under the watchdog rather than
+using reset as ordinary fault handling.
 
 ## Third-party reuse
 

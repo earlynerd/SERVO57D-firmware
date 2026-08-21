@@ -38,7 +38,7 @@ Early-memory failure cannot safely initialize the diagnostic record because SRAM
 - GPIOD is enabled and PD0 reads back as an output.
 
 This check applies only to the reset-safe state before peripheral and bridge
-initialization. Firmware 0.17.8 subsequently preloads PA6/PA7/PB0/PB1
+initialization. Firmware 0.19.0 subsequently preloads PA6/PA7/PB0/PB1
 low before configuring TIM3 channels 1-4 on AF2. Because each signal drives
 tied active-high HIN and active-low LIN inputs, this commands all four low-side
 FETs and creates a zero-voltage vector; it is not an all-FET-off state. This

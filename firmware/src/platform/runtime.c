@@ -6,8 +6,10 @@
  */
 void _init(void)
 {
+    return;
 }
 
 void _fini(void)
 {
+    return;
 }

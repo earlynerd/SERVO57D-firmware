@@ -1,8 +1,8 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.17.8 continuously reads the encoder at 100 Hz in foreground,
+Status: firmware 0.19.0 continuously reads the encoder at 100 Hz in foreground,
 including during current-loop operation, and exposes it through diagnostics and
-native protocol 1.2. Position is stable at rest, follows shaft motion, wraps
+native protocol 1.3. Position is stable at rest, follows shaft motion, wraps
 once per revolution, and has verified commanded motor rotation.
 
 ## Evidence and confidence
@@ -61,7 +61,7 @@ foreground records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
-SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.17.8
+SPI initialization configures only PB3-PB6 for the encoder. Firmware 0.19.0
 later claims PB0/PB1 and PA6/PA7 for current-loop PWM while separate
 input monitoring reads PB7 `nEN` and configures PB8/PB9/PB12/PB13 and PA15 as
 pulled-up inputs. Encoder acquisition continues throughout an active run.

@@ -2,7 +2,7 @@
 
 ## Production clock tree
 
-Firmware 0.17.8 retains the promotion from the reset-default 4 MHz MSI to the
+Firmware 0.19.0 retains the promotion from the reset-default 4 MHz MSI to the
 N32L406's documented 64 MHz maximum. Both published SERVO57D schematics and
 the physical board identify an 8 MHz crystal, so the selected path is HSE
 undivided into PLL times eight. This configuration is bench-proven.

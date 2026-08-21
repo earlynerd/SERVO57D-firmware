@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze JSON-lines captures from the MKS57D commissioning console."""
+"""Analyze JSON-lines captures from the MKS57D drive-diagnostic service."""
 
 from __future__ import annotations
 

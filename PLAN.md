@@ -61,13 +61,14 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [x] Document the bench-proven guarded J-Link build, program, verify, reset, and start workflow.
 
-Software status: firmware 0.18.2 builds, runs from the bench-proven 8 MHz HSE
+Software status: firmware 0.19.0 builds on the bench-proven 8 MHz HSE
 through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
 samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
-native commissioning protocol over RS-485. The 240-byte schema-5 RAM diagnostic
+native product diagnostic service over RS-485. The 240-byte schema-5 RAM diagnostic
 record remains ABI-checked. The 20 kHz TIM3 backend preloads and returns to the
-all-low vector. After zero calibration, a hold-to-run commissioning path can
-grant authority to a bounded fixed-point A/B current loop with low-zero
+all-low vector. After current-path and encoder readiness, the product drive
+supervisor can grant distinct diagnostic or motion authority. The retained
+hold-to-run diagnostic requests a bounded fixed-point A/B current loop with low-zero
 sign-magnitude modulation, raw-count overcurrent trips, and a timer deadline
 guardian. Display operation, continuous encoder telemetry, RS-485
 command/response, current regulation, all four bridge polarities, and
@@ -75,7 +76,8 @@ encoder-confirmed 5.97 RPM motor rotation are bench-proven. The tested board's
 3.3 V ADC reference, 6.65 current-sense gain, and 6.059 mA/count conversion are
 verified. Reset/halt waveforms, SRAM2 and IWDG details, production current-sense
 tolerance, the broader speed/current/thermal envelope, and production fault
-coverage remain open.
+coverage remain open. The 0.18.2 current path is bench-proven through 757 mA /
+20 electrical Hz; the 0.19.0 supervisor integration awaits a hardware regression.
 
 Milestone result: achieved. A clean checkout builds, flashes, boots, and
 reports its version from a defined board state.
@@ -162,6 +164,9 @@ while encoder alignment and outer-loop integration begin.
 
 Goal: close the mechanical loop incrementally.
 
+- [x] Converge the hardware image on one product drive supervisor with explicit
+  readiness, diagnostic/motion authority, and fault deauthorization; route the
+  existing bounded current diagnostic through it.
 - [ ] Determine encoder-to-electrical-angle alignment and motor pole/step geometry.
 - [x] Confirm 50 electrical cycles per mechanical revolution from the measured 5 Hz / 5.97 RPM relationship.
 - [ ] Add a controlled alignment/calibration procedure.
@@ -188,7 +193,12 @@ calibration without preserving active authority.
 - [ ] **Deferred:** Map step/direction capture to verified timer and physical pins.
 - [ ] Define configuration, status, telemetry, and fault registers or messages.
 - [ ] Add protocol fuzz and malformed-frame tests.
-- [x] Add a host-side bounded move/capture/analysis/report workflow for commissioning and loop tuning.
+- [x] Graduate the host-side bounded move/capture/analysis/report workflow into
+  a supervisor-authorized product motor diagnostic and regression tool.
+- [x] Remove the commissioning-only firmware build personality and historical
+  bridge-characterization/current-loop-commissioning target aliases.
+- [ ] Replace or remove the transitional local phase-selector/OLED diagnostic
+  after the aligned motor service interface exists.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
 - [x] Treat useful publicly documented Makerbase commands as optional compatibility aliases rather than the canonical API.
 
@@ -207,7 +217,8 @@ application-level fault recovery. Configuration migration, modulation,
 replay/fuzz coverage, measured timing, and hardware-in-the-loop coverage remain
 open.
 
-- [ ] Add host unit tests for control math, protocol parsing, and configuration migration.
+- [x] Add host unit tests for control math and protocol parsing.
+- [ ] Add host tests for versioned configuration migration.
 - [ ] Add hardware-in-the-loop tests for reset, brownout, watchdog, communications, and fault shutdown.
 - [ ] Measure CPU load, ISR latency, stack use, flash use, and worst-case loop timing.
 - [ ] Test multiple board revisions and motors.
