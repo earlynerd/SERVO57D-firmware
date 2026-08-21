@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.23.0 implements the reset-safe foundation, continuous
+Status: firmware 0.23.1 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
@@ -17,8 +17,9 @@ two successful runs plus generic STOP are bench-proven, while Menu and
 readiness-loss injection remain open.
 The 0.22.0 build adds versioned, CRC-protected, dual-slot motor configuration
 storage and boot-time alignment restore and passes its power-cycle gate. The
-0.23.0 host/Arm candidate adds signed aligned q-current as the first production
-`RUN` motion interface; its hardware gate remains open.
+0.23.1 host/Arm candidate adds signed aligned q-current as the first production
+`RUN` motion interface and accepts caller-selected finite durations across the
+wrap-safe deadline range; its hardware gate remains open.
 
 ## Design priorities
 

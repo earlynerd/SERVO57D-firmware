@@ -60,10 +60,11 @@ shaft and use the current-limited supply procedure in
 
 ## Current operating envelope
 
-Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.0 /
+Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.1 /
 protocol 1.7 is the current host- and Arm-validated hardware candidate; it adds
 bounded signed encoder-aligned q-current through the same supervisor, current
-backend, and ZERO-vector fault path. Firmware 0.22.0 adds protocol
+backend, and ZERO-vector fault path, and replaces the initial one-second torque
+ceiling with the full wrap-safe finite-deadline range. Firmware 0.22.0 adds protocol
 1.6 and power-loss-safe dual-slot motor-configuration storage; its host, Arm,
 first-save, unchanged-save, power-cycle restore, persistent-clear, and no-
 restored-authority gates pass. The firmware runs from the fitted
@@ -85,10 +86,10 @@ supervisor from `DIAGNOSTIC` to `READY`. A released-then-held Enter button can
 then request diagnostic bridge authority through that supervisor. Next selects
 the initial electrical phase;
 raw Enter release or Menu returns to `ZERO`. The local rotating reference is
-151.5 mA. RS-485 can currently configure 1-165 ADC counts (about 6.06 mA-1.00 A)
-and 0.001-50 Hz electrical frequency, start a 0.1-60 second run, stream current,
+151.5 mA. RS-485 can currently configure 1-495 ADC counts (about 6.06 mA-2.999 A)
+and 0.001-250 Hz electrical frequency, start a 0.003-2,147,483.647 second run, stream current,
 duty, fault, reset, and encoder state, or stop local or remote authority. The
-independent raw-current trip is about 1.212 A, phase voltage is limited to 70%
+independent raw-current trip is about 3.635 A, phase voltage is limited to 70%
 of the bus, and the timer guardian latches missed current-loop updates. Loss of
 readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
 backend and enters `FAULT`.

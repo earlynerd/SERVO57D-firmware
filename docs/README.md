@@ -18,6 +18,7 @@ are staging points, not the steady-state product ambition.
 
 - [Architecture](ARCHITECTURE.md) — firmware layering, implemented foundation, and state model.
 - [Real-time architecture](REALTIME_ARCHITECTURE.md) — interrupt priorities, ownership, control data flow, and timing budgets.
+- [Motor-drive operating limits](OPERATING_LIMITS.md) — live classification of hard, validated, evaluation, configured, and implementation limits.
 - [Command protocol](PROTOCOL.md) — native protocol, command service, and optional compatibility adapters.
 - [Debugger diagnostics](DIAGNOSTICS.md) — versioned RAM record and consistent-read procedure.
 - [Watchdog policy](WATCHDOG.md) — IWDG ownership, reset diagnostics, and debugger behavior.

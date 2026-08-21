@@ -1,6 +1,6 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.23.0 schedules encoder reads at 1 kHz in foreground,
+Status: firmware 0.23.1 schedules encoder reads at 1 kHz in foreground,
 including during current-loop operation, assigns accepted samples microsecond
 timestamps, and feeds the shared mechanical angle/velocity estimator and
 automatic-alignment and aligned-torque controllers. Native protocol 1.7 exposes raw health,

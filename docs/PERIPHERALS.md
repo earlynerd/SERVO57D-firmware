@@ -91,7 +91,7 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.23.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
+Firmware 0.23.1 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
 PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
 three consecutive changed samples update each independently. The physical keys
 are left Next, center Enter, and right Menu, and both auxiliary inputs respond

@@ -149,7 +149,8 @@ Use the telemetry to evaluate each run directly:
 5. After timeout or STOP, authority flags clear and the hardware returns to
    the all-low zero vector.
 
-The current interface accepts 1-165 counts, 0.001-50 Hz, and 0.1-60 second
+The current interface accepts 1-495 counts, 0.001-250 Hz, and
+0.003-2,147,483.647 second
 runs. Expand current, speed, bus voltage, and duration deliberately while
 recording encoder tracking, current error, duty, supply current, and
 temperature. An explicit `stop` command is available from another terminal or
@@ -164,8 +165,8 @@ Firmware 0.19.0 retains the 0.18.2 `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 
 step has 6.53 ms rise time and 8% overshoot. The tested motor tracked 606 mA /
 15 Hz at -17.78 RPM and completed 1.97 revolutions during a five-second 757 mA /
 20 Hz run, with zero faults and 25.2% peak voltage effort. Operation through
-757 mA / 20 Hz is accepted on this motor; stage the untested 1 A / 50 Hz endpoints
-separately. The 256-sample startup trace is available after a run with
+757 mA / 20 Hz is accepted on this motor; stage the enabled 1.503 A, 2.25 A,
+2.999 A, and 50-250 Hz evaluation points separately. The 256-sample startup trace is available after a run with
 `trace`; analyze saved JSON lines with `tools/analyze_current_trace.py`.
 
 The tuning sweep is not an enclosed thermal qualification. Before permanently
@@ -285,13 +286,13 @@ available and the ordinary/STOP runs have passed.
 
 ### Aligned q-current hardware gate
 
-Firmware 0.23.0 connects signed torque-producing current to the calibrated
+Firmware 0.23.1 connects signed torque-producing current to the calibrated
 electrical phase through the production `RUN`/motion-authority path. This is not
 a speed or position command: an unloaded shaft can accelerate. Keep clear of
-the motor, use 12 V and the current-limited supply, start below the accepted
+the motor, use 12 V and the current-limited supply, start at or below the accepted
 757 mA envelope, and keep generic STOP plus immediate supply cutoff available.
 
-Confirm 0.23.0 / protocol 1.7, restored alignment, `READY`, and the complete
+Confirm 0.23.1 / protocol 1.7, restored alignment, `READY`, and the complete
 firmware policy before energizing:
 
 ```powershell
@@ -302,11 +303,16 @@ py tools/mks57d_rs485.py --port COM14 torque-status
 ```
 
 The initial status must report alignment valid, no active authority/backend,
-±125 counts maximum current, 1,000 counts/s slew, 1 rev/s velocity, 20 rev/s²
-acceleration, and 100-1,000 ms duration. These are the independently enforced
-0.23 candidate values, not physical capability claims.
+±495 counts maximum current, 10,000 counts/s slew, 5 rev/s velocity, 1,000 rev/s²
+acceleration, a 3 ms minimum duration, and a 2,147,483,647 ms maximum
+duration. That maximum comes from wrap-safe 32-bit deadline arithmetic and is
+not a thermal or motor limit; the caller still selects a finite interval for
+every operation. The remaining values are independently enforced 0.23
+candidate values, not physical capability claims. The 495-count current ceiling
+is a 2.999 A evaluation point matching the attached motor's reported 3 A rating,
+while the separately reported 600-count raw trip is about 3.635 A.
 
-Begin with 5 counts (about 30.3 mA) for the minimum 100 ms, then inspect final
+Begin with 5 counts (about 30.3 mA) for a conservative 100 ms, then inspect final
 drive, encoder, torque, fault, reset, and panic state:
 
 ```powershell
@@ -328,12 +334,14 @@ telemetry and tune only from measured evidence.
 If clean, repeat at `--counts -5` and confirm the q-current and mechanical
 response reverse. Then progress through ±25 counts (151.5 mA) and ±50 counts
 (303 mA) at 100 ms. Do not advance after an unexpected fault, implausible phase
-reference, encoder discontinuity, heating, or supply-current step. The existing
-757 mA current/alignment evidence permits later expansion to ±125 counts, but
-does not guarantee that an unloaded open-torque run will remain below the
-independent velocity or acceleration limit.
+reference, encoder discontinuity, heating, or supply-current step. Reconfirm the
+existing 757 mA point before evaluating 1.503 A (248 counts), 2.25 A (371 counts),
+and finally 2.999 A (495 counts). Use a restrained or appropriately loaded shaft
+for high-current torque evaluation so the independent velocity/acceleration
+guards do not substitute an overspeed test for a current-loop test.
 
-Validate explicit STOP separately by starting a 1,000 ms, 5-count `torque` run
+Validate multi-second duration and explicit STOP separately by starting a
+5,000 ms, 5-count `torque` run
 and pressing Ctrl+C while it is active. The CLI sends the same generic STOP as
 the standalone `py tools/mks57d_rs485.py --port COM14 stop` command.
 The result must become `stopped`, backend and authority must clear immediately,

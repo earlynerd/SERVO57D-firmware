@@ -558,10 +558,10 @@ def _validate_run_arguments(args: argparse.Namespace) -> tuple[int, float, int]:
         if args.rpm <= 0.0:
             raise ValueError("--rpm must be positive; the present test does not expose direction control")
         frequency_hz = args.rpm / 1.2
-    if frequency_hz is None or not 0.001 <= frequency_hz <= 50.0:
-        raise ValueError("electrical frequency must be in the range 0.001..50 Hz")
-    if args.seconds is None or not 0.1 <= args.seconds <= 60.0:
-        raise ValueError("--seconds must be in the range 0.1..60")
+    if frequency_hz is None or not 0.001 <= frequency_hz <= 250.0:
+        raise ValueError("electrical frequency must be in the range 0.001..250 Hz")
+    if args.seconds is None or not 0.003 <= args.seconds <= 2147483.647:
+        raise ValueError("--seconds must be in the range 0.003..2147483.647")
     if not 0.01 <= args.interval <= 2.0:
         raise ValueError("--interval must be in the range 0.01..2.0 seconds")
     counts = round(args.current_ma / COUNTS_TO_MILLIAMPERES)

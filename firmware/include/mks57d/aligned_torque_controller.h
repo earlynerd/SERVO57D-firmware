@@ -53,6 +53,7 @@ typedef struct
     int32_t maximum_acceleration_revolutions_per_second2_q16_16;
     uint16_t maximum_feedback_interval_us;
     uint32_t minimum_duration_millis;
+    /* Must not exceed INT32_MAX for wrap-safe deadline comparisons. */
     uint32_t maximum_duration_millis;
 } aligned_torque_config_t;
 

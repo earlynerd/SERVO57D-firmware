@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.23.0 implements the fast path, production alignment layer,
+Status: firmware 0.23.1 implements the fast path, production alignment layer,
 safe-state configuration maintenance, and the first aligned torque-current
 motion client:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
@@ -272,7 +272,7 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-  exact Arm target. Firmware 0.23.0 integrates the authoritative drive
+  exact Arm target. Firmware 0.23.1 integrates the authoritative drive
   supervisor, mechanical angle tracker, measured stepper-alignment geometry,
   and a signed q-current actuator; the outer velocity/position shell remains
   excluded while the proven phase-current backend is active:

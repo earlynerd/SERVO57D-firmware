@@ -261,3 +261,16 @@
 - **Class:** automatic-alignment-bench-validation
 - **Recently-touched?** yes
 - **Time to fix:** no fix required; approximately one bounded bench-validation pass
+
+## 2026-08-21 — Validated torque envelope was incorrectly used as command permission
+
+- **Observation:** Firmware 0.23.0 refused an aligned-torque interval above one second. The same reported policy would also refuse half of the attached 3 A motor's rated current and any open-torque motion above 1 rev/s or 20 rev/s².
+- **Root cause:** `firmware/src/main.c` installed the initial 100-1,000 ms, 125-count, 1 rev/s, and 20 rev/s² hardware-gate candidates as the only production command policy. `firmware/src/control/aligned_torque_controller.c` and the host tool then correctly enforced those advertised values; the rejection was not a protocol or hardware fault. The design had conflated the last validated point with permission to evaluate the next one.
+- **Fix:** Firmware 0.23.1 derives the torque duration range from feedback/deadline timing (3 ms through `INT32_MAX`), opens the torque and shared current backend to a 248-count/1.503 A medium evaluation point, raises the independent raw trip to 300 counts/1.818 A, and records the remaining velocity and acceleration values by limit class. Host/native tests and clean Debug/Release Arm builds pass. Hardware validation starts from the existing 757.4 mA evidence before advancing through 909 mA, 1.212 A, and 1.503 A.
+- **Class:** validated-envelope-used-as-command-ceiling
+- **Recently-touched?** yes — the 0.23.0 aligned-torque integration introduced the rejected policy.
+- **Status:** Software rejection resolved; multi-second and expanded-current COM14 confirmation pending.
+
+### Follow-up — Evaluation permission expanded to the stated motor/speed boundary
+
+The first correction still stopped at half of the motor's rated current and proposed fixing phase-refresh quality before permitting a higher speed. That retained the same validation-before-evaluation mistake. The final 0.23.1 candidate instead permits 2.999 A nominal, 5 rev/s, 1,000 rev/s² observed acceleration, 10,000 counts/s slew, and 250 electrical Hz so the present 1 kHz phase-refresh and current-loop boundaries can be measured directly. Independent current trip, voltage/duty timing, feedback freshness, finite deadline, STOP, supervisor, and common fault shutdown remain active.

@@ -158,11 +158,12 @@ Goal: regulate winding current before attempting position control.
 - [x] Add a one-command bounded move, telemetry capture, analysis, and plot-report workflow with inactive-configuration restoration.
 - [ ] Complete scope-based bandwidth/noise work and characterize higher-current and enclosed thermal behavior.
 
-Milestone result: achieved through the present 12 V, 757 mA / 20 Hz operating point. Both
+Milestone result: achieved through the present 12 V, 757 mA / 20 Hz validated point. Both
 winding currents track across electrical angle and the rotor follows at
 -23.7 RPM versus 24.0 RPM expected. Firmware 0.18.2 Kp=2 used 25.2% peak
-phase-voltage effort against the 70% ceiling. The 1 A / 50 Hz endpoints remain
-available but unqualified. Scope and enclosed-thermal characterization continue
+phase-voltage effort against the 70% ceiling. Firmware permits deliberate
+evaluation through 2.999 A / 250 electrical Hz, but those endpoints are
+unqualified. Scope and enclosed-thermal characterization continue
 while encoder alignment and outer-loop integration begin.
 
 ## Phase 6 — Encoder alignment and servo control
@@ -197,12 +198,21 @@ Goal: close the mechanical loop incrementally.
 - [ ] Bench-validate positive/negative aligned q-current through deadline,
   explicit STOP, Menu, and induced encoder/readiness-loss shutdown before
   closing the velocity loop.
+- [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
+  2.999 A motor-rated evaluation point, including current error, voltage
+  effort, supply state, winding/power-stage temperature, STOP, and fault health.
+- [ ] Evaluate toward the enabled 5 rev/s (300 RPM) boundary with the present
+  1 kHz phase refresh, record where tracking or torque quality fails, then move
+  electrical-phase prediction into the deterministic 20 kHz reference path and
+  repeat with 80 current updates per electrical cycle at the endpoint.
 - [ ] Close the velocity loop at low gains and limited current.
 - [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
-- [ ] Inventory every production limit with units, basis, enforcement owner,
-  reporting, and test; remove, configure, or replace inherited commissioning
-  ceilings and host-test defaults that have no defensible product basis.
+- [x] Establish a live inventory for the active motor-drive limits with units,
+  classification, basis, enforcement owner, reporting, and next evidence.
+- [ ] Configure or replace the remaining evaluation acceleration, slew, and
+  alignment-policy candidates that have no
+  defensible permanent product basis.
 - [x] Implement alignment persistence with versioned, CRC-protected,
   commit-last dual-slot records, safe-state writes, boot validation, automatic
   post-alignment save, and production status/save/clear commands.

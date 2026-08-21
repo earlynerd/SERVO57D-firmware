@@ -100,15 +100,23 @@ storage result. `save-configuration` is an idempotent explicit retry;
 calibration. Both write operations are rejected while any drive operation or
 pending start/stop owns the safe-state boundary.
 
-On firmware 0.23.0 / protocol 1.7, `torque-status` reads the complete aligned
+On firmware 0.23.1 / protocol 1.7, `torque-status` reads the complete aligned
 q-current state and firmware-owned policy without energizing the bridge.
 `torque` accepts signed counts or signed milliamperes, preflights the absolute
 current and duration against that reported policy, starts the supervisor-owned
 bounded operation, and streams state until deadline, STOP, or fault. Ctrl+C
-sends generic STOP. The initial policy permits ±125 counts (±757.4 mA nominal),
-but the first hardware gate deliberately starts at ±25 counts (±151.5 mA) for
-250 ms. This command produces torque and can accelerate the shaft; it does not
-request or regulate velocity.
+sends generic STOP. The evaluation policy permits ±495 counts (±2.999 A nominal)
+and accepts an explicit 3 ms through 2,147,483,647 ms finite deadline. The
+upper duration is the wrap-safe timer representation limit, not a motor-current
+or thermal rating. The current ceiling matches the attached motor's reported
+3 A rating and deliberately opens evaluation above the 757.4 mA validated point;
+it is not yet a qualified continuous-current rating. The hardware gate starts at
+±25 counts (±151.5 mA) for 250 ms and advances from measured results. This
+command produces torque and can accelerate the shaft; it does not request or
+regulate velocity. The evaluation shutdown policy permits 5 rev/s (300 RPM),
+1,000 rev/s² observed acceleration, and 10,000 counts/s current slew so poor
+tracking and phase-refresh boundaries can be measured instead of preflighted
+away.
 
 Protocol 1.3 and later firmware also records the first 256 current-loop samples
 after each start. Run a nearly stationary reference for a clean startup step,

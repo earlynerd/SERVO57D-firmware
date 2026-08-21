@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.23.0 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.23.1 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor and adds a bounded automatic alignment service
 to the product's timestamped 1 kHz mechanical estimator and measured
 50-electrical-cycle alignment geometry. It also adds versioned, CRC-protected,
@@ -24,8 +24,13 @@ be exercised.
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
 restore, persistent clear, and no-restored-authority behavior pass on COM14.
-The 0.23.0 aligned-torque controller, protocol, and Debug/Release Arm builds pass
-host validation; its signed deadline/STOP/fault hardware gate remains pending.
+The 0.23.1 aligned-torque controller, protocol, and Debug/Release Arm builds pass
+host validation. Its duration contract accepts explicit finite deadlines through
+the wrap-safe 32-bit half-range instead of imposing the initial one-second
+candidate ceiling. The shared backend and torque request path also admit the
+attached motor's 2.999 A nominal rated-current evaluation point while retaining
+an independent 3.635 A raw trip; the signed deadline/STOP/fault and
+expanded-current hardware gates remain pending.
 
 ## Current operating contract
 
@@ -49,7 +54,7 @@ host validation; its signed deadline/STOP/fault hardware gate remains pending.
   position of the first set fault bit. The earlier PA3 `vBus` polling path is
   not active in this image.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
-- Earlier characterization builds used Next to select A1/A2/B1/B2 and Enter to apply edge-aligned 20 kHz, 50% hardware PWM. Firmware 0.21.0 retains Next only as a product-diagnostic initial-phase selector and requires Enter to be released once, then held continuously, before it requests diagnostic authority from the drive supervisor. Raw release or Menu returns to `ZERO`. RS-485 can configure 1-165 counts and 0.001-50 electrical Hz, then request a 0.1-60 second diagnostic run; timeout, Menu, transport failure, or STOP returns it to `ZERO`.
+- Earlier characterization builds used Next to select A1/A2/B1/B2 and Enter to apply edge-aligned 20 kHz, 50% hardware PWM. Firmware 0.21.0 retains Next only as a product-diagnostic initial-phase selector and requires Enter to be released once, then held continuously, before it requests diagnostic authority from the drive supervisor. Raw release or Menu returns to `ZERO`. RS-485 can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second diagnostic run; timeout, Menu, transport failure, or STOP returns it to `ZERO`.
 - DMA completion runs fixed-point A/B PI controllers and stages low-zero sign-magnitude TIM3 preloads. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2. Raw overcurrent, invalid references or outputs, DMA/PWM failures, and two consecutive carrier updates without a new control output latch the common all-low fault path.
 - Firmware 0.18.2 uses `Kp=2`, retains `Ki=1/64` per 20 kHz step, and records the first 256 successful loop outputs for post-run tuning analysis. At 12 V, a 303 mA startup step has 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. A 606 mA / 15 Hz run tracked -17.78 RPM versus -18 RPM commanded. A 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 revolutions versus 2.00 commanded with no fault or reset and 252-permille peak voltage effort against the 700-permille ceiling.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.

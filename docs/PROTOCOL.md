@@ -129,7 +129,7 @@ service and a generic STOP operation; successful, repeatable alignment and STOP
 are bench-proven on the tested motor. Firmware 0.22.0 / protocol 1.6 adds the
 versioned dual-slot configuration record and its production service commands;
 its host, target, reset, power-cycle, persistent-clear, and wear-avoidance gates
-pass. Firmware 0.23.0 / protocol 1.7 adds the first production motion
+pass. Firmware 0.23.1 / protocol 1.7 adds the first production motion
 interface: signed encoder-aligned q-current through the proven A/B current
 backend with independent current, slew, velocity, acceleration, feedback-age,
 and duration contracts. It is host- and Arm-build validated and awaits its
@@ -140,9 +140,9 @@ diagnostic record, including the native-protocol capability.
 
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
-inactive. Amplitude is currently bounded to 1-165 ADC counts and frequency to
-1-50000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
-`2=B1`, and `3=B2`, with a duration from 100 to 60000 ms. It is unavailable
+inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
+1-250000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
+`2=B1`, and `3=B2`, with a duration from 3 to 2147483647 ms. It is unavailable
 until the product supervisor reaches `READY` from calibrated current feedback,
 initialized current control, and a healthy encoder sample, or while authority
 is already active, a fault is latched, or raw Menu is asserted. START requests
@@ -157,7 +157,7 @@ and STOP remain usable.
 `START_ALIGNMENT` is accepted only from supervisor `READY`, with current and
 encoder readiness intact, Menu released, no fault, no active/pending current
 diagnostic, and no existing alignment operation. The requested current is
-currently bounded to 50-165 ADC counts. The controller applies `(A=+I,B=0)`,
+currently bounded to 50-495 ADC counts. The controller applies `(A=+I,B=0)`,
 then `(A=0,B=+I)`, then `(A=+I,B=0)` through the production current backend
 under `ALIGN` motion authority. It samples only settled encoder/current data,
 checks the observed quarter-step geometry and final closure, and transactionally
@@ -191,14 +191,22 @@ phase references through the same bounded current PI and bridge shutdown path
 used by alignment and the production diagnostic. Positive q-current maps to
 `A=-Iq*sin(theta), B=Iq*cos(theta)` under the accepted motor convention.
 
-The initial 0.23 policy is ±125 counts (±757.4 mA nominal on the tested current
-front end), 1,000 counts/s current slew (about 6.06 A/s), 1 mechanical rev/s,
-20 rev/s², at most 2,000 us between accepted feedback samples, and 100-1,000 ms
-duration. The current point is the highest bench-proven operating point; the
-slew is deliberately slower than the measured current-loop rise. The other
-values are explicit initial motion-policy candidates, independently enforced,
-reported, and subject to replacement from bench distributions. They are not
-hardware or motor capability claims. Deadline and generic STOP release motion
+The 0.23.1 evaluation policy is ±495 counts (±2.999 A nominal on the tested
+current front end), 10,000 counts/s current slew (about 60.59 A/s), 5 mechanical
+rev/s (300 RPM), 1,000 rev/s² observed acceleration, at most 2,000 us between
+accepted feedback samples, and an explicit
+3 through 2,147,483,647 ms finite duration. The three-millisecond minimum allows
+one pre-deadline reference update even if the first accepted feedback arrives
+at the full two-millisecond timing limit. The duration maximum is the largest
+interval for which the signed modulo-32-bit deadline comparison remains
+unambiguous; it is not a thermal, current, or communications-lease policy. The
+current point matches the attached motor's reported 3 A rating and opens a
+medium-capability evaluation envelope above the 757.4 mA bench-proven point;
+it is not yet a qualified continuous-current rating. The current, speed,
+acceleration, and slew values are evaluation permissions deliberately ahead of
+the validated envelope. They are independently enforced and reported, but are
+not performance guarantees or hardware/motor capability claims. Deadline and
+generic STOP release motion
 authority; invalid phase/timing, overspeed, overacceleration, backend loss,
 reference rejection, current-loop fault, or readiness loss enters the common
 fault/ZERO path.
@@ -524,7 +532,7 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.23.0 links the mechanical estimator, transactional alignment
+target; firmware 0.23.1 links the mechanical estimator, transactional alignment
 controller, persistent configuration, and the first supervisor-authorized
 aligned q-current motion operation. The general velocity/position motion shell
 remains excluded.

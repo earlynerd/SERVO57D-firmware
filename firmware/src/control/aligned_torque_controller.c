@@ -64,7 +64,8 @@ bool aligned_torque_config_is_valid(
            (config->maximum_feedback_interval_us > 0u) &&
            (config->minimum_duration_millis > 0u) &&
            (config->maximum_duration_millis >=
-            config->minimum_duration_millis);
+            config->minimum_duration_millis) &&
+           (config->maximum_duration_millis <= (uint32_t)INT32_MAX);
 }
 
 bool aligned_torque_controller_init(

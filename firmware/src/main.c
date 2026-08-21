@@ -69,9 +69,9 @@ enum
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
-    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 50000u,
-    CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 100u,
-    CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u,
+    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
+    CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
+    CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = INT32_MAX,
     ALIGNMENT_MINIMUM_CURRENT_COUNTS = 50u,
     ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0
 };
@@ -1262,25 +1262,43 @@ int main(void)
         CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
         DISPLAY_REFRESH_PERIOD_MS = 200u,
         RS485_FOREGROUND_DRAIN_BYTES = 64u,
-        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS = 165u,
-        CURRENT_LOOP_HARD_LIMIT_COUNTS = 200u,
+        /*
+         * Rated-envelope evaluation point for the attached 3 A motor:
+         * 495 counts is 2.999 A nominal. The 600-count raw trip is 3.635 A,
+         * retaining more than 20 percent independent fault margin. These are
+         * evaluation limits, not the power stage's final capability rating.
+         */
+        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS = 495u,
+        CURRENT_LOOP_HARD_LIMIT_COUNTS = 600u,
         CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE = 700u,
         CURRENT_LOOP_DUTY_MARGIN_PERMILLE = 200u,
         /*
          * Initial production torque policy, selected from measured behavior.
-         * 125 counts is the 757 mA bench-proven operating point.  The slew
-         * reaches 303 mA in 50 ms, well outside the measured 6.5 ms current
-         * loop rise, while velocity, acceleration, feedback age, and duration
-         * remain independent shutdown contracts.  These are qualified
-         * operating-envelope values, not claims about hardware capability.
+         * 495 counts matches the attached motor's reported 3 A rating and
+         * opens a deliberate evaluation envelope above the 757 mA
+         * bench-proven point. The slew reaches 303 mA in 50 ms, well outside
+         * the measured 6.5 ms current-loop rise, while velocity, acceleration,
+         * feedback age, and duration remain independent shutdown contracts.
+         * This is an evaluation point, not a final product capability claim.
          */
-        ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS = 125u,
-        ALIGNED_TORQUE_MAXIMUM_CURRENT_SLEW_COUNTS_PER_SECOND = 1000u,
-        ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 1u << 16,
-        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 20u << 16,
+        ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS = 495u,
+        ALIGNED_TORQUE_MAXIMUM_CURRENT_SLEW_COUNTS_PER_SECOND = 10000u,
+        ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 5u << 16,
+        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 1000u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
-        ALIGNED_TORQUE_MINIMUM_DURATION_MS = 100u,
-        ALIGNED_TORQUE_MAXIMUM_DURATION_MS = 1000u,
+        /*
+         * Three milliseconds allows one reference update before the deadline
+         * even when the first accepted 1 kHz feedback sample arrives at the
+         * full two-millisecond feedback-age limit.
+         */
+        ALIGNED_TORQUE_MINIMUM_DURATION_MS = 3u,
+        /*
+         * The requested duration is the operation's explicit finite deadline,
+         * not a proxy for current or thermal capability. Keep it within one
+         * signed half-range so the wrap-safe deadline comparisons are
+         * unambiguous for every accepted start time.
+         */
+        ALIGNED_TORQUE_MAXIMUM_DURATION_MS = INT32_MAX,
         CURRENT_TEST_AMPLITUDE_COUNTS = 25u,
         CURRENT_TEST_FREQUENCY_MILLIHZ = 500u
     };
