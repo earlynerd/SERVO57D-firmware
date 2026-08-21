@@ -119,8 +119,20 @@ SPI_STATUS_NAMES = {
     7: "peripheral_error",
 }
 
+ENCODER_ESTIMATOR_FLAG_NAMES = {
+    0: "estimator_ready",
+    1: "alignment_valid",
+    2: "electrical_phase_valid",
+}
+
+ENCODER_ESTIMATOR_FAULT_NAMES = {
+    0: "invalid_sample",
+}
+
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
+ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
+ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -359,7 +371,10 @@ def query_status(client: Client) -> dict[str, Any]:
 
 def query_encoder(client: Client) -> dict[str, Any]:
     body = client.transact(COMMAND_GET_ENCODER_STATUS)
-    if len(body) != 18:
+    if len(body) not in {
+        ENCODER_STATUS_V1_BODY.size,
+        ENCODER_STATUS_V2_BODY.size,
+    }:
         raise ProtocolError("encoder-status response has an unexpected length")
     (
         schema,
@@ -370,8 +385,10 @@ def query_encoder(client: Client) -> dict[str, Any]:
         sample_count,
         error_count,
         last_attempt_millis,
-    ) = struct.unpack(">BBBHBIII", body)
-    return {
+    ) = ENCODER_STATUS_V1_BODY.unpack(
+        body[: ENCODER_STATUS_V1_BODY.size]
+    )
+    result = {
         "schema": schema,
         "status": ENCODER_STATUS_NAMES.get(status, f"status_{status}"),
         "transport_status": SPI_STATUS_NAMES.get(
@@ -386,6 +403,60 @@ def query_encoder(client: Client) -> dict[str, Any]:
         "error_count": error_count,
         "last_attempt_millis": last_attempt_millis,
     }
+    if len(body) == ENCODER_STATUS_V2_BODY.size:
+        (
+            _schema,
+            _status,
+            _transport_status,
+            _angle_raw,
+            _flags,
+            _sample_count,
+            _error_count,
+            _last_attempt_millis,
+            estimator_flags,
+            position_q16_16,
+            velocity_q16_16,
+            estimator_timestamp_us,
+            estimator_fault_flags,
+            alignment_zero_raw,
+            alignment_direction,
+            electrical_phase_q32,
+            estimator_sample_interval_us,
+            estimator_maximum_sample_interval_us,
+        ) = ENCODER_STATUS_V2_BODY.unpack(body)
+        result["estimator"] = {
+            "flags": active_names(
+                estimator_flags, ENCODER_ESTIMATOR_FLAG_NAMES
+            ),
+            "flags_hex": f"0x{estimator_flags:02X}",
+            "faults": active_names(
+                estimator_fault_flags,
+                ENCODER_ESTIMATOR_FAULT_NAMES,
+            ),
+            "fault_flags_hex": f"0x{estimator_fault_flags:08X}",
+            "position_revolutions": round(position_q16_16 / 65536.0, 6),
+            "velocity_revolutions_per_second": round(
+                velocity_q16_16 / 65536.0, 6
+            ),
+            "timestamp_us": estimator_timestamp_us,
+            "sample_interval_us": estimator_sample_interval_us,
+            "maximum_sample_interval_us":
+                estimator_maximum_sample_interval_us,
+        }
+        result["alignment"] = {
+            "valid": bool(
+                estimator_flags & (1 << 1)
+            ),
+            "electrical_zero_raw": alignment_zero_raw,
+            "encoder_direction": alignment_direction,
+            "electrical_phase_turns": round(
+                electrical_phase_q32 / 4294967296.0, 8
+            ),
+            "electrical_phase_degrees": round(
+                electrical_phase_q32 * 360.0 / 4294967296.0, 4
+            ),
+        }
+    return result
 
 
 def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:

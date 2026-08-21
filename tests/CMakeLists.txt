@@ -8,6 +8,7 @@ add_executable(host_unit_tests
     ../firmware/src/control/angle_tracker.c
     ../firmware/src/control/current_controller.c
     ../firmware/src/control/motion_profile.c
+    ../firmware/src/control/motor_alignment.c
     ../firmware/src/control/pi_controller.c
     ../firmware/src/control/phase_current_loop.c
     ../firmware/src/control/rotating_current_test.c

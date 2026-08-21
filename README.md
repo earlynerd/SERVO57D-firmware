@@ -44,13 +44,15 @@ are the next motor-control milestone.
 
 ## Current operating envelope
 
-Firmware 0.19.0 is the converged current-regulated product image. It runs from the
-fitted 8 MHz crystal at a bench-proven 64 MHz system clock, closes independent
-A/B winding-current loops at 20 kHz, samples the encoder at 100 Hz, updates the
-OLED, and serves a native RS-485 protocol-1.3 control, telemetry, and bounded
-20 kHz startup-trace service. The underlying 0.18.2 current path is bench-proven;
-the new supervisor integration is build- and host-test-validated and awaits a
-hardware regression run.
+Firmware 0.20.0 is the current converged product build. It runs from the fitted
+8 MHz crystal at a bench-proven 64 MHz system clock, closes independent A/B
+winding-current loops at 20 kHz, schedules timestamped encoder acquisition at
+1 kHz in foreground, updates the OLED, and serves native RS-485 protocol 1.4
+telemetry plus the bounded 20 kHz startup-trace service. The 0.19.0
+supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
+deadline release and at 151.5 mA / 5 Hz through an explicit STOP. The new 1 kHz
+estimator is bench-proven at idle and during a 757 mA / 20 Hz bounded run;
+readiness-loss fault injection still requires hardware regression.
 
 The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
 calibration, initialized current control, and a healthy encoder move the product
@@ -58,13 +60,19 @@ supervisor from `DIAGNOSTIC` to `READY`. A released-then-held Enter button can
 then request diagnostic bridge authority through that supervisor. Next selects
 the initial electrical phase;
 raw Enter release or Menu returns to `ZERO`. The local rotating reference is
-151.5 mA. RS-485 can configure 1-165 ADC counts (about 6.06 mA-1.00 A)
+151.5 mA. RS-485 can currently configure 1-165 ADC counts (about 6.06 mA-1.00 A)
 and 0.001-50 Hz electrical frequency, start a 0.1-60 second run, stream current,
 duty, fault, reset, and encoder state, or stop local or remote authority. The
 independent raw-current trip is about 1.212 A, phase voltage is limited to 70%
 of the bus, and the timer guardian latches missed current-loop updates. Loss of
 readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
 backend and enters `FAULT`.
+
+Those numeric ceilings are the present firmware operating contract, not a
+claim about the board's physical capability. The project is replacing inherited
+commissioning values with a traceable limit model: every retained bound must be
+tied to hardware, motor configuration, measured qualification, or an explicit
+diagnostic policy and must have an enforcement owner, telemetry, and a test.
 
 The loop starts from all-low `ZERO` and uses low-zero sign-magnitude PWM: for
 each winding, only the leg selected by the voltage-command sign switches while
@@ -81,9 +89,10 @@ work; they no longer block bounded motor operation on the tested board.
 
 A separate portable application/control build exercises motion ownership,
 remote lease expiry, step/direction behavior, bounded trajectories, servo
-behavior, and fault recovery against host-side deterministic plants. Its outer
-servo path is not yet linked into the hardware image; the authoritative state,
-readiness, and authority supervisor now is.
+behavior, and fault recovery against host-side deterministic plants. The
+hardware image now uses the shared angle tracker for unwrapped mechanical
+position and velocity, but the outer servo and its torque output are not yet
+connected; no host-test motion limits have been promoted into the product.
 
 ## Current project status
 
@@ -101,20 +110,32 @@ Bench-proven on the tested board:
 - encoder-confirmed rotation at -5.97 RPM from a commanded 5 Hz electrical
   vector (6.00 RPM expected), with zero encoder, SPI, current-loop, or reset
   faults;
+- measured two-phase stepper geometry at 757.5 mA: +90-degree electrical
+  commands moved the encoder -84, -80, -81, and -81 counts, totaling -326
+  counts versus -327.68 theoretical for 50 electrical cycles per mechanical
+  revolution; this establishes negative encoder direction for positive
+  electrical phase;
 - firmware 0.18.2 proportional gain `Kp=2` with the integral gain retained at
   `1/64` per 20 kHz step: a 303 mA startup step has 6.53 ms 10-90% rise time,
   8% overshoot, and 14.0 mA tail RMS error; 606 mA / 15 Hz tracks -17.78 RPM
   versus -18 RPM commanded, and 757 mA / 20 Hz tracks 1.97 revolutions over
   five seconds versus 2.00 commanded with 25.2% peak voltage effort.
 
-Host- and build-validated in firmware 0.19.0: one product drive supervisor owns
+Host- and build-validated in firmware 0.20.0: one product drive supervisor owns
 `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT`, separates diagnostic
 from motion authority, gates energization on current-path and encoder readiness,
-and deauthorizes every fault transition.
+and deauthorizes every fault transition. The product build also contains the
+measured 50-cycle alignment mapping, transactional calibration math, a
+microsecond timebase, and 1 kHz estimator telemetry; alignment validity remains
+false until a controlled product calibration procedure accepts observations.
+On hardware, stationary polling produced no raw-count or velocity movement over
+five seconds. During a 757 mA / 20 Hz run, sampled encoder intervals were
+981-1001 us with a 5.450 ms cumulative worst case, estimator velocity averaged
+-0.3953 revolution/s versus -0.4000 commanded, and no estimator fault occurred.
 
-The next functional milestone is encoder/electrical-angle alignment followed
-by velocity and position control. Remaining characterization includes
-higher-current through the 1 A endpoint and enclosed thermal behavior, current-sense temperature and
+The next functional milestone is the supervisor-owned controlled alignment
+procedure followed by velocity and position control. Remaining characterization
+includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See
 [the project plan](PLAN.md).

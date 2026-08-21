@@ -36,7 +36,8 @@ are staging points, not the steady-state product ambition.
 
 ## Build and provenance
 
-- [Building and flashing](BUILDING.md) — reproducible firmware/host builds and guarded J-Link workflow.
+- [Building and flashing](BUILDING.md) — reproducible firmware/host builds,
+  the recurring Windows/MSVC environment trap, and guarded J-Link workflow.
 - [Reference inventory](REFERENCE_INVENTORY.md) — external versions, sources, hashes, and publication policy.
 - [Reference cache](REFERENCE_CACHE.md) — local page-addressable PDF cache workflow.
 - [Firmware directory guide](../firmware/README.md) — current hardware-image boundary and source layout.

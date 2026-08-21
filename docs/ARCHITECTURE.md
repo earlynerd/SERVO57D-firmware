@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.19.0 implements the reset-safe foundation, continuous
+Status: firmware 0.20.0 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native product diagnostics, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
@@ -8,8 +8,11 @@ loop. Low-zero sign-magnitude modulation, 80%-carrier sampling, raw overcurrent
 trips, and the carrier deadline guardian are bench-proven with an attached
 motor. An encoder-observed 757 mA, 20 Hz electrical run produced smooth motion
 at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault
-on 0.18.2. The 0.19.0 supervisor integration is host/build validated and needs a
-hardware regression run before inheriting that evidence.
+on 0.18.2. Firmware 0.19.0 has since passed supervisor-authorized 303 mA / 5 Hz
+deadline release and 151.5 mA / 5 Hz explicit-STOP motor regressions without a
+fault, reset, or retained panic. Firmware 0.20.0 adds the timestamped 1 kHz
+mechanical estimator and measured stepper geometry; its hardware regression and
+readiness-loss injection remain open.
 
 ## Design priorities
 
@@ -42,7 +45,9 @@ The current image implements:
 - Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
 - A 1 kHz monotonic SysTick timebase.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
-- A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder, sampled at 100 Hz by foreground.
+- A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder on a
+  timestamped 1 kHz foreground schedule, feeding the shared angle unwrap and
+  velocity estimator and reporting current/maximum observed sample intervals.
 - A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
   sustained 50 Hz two-page transactions are proven and the current-loop display uses 5 Hz.
 - A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM2-compare-triggered
@@ -84,9 +89,9 @@ envelope expands.
 
 The portable control and application modules live under
 `firmware/src/control/` and `firmware/src/app/`. They are compiled for both the
-host and the exact Arm target. The fixed-point phase loop and rotating
-current reference are linked into `mks57d`; the outer application,
-estimator, trajectory, and d/q servo path remain excluded. Their contracts use
+host and the exact Arm target. The fixed-point phase loop, rotating current
+reference, angle tracker, and alignment geometry are linked into `mks57d`; the
+outer application, trajectory, and d/q servo path remain excluded. Their contracts use
 revolutions, seconds, amperes, volts, and radians explicitly. The outer servo
 core accepts timestamped raw
 encoder samples and emits a hard-clamped torque-current request; stale input,
@@ -145,14 +150,14 @@ flowchart LR
 ## Real-time timing domains
 
 - **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
-- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 100 Hz product-readiness reader runs cooperatively in foreground.
+- **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 1 kHz candidate reader runs cooperatively in foreground and exposes its latest and maximum observed intervals for the hardware scheduling decision.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
 
 The active current loop runs at 20 kHz from DMA completion after a TIM2 compare
-at 80% of the TIM3 carrier. Encoder acquisition currently runs at 100 Hz in
-foreground. Outer-loop and higher-rate encoder scheduling will be selected
-from measured execution time and signal quality. See [Real-time and control
+at 80% of the TIM3 carrier. Encoder acquisition is scheduled at 1 kHz in
+foreground. Hardware regression will determine whether that cooperative path
+has acceptable jitter or must become timer-released SPI/DMA. See [Real-time and control
 architecture](REALTIME_ARCHITECTURE.md).
 
 ## Product application states

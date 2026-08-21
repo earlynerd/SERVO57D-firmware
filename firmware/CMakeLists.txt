@@ -7,6 +7,7 @@ set(PORTABLE_CONTROL_SOURCES
     src/control/angle_tracker.c
     src/control/current_controller.c
     src/control/motion_profile.c
+    src/control/motor_alignment.c
     src/control/pi_controller.c
     src/control/phase_current_loop.c
     src/control/rotating_current_test.c
@@ -43,6 +44,8 @@ set(PROJECT_SOURCES
     src/app/diagnostics.c
     src/board/board.c
     src/board/board_inputs.c
+    src/control/angle_tracker.c
+    src/control/motor_alignment.c
     src/control/phase_current_loop.c
     src/control/rotating_current_test.c
     src/drivers/adc_calibration.c

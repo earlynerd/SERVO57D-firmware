@@ -1,10 +1,12 @@
 #include <stdbool.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "mks57d/adc1.h"
 #include "mks57d/adc_calibration.h"
 #include "mks57d/adc_display.h"
+#include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/board.h"
 #include "mks57d/board_inputs.h"
@@ -17,6 +19,7 @@
 #include "mks57d/i2c1.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
+#include "mks57d/motor_alignment.h"
 #include "mks57d/native_protocol.h"
 #include "mks57d/panic.h"
 #include "mks57d/platform.h"
@@ -57,12 +60,13 @@ static uint8_t s_display_frame[DISPLAY_FRAME_BYTES];
 enum
 {
     COMMISSIONING_STATUS_SCHEMA_VERSION = 2u,
-    ENCODER_STATUS_SCHEMA_VERSION = 1u,
+    ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 50000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 100u,
-    CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u
+    CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = 60000u,
+    ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0
 };
 
 typedef struct
@@ -77,6 +81,11 @@ typedef struct
     adc1_current_snapshot_t* adc_snapshot;
     adc_calibration_t* adc_calibration;
     diagnostics_encoder_t* encoder_diagnostics;
+    angle_tracker_t* angle_tracker;
+    uint32_t* estimator_fault_flags;
+    uint32_t* estimator_sample_interval_us;
+    uint32_t* estimator_maximum_sample_interval_us;
+    motor_alignment_t* motor_alignment;
     bridge_characterizer_t* bridge_characterizer;
     uint32_t* raw_input_levels;
     uint32_t* input_levels;
@@ -93,14 +102,34 @@ typedef struct
 } commissioning_command_context_t;
 
 static bool encoder_control_ready(
-    const diagnostics_encoder_t* encoder_diagnostics)
+    const diagnostics_encoder_t* encoder_diagnostics,
+    const angle_tracker_t* angle_tracker,
+    uint32_t estimator_fault_flags)
 {
     return (encoder_diagnostics != NULL) &&
+           (angle_tracker != NULL) &&
            (encoder_diagnostics->status == (uint32_t)MT6816_STATUS_OK) &&
            (encoder_diagnostics->transport_status ==
             (uint32_t)SPI_STATUS_OK) &&
            (encoder_diagnostics->flags == 0u) &&
-           (encoder_diagnostics->sample_count != 0u);
+           (encoder_diagnostics->sample_count != 0u) &&
+           angle_tracker->initialized &&
+           (estimator_fault_flags == 0u);
+}
+
+static int32_t float_to_q16_16(float value)
+{
+    const float maximum = 32767.9999847412109375f;
+
+    if (value >= maximum)
+    {
+        return INT32_MAX;
+    }
+    if (value <= -32768.0f)
+    {
+        return INT32_MIN;
+    }
+    return (int32_t)(value * 65536.0f);
 }
 
 static uint32_t current_test_initial_phase(
@@ -363,14 +392,24 @@ static command_status_t commissioning_get_encoder_status(
 {
     commissioning_command_context_t* commissioning = context;
     const diagnostics_encoder_t* encoder;
+    const angle_tracker_t* angle_tracker;
+    motor_alignment_status_t alignment_status;
+    uint32_t electrical_phase_q32 = 0u;
 
     if ((commissioning == NULL) || (status == NULL) ||
-        (commissioning->encoder_diagnostics == NULL))
+        (commissioning->encoder_diagnostics == NULL) ||
+        (commissioning->angle_tracker == NULL) ||
+        (commissioning->estimator_fault_flags == NULL) ||
+        (commissioning->estimator_sample_interval_us == NULL) ||
+        (commissioning->estimator_maximum_sample_interval_us == NULL) ||
+        (commissioning->motor_alignment == NULL))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
 
     encoder = commissioning->encoder_diagnostics;
+    angle_tracker = commissioning->angle_tracker;
+    memset(status, 0, sizeof(*status));
     status->schema_version = ENCODER_STATUS_SCHEMA_VERSION;
     status->status = (uint8_t)encoder->status;
     status->transport_status = (uint8_t)encoder->transport_status;
@@ -379,6 +418,42 @@ static command_status_t commissioning_get_encoder_status(
     status->sample_count = encoder->sample_count;
     status->error_count = encoder->error_count;
     status->last_attempt_millis = encoder->last_attempt_millis;
+    status->estimator_fault_flags =
+        *commissioning->estimator_fault_flags;
+    status->estimator_sample_interval_us =
+        *commissioning->estimator_sample_interval_us;
+    status->estimator_maximum_sample_interval_us =
+        *commissioning->estimator_maximum_sample_interval_us;
+    if (angle_tracker->initialized &&
+        (status->estimator_fault_flags == 0u))
+    {
+        status->estimator_flags |= COMMAND_ENCODER_ESTIMATOR_READY;
+        status->position_revolutions_q16_16 =
+            float_to_q16_16(angle_tracker->position_revolutions);
+        status->velocity_revolutions_per_second_q16_16 =
+            float_to_q16_16(
+                angle_tracker->velocity_revolutions_per_second);
+        status->estimator_timestamp_us =
+            angle_tracker->last_timestamp_us;
+    }
+
+    motor_alignment_get_status(
+        commissioning->motor_alignment, &alignment_status);
+    status->alignment_zero_raw = alignment_status.electrical_zero_raw;
+    status->alignment_direction = alignment_status.encoder_direction;
+    if (alignment_status.valid)
+    {
+        status->estimator_flags |= COMMAND_ENCODER_ALIGNMENT_VALID;
+        if (motor_alignment_electrical_phase_q32(
+                commissioning->motor_alignment,
+                (uint16_t)encoder->angle_raw,
+                &electrical_phase_q32))
+        {
+            status->estimator_flags |=
+                COMMAND_ENCODER_ELECTRICAL_PHASE_VALID;
+            status->electrical_phase_q32 = electrical_phase_q32;
+        }
+    }
     return COMMAND_STATUS_OK;
 }
 
@@ -577,7 +652,11 @@ int main(void)
     enum
     {
         ENCODER_POWER_UP_DELAY_MS = 20u,
-        ENCODER_SAMPLE_PERIOD_MS = 10u,
+        ENCODER_SAMPLE_PERIOD_MS = 1u,
+        ENCODER_MAXIMUM_SAMPLE_INTERVAL_US = 20000u,
+        ENCODER_COUNTS_PER_REVOLUTION = 16384u,
+        MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION = 50u,
+        ALIGNMENT_MAXIMUM_QUARTER_STEP_ERROR_COUNTS = 12u,
         ADC_SNAPSHOT_PERIOD_MS = 10u,
         INPUT_SAMPLE_PERIOD_MS = 10u,
         CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
@@ -607,6 +686,23 @@ int main(void)
                        TIM2_CURRENT_TRIGGER_PHASE_PERMILLE,
                    "phase voltage must leave a 5 us ADC quiet interval");
     app_supervisor_t drive_supervisor;
+    angle_tracker_t angle_tracker;
+    const angle_tracker_config_t angle_tracker_config = {
+        .counts_per_revolution = ENCODER_COUNTS_PER_REVOLUTION,
+        .maximum_sample_interval_us =
+            ENCODER_MAXIMUM_SAMPLE_INTERVAL_US,
+        .maximum_velocity_revolutions_per_second = 20.0f,
+        .velocity_filter_alpha = 0.125f,
+    };
+    motor_alignment_t motor_alignment;
+    const motor_alignment_config_t motor_alignment_config = {
+        .encoder_counts_per_revolution =
+            ENCODER_COUNTS_PER_REVOLUTION,
+        .electrical_cycles_per_revolution =
+            MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION,
+        .maximum_quarter_step_error_counts =
+            ALIGNMENT_MAXIMUM_QUARTER_STEP_ERROR_COUNTS,
+    };
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
         .status = MT6816_STATUS_NOT_ATTEMPTED,
@@ -650,6 +746,9 @@ int main(void)
     adc1_status_t adc_status = ADC1_STATUS_NOT_READY;
     bool bridge_ready = false;
     bool encoder_spi_ready = false;
+    uint32_t estimator_fault_flags = 0u;
+    uint32_t estimator_sample_interval_us = 0u;
+    uint32_t estimator_maximum_sample_interval_us = 0u;
     bool inputs_ready = false;
     bool rs485_ready = false;
     uint32_t heartbeat_count = 0u;
@@ -677,6 +776,13 @@ int main(void)
         .adc_snapshot = &adc_snapshot,
         .adc_calibration = &adc_calibration,
         .encoder_diagnostics = &encoder_diagnostics,
+        .angle_tracker = &angle_tracker,
+        .estimator_fault_flags = &estimator_fault_flags,
+        .estimator_sample_interval_us =
+            &estimator_sample_interval_us,
+        .estimator_maximum_sample_interval_us =
+            &estimator_maximum_sample_interval_us,
+        .motor_alignment = &motor_alignment,
         .bridge_characterizer = &bridge_characterizer,
         .raw_input_levels = &raw_input_levels,
         .input_levels = &input_levels,
@@ -712,6 +818,12 @@ int main(void)
     }
 
     if (!app_supervisor_init(&drive_supervisor))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
+    if (!angle_tracker_init(&angle_tracker, &angle_tracker_config) ||
+        !motor_alignment_init(
+            &motor_alignment, &motor_alignment_config))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
@@ -1048,7 +1160,10 @@ int main(void)
                 const app_transition_context_t energize_context = {
                     .safe_to_energize =
                         bridge_ready && adc_snapshot_valid &&
-                        encoder_control_ready(&encoder_diagnostics),
+                        encoder_control_ready(
+                            &encoder_diagnostics,
+                            &angle_tracker,
+                            estimator_fault_flags),
                 };
 
                 if (!adc_snapshot_valid ||
@@ -1197,6 +1312,7 @@ int main(void)
                 &encoder_bus,
                 &sample,
                 &transport_status);
+            const uint32_t encoder_timestamp_us = timebase_micros();
 
             encoder_diagnostics.status = (uint32_t)encoder_status;
             encoder_diagnostics.transport_status =
@@ -1207,6 +1323,45 @@ int main(void)
                 encoder_diagnostics.angle_raw = sample.angle_raw;
                 encoder_diagnostics.flags = sample.flags;
                 ++encoder_diagnostics.sample_count;
+                if ((sample.flags == 0u) && angle_tracker.initialized)
+                {
+                    estimator_sample_interval_us =
+                        encoder_timestamp_us -
+                        angle_tracker.last_timestamp_us;
+                    if (estimator_sample_interval_us >
+                        estimator_maximum_sample_interval_us)
+                    {
+                        estimator_maximum_sample_interval_us =
+                            estimator_sample_interval_us;
+                    }
+                }
+                if ((sample.flags == 0u) &&
+                    !angle_tracker_push(
+                        &angle_tracker,
+                        sample.angle_raw,
+                        encoder_timestamp_us))
+                {
+                    estimator_fault_flags |=
+                        ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE;
+                    bridge_characterizer_stop(&bridge_characterizer);
+                    commissioning_context.remote_authority_active = false;
+                    commissioning_context.remote_start_requested = false;
+                    commissioning_context.remote_stop_requested = false;
+                    if (app_supervisor_bridge_authorized(
+                            &drive_supervisor) &&
+                        !current_loop_backend_stop())
+                    {
+                        board_bridge_force_low_zero();
+                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    }
+                    bridge_ready = false;
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                    diagnostics_due = true;
+                }
             }
             else
             {
@@ -1335,7 +1490,10 @@ int main(void)
             const bool drive_prerequisites_ready =
                 bridge_ready && current_loop_initialized &&
                 adc_snapshot_valid &&
-                encoder_control_ready(&encoder_diagnostics);
+                encoder_control_ready(
+                    &encoder_diagnostics,
+                    &angle_tracker,
+                    estimator_fault_flags);
 
             if ((drive_supervisor.state == APP_STATE_DIAGNOSTIC) &&
                 drive_prerequisites_ready)

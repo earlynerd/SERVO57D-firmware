@@ -61,7 +61,7 @@ Goal: produce a small, auditable project-owned firmware base.
 - [x] Document reproducible firmware and host-test build commands.
 - [x] Document the bench-proven guarded J-Link build, program, verify, reset, and start workflow.
 
-Software status: firmware 0.19.0 builds on the bench-proven 8 MHz HSE
+Software status: firmware 0.20.0 builds on the bench-proven 8 MHz HSE
 through PLL at 64 MHz with explicit APB and timer clocks, runs a seven-gate boot self-test,
 samples the encoder and runs bench-proven TIM3-synchronous two-channel current acquisition, performs independent startup zero calibration, updates the fitted OLED with both signed currents in milliamperes, and serves the
 native product diagnostic service over RS-485. The 240-byte schema-5 RAM diagnostic
@@ -77,7 +77,12 @@ encoder-confirmed 5.97 RPM motor rotation are bench-proven. The tested board's
 verified. Reset/halt waveforms, SRAM2 and IWDG details, production current-sense
 tolerance, the broader speed/current/thermal envelope, and production fault
 coverage remain open. The 0.18.2 current path is bench-proven through 757 mA /
-20 electrical Hz; the 0.19.0 supervisor integration awaits a hardware regression.
+20 electrical Hz. The 0.19.0 supervisor path has passed healthy boot/readiness,
+303 mA / 5 Hz deadline release, 151.5 mA / 5 Hz explicit STOP, configuration
+restoration, and no-reset/no-panic checks. The 0.20.0 build adds a 1 kHz
+timestamped mechanical estimator and protocol-1.4 telemetry. Its idle and
+757 mA / 20 Hz schedule, noise, direction, and velocity regression passes;
+readiness-loss fault injection remains.
 
 Milestone result: achieved. A clean checkout builds, flashes, boots, and
 reports its version from a defined board state.
@@ -167,14 +172,24 @@ Goal: close the mechanical loop incrementally.
 - [x] Converge the hardware image on one product drive supervisor with explicit
   readiness, diagnostic/motion authority, and fault deauthorization; route the
   existing bounded current diagnostic through it.
-- [ ] Determine encoder-to-electrical-angle alignment and motor pole/step geometry.
-- [x] Confirm 50 electrical cycles per mechanical revolution from the measured 5 Hz / 5.97 RPM relationship.
+- [x] Determine motor geometry and direction: 50 electrical cycles per
+  mechanical revolution and decreasing raw encoder count for increasing
+  commanded electrical phase, confirmed by a 757.5 mA cardinal-vector sequence.
 - [ ] Add a controlled alignment/calibration procedure.
-- [ ] Integrate the existing host-tested angle unwrapping and velocity estimator with the on-board encoder at the selected control rate.
+- [x] Integrate the existing host-tested angle unwrapping and velocity estimator
+  with the on-board encoder on a timestamped 1 kHz foreground schedule without
+  enabling the outer servo or importing host-test motion limits.
+- [x] Bench-validate estimator sample interval, jitter, stationary noise,
+  direction, and velocity during a bounded run; move acquisition to a
+  timer-released SPI/DMA path if later outer-loop load makes the initially
+  accepted foreground schedule unfit for purpose.
 - [ ] Connect the existing bounded torque/current command layer to the proven phase-current backend.
 - [ ] Close the velocity loop at low gains and limited current.
 - [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
+- [ ] Inventory every production limit with units, basis, enforcement owner,
+  reporting, and test; remove, configure, or replace inherited commissioning
+  ceilings and host-test defaults that have no defensible product basis.
 - [ ] Persist calibration using a versioned, CRC-protected configuration record.
 
 Milestone target: controlled moves and disturbances remain stable, faults

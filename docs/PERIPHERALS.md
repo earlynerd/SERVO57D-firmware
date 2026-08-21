@@ -70,24 +70,28 @@ tolerance limits.
 ### 3. Encoder SPI
 
 The boot path activates a polling, read-only MT6816-compatible transaction and
-continues it during current-loop operation. SPI1 runs at 500 kHz or lower in mode 3 and reads
-registers `0x03` through `0x05` in one four-byte CS window every 10 ms after a
-20 ms power-up delay. The driver rejects odd parity and publishes no-magnet and
-over-speed flags with raw 14-bit angle and status counters in diagnostic schema
-2. The driver retries transport and parity failures; the product supervisor
+continues it during current-loop operation. SPI1 runs at 500 kHz or lower in
+mode 3 and reads registers `0x03` through `0x05` in one four-byte CS window on a
+1 kHz foreground schedule after a 20 ms power-up delay. The driver rejects odd
+parity and publishes no-magnet and over-speed flags with raw 14-bit angle and
+status counters. Accepted samples feed the timestamped mechanical estimator;
+native encoder schema 2 adds position, velocity, alignment validity, and
+sample-interval telemetry. The driver retries transport and parity failures;
+the product supervisor
 keeps an unready idle drive in `DIAGNOSTIC` and converts encoder-health loss
 during bridge authority into `FAULT`.
 
 GPIOB activation for SPI is constrained to PB3-PB6 before TIM3 claims PB0/PB1;
 PB7 `nEN` remains an input. Bench testing has proven stable rest readings,
 consistent shaft response, repeatable wraparound, and continuous observation
-during a 5.97 RPM motor run. DMA, interrupts, quantitative noise, zero
-alignment, and a higher control-rate acquisition path remain later work.
+during a 5.97 RPM motor run. The new 1 kHz schedule, quantitative noise, and
+controlled zero alignment remain hardware work; timer-released SPI/DMA remains
+the fallback if measured foreground jitter is not fit for purpose.
 See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.19.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
+Firmware 0.20.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
 PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
 three consecutive changed samples update each independently. The physical keys
 are left Next, center Enter, and right Menu, and both auxiliary inputs respond
@@ -107,8 +111,8 @@ bounded number of bytes into the native v1 COBS/CRC parser. TX uses channel 5
 and keeps PC13 high until USART transmission-complete, not merely DMA
 completion.
 
-Native protocol 1.3 replies to complete, CRC-valid address-1 discovery, boot,
-encoder, and current-loop requests. Framing, address checks, command validation,
+Native protocol 1.4 replies to complete, CRC-valid address-1 discovery, boot,
+raw/estimated encoder, and current-loop requests. Framing, address checks, command validation,
 and reply creation remain bounded foreground work; the product drive supervisor
 owns bridge authority. Complete configuration, START, live status, encoder, and
 STOP exchanges have been observed through `485_A2`/`485_B2`; reset-time and

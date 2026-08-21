@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.19.0 implements the fast-path portion of this architecture:
+Status: firmware 0.20.0 implements the fast-path portion of this architecture:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
 fixed-point current control, and a carrier deadline guardian. The path is
 bench-proven with encoder-observed motor rotation. This document also defines
@@ -168,21 +168,26 @@ initial targets.
 | --- | ---: | --- | --- |
 | PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
-| Encoder acquisition | 100 Hz now; higher for servo control | Foreground now; timer-released SPI/DMA later | Timestamped mechanical-angle snapshot |
+| Encoder acquisition | 1 kHz candidate | Foreground now; timer-released SPI/DMA if measured jitter requires it | Timestamped mechanical-angle snapshot and interval telemetry |
 | Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded `Id`/`Iq` request |
 | Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
 The active 20 kHz rate has completed roughly 160,000 recent fault-free loop
-samples. Encoder acquisition runs at 100 Hz and was sufficient to verify the
-5.97 RPM rotation milestone. Servo-loop rates will be selected from measured
-plant response, transaction time, noise, CPU budget, and switching losses.
+samples. Firmware 0.20.0 schedules encoder acquisition at 1 kHz, timestamps each
+accepted sample in microseconds, and reports the latest and maximum observed
+interval. The initial hardware regression accepted this foreground schedule:
+active observations during a 757 mA / 20 Hz run were 981-1001 us, with a
+5.450 ms cumulative worst case since boot and no estimator fault against the
+20 ms validity threshold. This must be revalidated after outer-loop compute is
+added; timer-released SPI/DMA remains the next step if the resulting jitter or
+CPU budget is not fit for purpose.
 
 ## Processor and cycle budget
 
 Motor-control timing is budgeted in core cycles, not average foreground load.
-Firmware 0.19.0 uses the bench-proven 64 MHz clock tree and a 20 kHz fast
+Firmware 0.20.0 uses the bench-proven 64 MHz clock tree and a 20 kHz fast
 current path. The table gives the available cycle intervals; worst-case ISR
 instrumentation remains release work:
 
@@ -261,9 +266,9 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is now implemented under
 `firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-exact Arm target. Firmware 0.19.0 integrates the authoritative drive supervisor;
-the outer servo shell remains excluded while the proven phase-current backend
-is active:
+exact Arm target. Firmware 0.20.0 integrates the authoritative drive supervisor,
+mechanical angle tracker, and measured stepper-alignment geometry; the outer
+servo shell remains excluded while the proven phase-current backend is active:
 
 - raw encoder angle is unwrapped in both directions with timestamp, sample-age,
   maximum-velocity, and filter contracts;
@@ -324,7 +329,7 @@ Following error, velocity, acceleration, current, voltage request, and duty cycl
 
 The Nations 2.3.0 four-channel PWM example maps PA6, PA7, PB0, and PB1 to
 TIM3 channels 1-4 on AF2, matching the published schematic and the Delsian
-CAN-board project. Firmware 0.19.0 uses that edge-aligned 20 kHz mapping and
+CAN-board project. Firmware 0.20.0 uses that edge-aligned 20 kHz mapping and
 stages low-zero sign-magnitude current-loop duties. All four outputs, phase
 polarities, current quadrants, and attached-motor operation are proven on the
 purchased RS-485 board.
@@ -369,7 +374,7 @@ The guardian is optional only if an equivalent hardware/peripheral mechanism pro
 
 The independent watchdog is a slower, final recovery layer; it does not replace the priority-1 control-deadline guardian or the immediate bridge fault primitive. Its reload key is private to one foreground-owned supervisor. SysTick, peripheral ISRs, and the fast current loop have no feed API, so one surviving interrupt cannot hide a stalled foreground or failed execution domain.
 
-Firmware 0.19.0 requests service every 100 ms with a nominal 1,000 ms IWDG
+Firmware 0.20.0 requests service every 100 ms with a nominal 1,000 ms IWDG
 timeout. A foreground polling gap above 250 ms, an invalid application state,
 or an incomplete/failed [boot self-test](BOOT_SELF_TEST.md) refuses further
 service and enters the panic path. A stopped timebase also prevents scheduled

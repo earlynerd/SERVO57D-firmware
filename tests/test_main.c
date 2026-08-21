@@ -28,6 +28,7 @@
 #include "mks57d/motion_manager.h"
 #include "mks57d/native_protocol.h"
 #include "mks57d/motion_profile.h"
+#include "mks57d/motor_alignment.h"
 #include "mks57d/pi_controller.h"
 #include "mks57d/phase_current_loop.h"
 #include "mks57d/rotating_current_test.h"
@@ -1748,7 +1749,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .watchdog_reset = 1u,
         },
         .encoder_status = {
-            .schema_version = 1u,
+            .schema_version = 2u,
             .status = 1u,
             .transport_status = 0u,
             .angle_raw = 0x2345u,
@@ -1756,6 +1757,16 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .sample_count = 0x01020304u,
             .error_count = 0x05060708u,
             .last_attempt_millis = 0x090A0B0Cu,
+            .estimator_flags = 0x07u,
+            .position_revolutions_q16_16 = 0x11223344,
+            .velocity_revolutions_per_second_q16_16 = -2,
+            .estimator_timestamp_us = 0x0D0E0F10u,
+            .estimator_fault_flags = 0x11121314u,
+            .alignment_zero_raw = 0x3456u,
+            .alignment_direction = -1,
+            .electrical_phase_q32 = 0x89ABCDEFu,
+            .estimator_sample_interval_us = 0x21222324u,
+            .estimator_maximum_sample_interval_us = 0x25262728u,
         },
         .current_trace = {
             .schema_version = 1u,
@@ -1905,9 +1916,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.encoder_status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 19u);
+    EXPECT_TRUE(response.payload_length == 51u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[1] == 2u);
     EXPECT_TRUE(response.payload[2] == 1u);
     EXPECT_TRUE(response.payload[3] == 0u);
     EXPECT_TRUE(response.payload[4] == 0x23u);
@@ -1919,6 +1930,24 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[14] == 0x08u);
     EXPECT_TRUE(response.payload[15] == 0x09u);
     EXPECT_TRUE(response.payload[18] == 0x0Cu);
+    EXPECT_TRUE(response.payload[19] == 0x07u);
+    EXPECT_TRUE(response.payload[20] == 0x11u);
+    EXPECT_TRUE(response.payload[23] == 0x44u);
+    EXPECT_TRUE(response.payload[24] == 0xFFu);
+    EXPECT_TRUE(response.payload[27] == 0xFEu);
+    EXPECT_TRUE(response.payload[28] == 0x0Du);
+    EXPECT_TRUE(response.payload[31] == 0x10u);
+    EXPECT_TRUE(response.payload[32] == 0x11u);
+    EXPECT_TRUE(response.payload[35] == 0x14u);
+    EXPECT_TRUE(response.payload[36] == 0x34u);
+    EXPECT_TRUE(response.payload[37] == 0x56u);
+    EXPECT_TRUE(response.payload[38] == 0xFFu);
+    EXPECT_TRUE(response.payload[39] == 0x89u);
+    EXPECT_TRUE(response.payload[42] == 0xEFu);
+    EXPECT_TRUE(response.payload[43] == 0x21u);
+    EXPECT_TRUE(response.payload[46] == 0x24u);
+    EXPECT_TRUE(response.payload[47] == 0x25u);
+    EXPECT_TRUE(response.payload[50] == 0x28u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -2213,6 +2242,50 @@ static void test_angle_tracker_rejects_implausible_motion_without_advancing(void
     EXPECT_TRUE(!angle_tracker_push(&tracker, 8000u, 2000u));
     EXPECT_TRUE(tracker.last_raw_angle == 100u);
     EXPECT_TRUE(tracker.last_timestamp_us == 1000u);
+}
+
+static void test_motor_alignment_accepts_measured_stepper_geometry(void)
+{
+    const motor_alignment_config_t config = {
+        .encoder_counts_per_revolution = 16384u,
+        .electrical_cycles_per_revolution = 50u,
+        .maximum_quarter_step_error_counts = 12u,
+    };
+    motor_alignment_t alignment;
+    motor_alignment_status_t status;
+    uint32_t phase_q32 = 0u;
+
+    EXPECT_TRUE(motor_alignment_init(&alignment, &config));
+    EXPECT_TRUE(!motor_alignment_electrical_phase_q32(
+        &alignment, 14249u, &phase_q32));
+    EXPECT_TRUE(motor_alignment_calibrate(
+        &alignment, 14249u, 14165u));
+    motor_alignment_get_status(&alignment, &status);
+    EXPECT_TRUE(status.valid);
+    EXPECT_TRUE(status.electrical_zero_raw == 14249u);
+    EXPECT_TRUE(status.observed_quarter_step_counts == 84u);
+    EXPECT_TRUE(status.quarter_step_error_counts == 2);
+    EXPECT_TRUE(status.encoder_direction == -1);
+
+    EXPECT_TRUE(motor_alignment_electrical_phase_q32(
+        &alignment, 14249u, &phase_q32));
+    EXPECT_TRUE(phase_q32 == 0u);
+    EXPECT_TRUE(motor_alignment_electrical_phase_q32(
+        &alignment, 14085u, &phase_q32));
+    EXPECT_TRUE(phase_q32 > 0x7F000000u);
+    EXPECT_TRUE(phase_q32 < 0x81000000u);
+
+    EXPECT_TRUE(!motor_alignment_calibrate(
+        &alignment, 1000u, 1400u));
+    motor_alignment_get_status(&alignment, &status);
+    EXPECT_TRUE(status.valid);
+    EXPECT_TRUE(status.electrical_zero_raw == 14249u);
+
+    motor_alignment_clear(&alignment);
+    EXPECT_TRUE(!motor_alignment_calibrate(
+        &alignment, 1000u, 1400u));
+    motor_alignment_get_status(&alignment, &status);
+    EXPECT_TRUE(!status.valid);
 }
 
 static void test_motion_profile_respects_velocity_and_acceleration_limits(void)
@@ -3610,6 +3683,7 @@ int main(void)
     test_native_protocol_counts_transport_rejection();
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
+    test_motor_alignment_accepts_measured_stepper_geometry();
     test_motion_profile_respects_velocity_and_acceleration_limits();
     test_motion_profile_controlled_stop_decelerates_to_rest();
     test_pi_controller_prevents_integrator_windup();

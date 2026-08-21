@@ -6,5 +6,6 @@
 
 bool timebase_init(void);
 uint32_t timebase_millis(void);
+uint32_t timebase_micros(void);
 
 #endif

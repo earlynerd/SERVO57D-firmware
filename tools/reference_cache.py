@@ -392,12 +392,17 @@ def render_page(
         "renderer": f"PyMuPDF {pymupdf.__version__}",
     }
     if output.is_file() and sidecar.is_file() and not force:
+        sidecar_is_current = False
         try:
-            if json.loads(sidecar.read_text(encoding="utf-8")) == expected_sidecar:
-                print(f"{source.source_id}: page {page_number} render is current")
-                return output
+            sidecar_is_current = (
+                json.loads(sidecar.read_text(encoding="utf-8"))
+                == expected_sidecar
+            )
         except (OSError, json.JSONDecodeError):
-            pass
+            sidecar_is_current = False
+        if sidecar_is_current:
+            print(f"{source.source_id}: page {page_number} render is current")
+            return output
 
     output.parent.mkdir(parents=True, exist_ok=True)
     document = pymupdf.open(source.path)

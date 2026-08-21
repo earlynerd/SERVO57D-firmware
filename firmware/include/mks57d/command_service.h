@@ -107,7 +107,24 @@ typedef struct
     uint32_t sample_count;
     uint32_t error_count;
     uint32_t last_attempt_millis;
+    uint8_t estimator_flags;
+    int32_t position_revolutions_q16_16;
+    int32_t velocity_revolutions_per_second_q16_16;
+    uint32_t estimator_timestamp_us;
+    uint32_t estimator_fault_flags;
+    uint16_t alignment_zero_raw;
+    int8_t alignment_direction;
+    uint32_t electrical_phase_q32;
+    uint32_t estimator_sample_interval_us;
+    uint32_t estimator_maximum_sample_interval_us;
 } command_encoder_status_t;
+
+enum
+{
+    COMMAND_ENCODER_ESTIMATOR_READY = 1u << 0,
+    COMMAND_ENCODER_ALIGNMENT_VALID = 1u << 1,
+    COMMAND_ENCODER_ELECTRICAL_PHASE_VALID = 1u << 2
+};
 
 typedef struct
 {

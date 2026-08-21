@@ -1,10 +1,11 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.3, discovery, boot and encoder telemetry, and the
+Status: native protocol 1.4, discovery, boot and encoder telemetry, and the
 current diagnostic service are implemented and host-tested. Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
-the product drive supervisor and awaits a hardware regression. Address
+the product drive supervisor and has passed both deadline-release and explicit-
+STOP motor regressions. Address
 provisioning, native-wire duplicate handling, motion control commands, Modbus
 RTU, and Makerbase compatibility remain future work.
 
@@ -104,13 +105,16 @@ from causing reply storms.
 | `0x0102` | `START_CURRENT_TEST` | Initial leg `u8`, duration milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
-| `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema `u8`, encoder status `u8`, SPI status `u8`, raw angle `u16`, flags `u8`, sample count `u32`, error count `u32`, last-attempt milliseconds `u32` |
+| `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
 | `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema `u8`, captured count `u16`, echoed index `u16`, loop sample count `u32`, A/B references `i16`, A/B measurements `i16`, A/B voltage commands `i16` |
 
-The product ID is `0x4D4B5335` (`MKS5`). The bench-proven image reports firmware
-0.18.2 and protocol 1.3. Firmware 0.19.0 keeps protocol 1.3 and identifies the
-converged product image. Protocol 1.3 adds the bounded current trace validated through
-complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
+The product ID is `0x4D4B5335` (`MKS5`). Firmware 0.19.0 / protocol 1.3 is the
+bench-proven converged supervisor image. Firmware 0.20.0 / protocol 1.4 appends
+mechanical-estimator, alignment, electrical-phase, and sample-interval telemetry
+to `GET_ENCODER_STATUS`; the current host tool decodes both schema 1 and schema
+2, while fixed-length third-party clients must check identity/schema before
+decoding. Protocol 1.3 added the bounded current trace validated
+through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
 
@@ -133,11 +137,33 @@ than only the IWDG summary in commissioning status. This distinguishes RAM,
 MMU, pin, power-on, software, independent/window-watchdog, and low-power reset
 causes and reports the current boot uptime.
 
-`GET_ENCODER_STATUS` exposes the latest parity-valid 14-bit magnetic angle,
-encoder and SPI status, sensor flags, accepted-sample count, error count, and
-last-attempt time. The host product-service console queries it alongside each
-current-loop snapshot so rotor displacement can be separated from successful
-stator-current commutation.
+`GET_ENCODER_STATUS` preserves the schema-1 raw encoder prefix and, in schema 2,
+adds the product mechanical estimator, alignment gate, electrical phase, and
+sampling evidence. Position and velocity use signed Q16.16 revolutions and
+revolutions/second. Electrical phase uses unsigned Q0.32 turns. Until the
+controlled alignment procedure accepts calibration, alignment/electrical-phase
+flags remain clear and their numeric fields must not be used for control.
+
+| Body offset | Type | Encoder schema-2 field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 2 |
+| 1 | `u8` | `mt6816_status_t` |
+| 2 | `u8` | `spi_status_t` |
+| 3 | `u16` | Latest accepted raw angle |
+| 5 | `u8` | MT6816 sensor flags |
+| 6 | `u32` | Accepted raw-sample count |
+| 10 | `u32` | Raw acquisition error count |
+| 14 | `u32` | Last-attempt milliseconds |
+| 18 | `u8` | Estimator-ready, alignment-valid, and electrical-phase-valid flags |
+| 19 | `i32` | Unwrapped mechanical position, Q16.16 revolutions |
+| 23 | `i32` | Filtered mechanical velocity, Q16.16 revolutions/second |
+| 27 | `u32` | Estimator sample timestamp in microseconds, wrapping naturally |
+| 31 | `u32` | Estimator fault flags |
+| 35 | `u16` | Accepted electrical-zero raw count |
+| 37 | `i8` | Encoder direction for increasing electrical phase: `-1`, `0` unknown, `+1` |
+| 38 | `u32` | Electrical phase, Q0.32 turns; valid only when flagged |
+| 42 | `u32` | Latest estimator sample interval in microseconds |
+| 46 | `u32` | Maximum estimator sample interval observed since boot |
 
 `GET_CURRENT_TRACE` is available only after current-loop authority has ended.
 Each start clears a fixed 256-entry buffer, then the DMA-completion ISR records
@@ -299,7 +325,8 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target but the outer motion shell remains excluded from firmware 0.19.0.
+target; firmware 0.20.0 links the mechanical estimator and alignment geometry,
+while the outer motion shell remains excluded.
 
 ## Implementation sequence
 

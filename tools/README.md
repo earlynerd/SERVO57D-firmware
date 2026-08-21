@@ -23,7 +23,9 @@ role. No new feature should extend them into a second control path.
 `motor_test.py` is the normal human-facing motor diagnostic and regression loop. It runs one
 firmware-bounded rotating-current move, captures the diagnostic stream and
 20 kHz startup trace, analyzes current tracking and encoder motion, writes a
-self-contained HTML report with four plots, and opens it:
+self-contained HTML report with four plots, and opens it. On protocol 1.4 it
+also rejects an unready or faulted mechanical estimator and records the worst
+observed estimator sample interval; saved protocol-1.3 runs remain supported:
 
 ```powershell
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
@@ -67,10 +69,14 @@ py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace.jsonl
 py tools/mks57d_rs485.py --port COM14 stop
 ```
 
-`encoder` reports the live 14-bit magnetic angle and health counters. `watch`
-and `run` attach the same encoder snapshot to every current-loop record so
-electrical commutation and physical rotor motion can be compared directly.
-Protocol 1.3 firmware also records the first 256 current-loop samples after
+`encoder` reports the live 14-bit magnetic angle and health counters. On
+protocol 1.4 it also reports unwrapped mechanical position, filtered velocity,
+estimator faults, alignment/electrical-phase validity, and the latest and
+maximum observed sample intervals. The decoder remains compatible with the
+shorter protocol-1.3 encoder schema. `watch` and `run` attach the same encoder
+snapshot to every current-loop record so electrical commutation and physical
+rotor motion can be compared directly. Protocol 1.3 and later firmware also
+records the first 256 current-loop samples after
 each start. Run a nearly stationary reference for a clean startup step, then
 read and analyze it after authority ends:
 

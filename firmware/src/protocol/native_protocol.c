@@ -532,7 +532,44 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                     &response_frame->payload[15],
                     command_response->data.encoder_status.
                         last_attempt_millis);
-                payload_length = 19u;
+                response_frame->payload[19] =
+                    command_response->data.encoder_status.estimator_flags;
+                write_u32_be(
+                    &response_frame->payload[20],
+                    (uint32_t)command_response->data.encoder_status.
+                        position_revolutions_q16_16);
+                write_u32_be(
+                    &response_frame->payload[24],
+                    (uint32_t)command_response->data.encoder_status.
+                        velocity_revolutions_per_second_q16_16);
+                write_u32_be(
+                    &response_frame->payload[28],
+                    command_response->data.encoder_status.
+                        estimator_timestamp_us);
+                write_u32_be(
+                    &response_frame->payload[32],
+                    command_response->data.encoder_status.
+                        estimator_fault_flags);
+                write_u16_be(
+                    &response_frame->payload[36],
+                    command_response->data.encoder_status.
+                        alignment_zero_raw);
+                response_frame->payload[38] = (uint8_t)
+                    command_response->data.encoder_status.
+                        alignment_direction;
+                write_u32_be(
+                    &response_frame->payload[39],
+                    command_response->data.encoder_status.
+                        electrical_phase_q32);
+                write_u32_be(
+                    &response_frame->payload[43],
+                    command_response->data.encoder_status.
+                        estimator_sample_interval_us);
+                write_u32_be(
+                    &response_frame->payload[47],
+                    command_response->data.encoder_status.
+                        estimator_maximum_sample_interval_us);
+                payload_length = 51u;
                 break;
 
             case COMMAND_RESPONSE_CURRENT_TRACE:

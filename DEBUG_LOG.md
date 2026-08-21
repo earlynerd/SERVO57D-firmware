@@ -1,5 +1,14 @@
 # Debug Log
 
+## 2026-08-20 — Firmware 0.20 estimator passed initial hardware regression
+
+- **Observation:** After flashing 0.20.0, the new 1 kHz estimator needed identity, idle-noise, timing, direction, velocity, and active-load validation before servo integration.
+- **Root cause:** No defect observed; `firmware/src/platform/timebase.c:36` and `firmware/src/main.c:1307` produced valid timestamped samples at idle and through a 757 mA / 20 Hz bounded run.
+- **Fix:** No firmware change required; accept the foreground estimator schedule under the present workload and retain readiness-loss injection plus outer-loop-load revalidation as later gates.
+- **Class:** encoder-estimator-bench-validation
+- **Recently-touched?** yes
+- **Time to fix:** no fix required; approximately one bench-validation pass
+
 ## 2026-08-17 — Valid L0 option word crashed J-Link flash preflight
 
 - **Observation:** After J-Link read `FLASH_OB = 0x03FFFFFC`, `flash-jlink.ps1` stopped with `Cannot convert value "-2147483648" to type "System.UInt32"` before programming.

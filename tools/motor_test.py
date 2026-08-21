@@ -200,6 +200,57 @@ def _unwrapped_encoder_revolutions(
     return [(value - unwrapped[0]) / 16384.0 for value in unwrapped]
 
 
+def _estimator_summary(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
+    estimators = [
+        sample["encoder"]["estimator"]
+        for sample in samples
+        if "estimator" in sample.get("encoder", {})
+    ]
+    if not estimators:
+        return None
+    final = estimators[-1]
+    return {
+        "sample_count": len(estimators),
+        "ready_on_all_samples": all(
+            "estimator_ready" in estimator.get("flags", [])
+            for estimator in estimators
+        ),
+        "faults": sorted(
+            {
+                fault
+                for estimator in estimators
+                for fault in estimator.get("faults", [])
+            }
+        ),
+        "final_position_revolutions": final["position_revolutions"],
+        "final_velocity_revolutions_per_second": final[
+            "velocity_revolutions_per_second"
+        ],
+        "latest_sample_interval_us": final["sample_interval_us"],
+        "maximum_sample_interval_us": max(
+            int(estimator["maximum_sample_interval_us"])
+            for estimator in estimators
+        ),
+    }
+
+
+def _check_encoder_preflight(encoder: dict[str, Any]) -> None:
+    if encoder["status"] != "ok" or encoder["transport_status"] != "ok":
+        raise ProtocolError("encoder preflight is not healthy")
+    if encoder["no_magnet"] or encoder["over_speed"]:
+        raise ProtocolError("encoder preflight has an active sensor flag")
+    estimator = encoder.get("estimator")
+    if estimator is None:
+        return
+    if "estimator_ready" not in estimator.get("flags", []):
+        raise ProtocolError("mechanical estimator is not ready")
+    if estimator.get("faults"):
+        raise ProtocolError(
+            "mechanical estimator has faults: "
+            + ", ".join(estimator["faults"])
+        )
+
+
 def write_report(
     path: Path,
     bundle: dict[str, Any],
@@ -333,7 +384,8 @@ def write_report(
     measured_rpm = encoder.get("rpm")
     rms_error = analysis.get("combined_rms_error_milliamperes")
     max_voltage = analysis.get("maximum_absolute_voltage_permille")
-    faults = analysis.get("faults", bundle.get("faults", []))
+    faults = bundle.get("faults", analysis.get("faults", []))
+    estimator = bundle.get("estimator")
 
     def stat(label: str, value: str) -> str:
         return (
@@ -359,6 +411,12 @@ def write_report(
         stat(
             "Peak voltage effort",
             "unavailable" if max_voltage is None else f"{max_voltage / 10.0:.1f}%",
+        ),
+        stat(
+            "Estimator max interval",
+            "unavailable"
+            if estimator is None
+            else f"{estimator['maximum_sample_interval_us']} us",
         ),
         stat("Faults", "none" if not faults else ", ".join(faults)),
     ]
@@ -587,10 +645,7 @@ def main() -> int:
         initial_status = query_status(client)
         _preflight(initial_status, counts)
         encoder = query_encoder(client)
-        if encoder["status"] != "ok" or encoder["transport_status"] != "ok":
-            raise ProtocolError("encoder preflight is not healthy")
-        if encoder["no_magnet"] or encoder["over_speed"]:
-            raise ProtocolError("encoder preflight has an active sensor flag")
+        _check_encoder_preflight(encoder)
         original_counts = int(initial_status["test"]["amplitude_counts"])
         original_frequency_hz = float(initial_status["test"]["frequency_hz"])
         applied = _configure(client, counts, frequency_hz)
@@ -666,6 +721,13 @@ def main() -> int:
     }
     if any("fault_present" in sample.get("flags", []) for sample in samples):
         observed_faults.add("drive_supervisor_fault")
+    estimator = _estimator_summary(samples)
+    if estimator is not None:
+        if not estimator["ready_on_all_samples"]:
+            observed_faults.add("estimator_not_ready")
+        observed_faults.update(
+            f"estimator_{fault}" for fault in estimator["faults"]
+        )
     faults = sorted(observed_faults)
     bundle = {
         "schema": 1,
@@ -673,6 +735,7 @@ def main() -> int:
         "request": request,
         "analysis": analysis,
         "analysis_error": analysis_error,
+        "estimator": estimator,
         "faults": faults,
         "trace_sample_count": len(trace),
         "configuration_restored": not args.keep_config and restore_error is None,
@@ -695,6 +758,13 @@ def main() -> int:
         )
     elif analysis_error:
         print(f"Analysis note: {analysis_error}")
+    if estimator is not None:
+        print(
+            "Estimator: "
+            f"ready_all={estimator['ready_on_all_samples']}, "
+            f"max_interval={estimator['maximum_sample_interval_us']} us, "
+            f"faults={estimator['faults'] or 'none'}"
+        )
     if restore_error:
         print(f"warning: could not restore the prior inactive configuration: {restore_error}", file=sys.stderr)
     print(f"Report: {report_path.resolve()}")
