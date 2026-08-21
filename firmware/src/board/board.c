@@ -153,7 +153,7 @@ void board_bridge_force_low_zero(void)
     tim3_bridge_pwm_stop();
 }
 
-bool board_bridge_characterizer_init(uint32_t timer_clock_hz)
+bool board_bridge_pwm_init(uint32_t timer_clock_hz)
 {
     board_bridge_force_low_zero();
 
@@ -189,18 +189,6 @@ bool board_bridge_characterizer_init(uint32_t timer_clock_hz)
     }
 
     return true;
-}
-
-bool board_bridge_characterizer_apply(
-    bridge_characterizer_leg_t leg,
-    bool active)
-{
-    if (leg >= BRIDGE_CHARACTERIZER_LEG_COUNT)
-    {
-        return false;
-    }
-
-    return tim3_bridge_pwm_apply((uint32_t)leg, active);
 }
 
 void board_display_reset_assert(void)

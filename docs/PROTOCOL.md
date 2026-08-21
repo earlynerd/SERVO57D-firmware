@@ -422,7 +422,7 @@ the complete successful response payload is 64 bytes.
 | 8 | SSD1306-compatible I2C display |
 | 9 | Raw ADC acquisition, including timer-synchronous current capture |
 | 10 | Debounced passive-input monitor |
-| 11 | Legacy bridge-characterizer diagnostic UI capability |
+| 11 | Supervisor-authorized rotating-current diagnostic capability |
 | 12 | TIM3 bridge PWM and bounded current-loop operation |
 | 13 | Bounded production automatic alignment |
 | 14 | Versioned dual-slot persistent motor configuration |

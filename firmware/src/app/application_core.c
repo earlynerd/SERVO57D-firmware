@@ -124,27 +124,26 @@ bool application_core_init(application_core_t* application,
     return true;
 }
 
-application_core_status_t application_core_observe_encoder(
+application_core_status_t application_core_observe_rotor(
     application_core_t* application,
-    uint16_t raw_angle,
-    uint32_t timestamp_us)
+    const rotor_observation_t* observation)
 {
     servo_core_status_t status;
 
-    if ((application == NULL) || !application->initialized)
+    if ((application == NULL) || (observation == NULL) ||
+        !application->initialized)
     {
         return APPLICATION_CORE_STATUS_INVALID_ARGUMENT;
     }
 
-    status = servo_core_observe_encoder(&application->servo,
-                                        raw_angle,
-                                        timestamp_us);
+    status = servo_core_observe_rotor(&application->servo, observation);
     if (status != SERVO_CORE_STATUS_OK)
     {
         if ((status == SERVO_CORE_STATUS_FAULTED) &&
             application->motion_ready)
         {
-            (void)latch_application_fault(application, timestamp_us);
+            (void)latch_application_fault(
+                application, observation->timestamp_us);
         }
         return (status == SERVO_CORE_STATUS_FAULTED) ?
             APPLICATION_CORE_STATUS_FAULTED :
@@ -156,7 +155,7 @@ application_core_status_t application_core_observe_encoder(
         if (!motion_manager_init(
                 &application->motion,
                 &application->config.motion,
-                application->servo.angle_tracker.position_revolutions) ||
+                application->servo.feedback_position_revolutions) ||
             (servo_core_suspend(&application->servo) !=
              SERVO_CORE_STATUS_OK))
         {
@@ -185,7 +184,7 @@ motion_submit_status_t application_core_submit_motion(
         &application->motion,
         request,
         timestamp_us,
-        application->servo.angle_tracker.position_revolutions,
+        application->servo.feedback_position_revolutions,
         &action);
     if ((status == MOTION_SUBMIT_ACCEPTED) &&
         !apply_action(application, &action, timestamp_us))
@@ -219,7 +218,7 @@ bool application_core_update_step_direction(
             cumulative_steps,
             enabled,
             timestamp_us,
-            application->servo.angle_tracker.position_revolutions,
+            application->servo.feedback_position_revolutions,
             &step_output))
     {
         (void)latch_application_fault(application, timestamp_us);
@@ -252,7 +251,7 @@ bool application_core_update_step_direction(
             &application->motion,
             &request,
             timestamp_us,
-            application->servo.angle_tracker.position_revolutions,
+            application->servo.feedback_position_revolutions,
             &action);
     }
 
@@ -344,21 +343,18 @@ application_core_status_t application_core_step(
 
 bool application_core_recover(application_core_t* application,
                               bool safe_to_recover,
-                              uint16_t raw_angle,
-                              uint32_t timestamp_us)
+                              const rotor_observation_t* observation)
 {
     application_core_config_t config;
 
-    if ((application == NULL) || !application->initialized ||
-        !safe_to_recover)
+    if ((application == NULL) || (observation == NULL) ||
+        !application->initialized || !safe_to_recover)
     {
         return false;
     }
 
     config = application->config;
     return application_core_init(application, &config) &&
-           (application_core_observe_encoder(application,
-                                             raw_angle,
-                                             timestamp_us) ==
+           (application_core_observe_rotor(application, observation) ==
             APPLICATION_CORE_STATUS_OK);
 }

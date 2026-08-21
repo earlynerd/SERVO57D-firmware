@@ -28,7 +28,7 @@ typedef struct
 } ssd1306_panel_config_t;
 
 /* Bench-proven profile for the fitted 72-by-40 SSD1306-compatible panel. */
-extern const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D_CANDIDATE;
+extern const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D;
 
 bool ssd1306_config_is_valid(const ssd1306_panel_config_t* config);
 i2c_status_t ssd1306_initialize(const i2c_bus_t* bus,

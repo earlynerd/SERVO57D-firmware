@@ -1,27 +1,17 @@
 # Firmware Architecture
 
-Status: firmware 0.23.2 implements the reset-safe foundation, continuous
-encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
-transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
-20 kHz fixed-point A/B current
-loop. Low-zero sign-magnitude modulation, 80%-carrier sampling, raw overcurrent
-trips, and the carrier deadline guardian are bench-proven with an attached
-motor. An encoder-observed 757 mA, 20 Hz electrical run produced smooth motion
-at 23.7 RPM for five seconds without a current-loop, encoder, SPI, or reset fault
-on 0.18.2. Firmware 0.19.0 has since passed supervisor-authorized 303 mA / 5 Hz
-deadline release and 151.5 mA / 5 Hz explicit-STOP motor regressions without a
-fault, reset, or retained panic. Firmware 0.20.0 added the timestamped 1 kHz
-mechanical estimator and measured stepper geometry and passed its initial
-hardware regression. Firmware 0.21.0 adds transactional automatic alignment;
-two successful runs plus generic STOP are bench-proven, while Menu and
-readiness-loss injection remain open.
-The 0.22.0 build adds versioned, CRC-protected, dual-slot motor configuration
-storage and boot-time alignment restore and passes its power-cycle gate. The
-0.23.2 host/Arm candidate adds signed aligned q-current as the first production
-`RUN` motion interface and accepts caller-selected finite durations across the
-wrap-safe deadline range. Motion authority is acquired only from a newly
-accepted encoder sample, and the following sample is the first feedback interval
-checked by the active controller; its hardware gate remains open.
+Status: firmware 0.24.13 implements the reset-safe foundation, synchronous ADC
+acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
+automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
+fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
+deterministic 1 kHz encoder/rotor service; a 606 mA five-second aligned-q-current
+run completed with zero encoder, DMA, estimator, backend, control, reset, or
+panic faults. Firmware 0.24.14 removes the completed local phase-selector and
+direct fixed-duty PWM bring-up path while retaining the rotating-current
+operation as a supervisor-authorized RS-485 production diagnostic. Velocity and
+position control remain the next product layers. Firmware 0.24.15 makes
+`rotor_control_runtime` the sole owner of raw encoder interpretation and angle
+unwrapping; slower control receives only an immutable rotor observation.
 
 ## Design priorities
 
@@ -116,23 +106,35 @@ on the tested board. Calibration accuracy, analog bandwidth, switching-edge
 margin, and protection latency remain characterization work as the operating
 envelope expands.
 
-The portable control, application, and configuration-service modules live under
-`firmware/src/control/`, `firmware/src/app/`, and `firmware/src/services/`.
-They are compiled for both the
-host and the exact Arm target. The fixed-point phase loop, shared polar phase
-reference, angle tracker, alignment geometry, and aligned q-current controller
-are linked into `mks57d`; the outer application, trajectory, velocity/position,
-and d/q voltage-control path remain excluded. Their contracts use
-revolutions, seconds, amperes, volts, and radians explicitly. The outer servo
-core accepts timestamped raw
-encoder samples and emits a hard-clamped torque-current request; stale input,
-missed control deadlines, excessive following error, implausible encoder
-motion, and invalid arithmetic latch the output invalid. The current-control
+The product-owned portable modules live under `firmware/src/control/`,
+`firmware/src/app/`, and `firmware/src/services/` and are linked into `mks57d`.
+The outer application, trajectory, velocity/position, and d/q voltage-control
+modules form a separate `mks57d_motion_candidate` compile target and are not
+linked into the product image. Both paths are compiled for the exact Arm target,
+and the candidate is also covered by host tests. Their contracts use
+revolutions, seconds, amperes, volts, and radians explicitly.
+
+`rotor_control_runtime` alone consumes raw encoder samples and owns the
+angle-unwrapping/filter state. Its sequence-protected snapshot publishes a
+`rotor_observation_t` containing validity, timestamp, unwrapped position, and
+filtered velocity. The motion candidate may validate and cache that immutable
+observation but cannot reconstruct position from raw counts or maintain a
+second estimator. Its servo core emits a hard-clamped torque-current request;
+invalid/stale feedback, missed control deadlines, excessive following error,
+and invalid arithmetic latch the output invalid. The current-control
 core accepts stationary measured current plus d/q references and emits a
 bounded stationary voltage vector. Firmware 0.23 deliberately does not connect
 that unqualified voltage output to PWM: q-current is transformed into A/B
 current references and regulated by the proven board-specific backend. The
 outer loops will drive this torque interface first.
+
+`main.c` still uses one `product_command_context_t` as the foreground
+composition aggregate for the existing diagnostic, alignment, torque,
+configuration, and telemetry adapters. It contains pointers and bounded request
+mailboxes, but owns no estimator, bridge state, or control loop. The velocity
+slice must enter through a dedicated product motion service/context instead of
+adding outer-loop state to this aggregate; the existing command-service API
+already permits separate per-domain contexts when that slice is introduced.
 
 The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
 contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),
@@ -165,7 +167,8 @@ flowchart LR
     CMD["RS-485 or step/direction command"] --> AUTH["Drive supervisor, authority, lease, and completion"]
     AUTH --> MOTION["Trajectory, position, and velocity limits"]
     ENC["SPI magnetic encoder"] --> EST["Angle unwrap, velocity, and electrical angle"]
-    EST --> MOTION
+    EST --> OBS["Immutable rotor observation"]
+    OBS --> MOTION
     EST --> CURRENT
     MOTION --> IQ["Bounded Id/Iq references"]
     ADC["Timer-synchronous current samples"] --> ADAPT["Motor-specific current adapter"]

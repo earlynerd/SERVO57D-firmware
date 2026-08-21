@@ -19,8 +19,6 @@ add_executable(host_unit_tests
     ../firmware/src/drivers/adc_calibration.c
     ../firmware/src/drivers/adc_display.c
     ../firmware/src/drivers/adc_sample.c
-    ../firmware/src/drivers/bridge_characterizer.c
-    ../firmware/src/drivers/bridge_display.c
     ../firmware/src/drivers/dma_ring.c
     ../firmware/src/drivers/encoder_display.c
     ../firmware/src/drivers/input_display.c

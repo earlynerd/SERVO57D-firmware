@@ -1,30 +1,26 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.23.2 closes both winding-current loops at 20 kHz through the
-authoritative drive supervisor and adds a bounded automatic alignment service
-to the product's timestamped 1 kHz mechanical estimator and measured
-50-electrical-cycle alignment geometry. It also adds versioned, CRC-protected,
-dual-slot persistence for the accepted alignment and adds bounded signed
-encoder-aligned q-current as the first production `RUN` motion operation. Two
-successful 757.4 mA alignments and
-a generic-STOP abort are bench-proven on the tested motor with zero faults,
-reset, or retained panic. The
-0.19.0 supervisor path is bench-proven through a
-303 mA, 5 electrical Hz, two-second deadline-bounded run and a separate
-151.5 mA explicit-STOP run. Both released diagnostic authority, returned the
-bridge to `ZERO`, and preserved reset/panic health. Display, encoder, RS-485,
-ADC/DMA, all four bridge legs, and local/isolated input mappings are
-bench-proven on the tested board. Encoder-loss fault injection and local-button
-authority remain to be exercised. The 0.20.0 estimator schedule passed its
-initial idle and active hardware regression. Firmware 0.21.0 automatic alignment
-and generic STOP are bench-proven; Menu and readiness-loss injection remain to
-be exercised.
+image. Firmware 0.24.13 closes both winding-current loops at 20 kHz through the
+authoritative drive supervisor, acquires the encoder through a deterministic
+1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
+provides bounded signed encoder-aligned q-current as the first production `RUN`
+motion operation. The deterministic rotor path is bench-proven during a 606 mA,
+five-second aligned-torque run with zero encoder, DMA, estimator, backend,
+control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
+configuration power-cycle gates remain accepted. Firmware 0.24.14 is flashed
+for its hardware regression: it removes the completed local
+Next/Enter phase-selector and direct fixed-duty PWM bring-up path while retaining
+the RS-485 rotating-current diagnostic through the supervisor/current backend.
+Firmware 0.24.15 establishes a single product-owned rotor estimator and an
+immutable position/velocity observation boundary for the separately compiled,
+not-yet-linked motion candidate. Menu and induced readiness-loss shutdown remain
+hardware regression items.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
 restore, persistent clear, and no-restored-authority behavior pass on COM14.
-The 0.23.2 aligned-torque controller, protocol, and Debug/Release Arm builds pass
+The 0.23.2-and-later aligned-torque controller and protocol pass
 host validation. Its duration contract accepts explicit finite deadlines through
 the wrap-safe 32-bit half-range instead of imposing the initial one-second
 candidate ceiling. The shared backend and torque request path also admit the
@@ -57,7 +53,7 @@ expanded-current hardware gates remain pending.
   position of the first set fault bit. The earlier PA3 `vBus` polling path is
   not active in this image.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
-- Earlier characterization builds used Next to select A1/A2/B1/B2 and Enter to apply edge-aligned 20 kHz, 50% hardware PWM. Firmware 0.21.0 retains Next only as a product-diagnostic initial-phase selector and requires Enter to be released once, then held continuously, before it requests diagnostic authority from the drive supervisor. Raw release or Menu returns to `ZERO`. RS-485 can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second diagnostic run; timeout, Menu, transport failure, or STOP returns it to `ZERO`.
+- Earlier characterization builds used Next to select A1/A2/B1/B2 and Enter to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second run; timeout, raw Menu, transport failure, or STOP returns it to `ZERO`.
 - DMA completion runs fixed-point A/B PI controllers and stages low-zero sign-magnitude TIM3 preloads. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2. Raw overcurrent, invalid references or outputs, DMA/PWM failures, and two consecutive carrier updates without a new control output latch the common all-low fault path.
 - Firmware 0.18.2 uses `Kp=2`, retains `Ki=1/64` per 20 kHz step, and records the first 256 successful loop outputs for post-run tuning analysis. At 12 V, a 303 mA startup step has 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. A 606 mA / 15 Hz run tracked -17.78 RPM versus -18 RPM commanded. A 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 revolutions versus 2.00 commanded with no fault or reset and 252-permille peak voltage effort against the 700-permille ceiling.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
@@ -115,6 +111,7 @@ the [command protocol](../docs/PROTOCOL.md),
 the [ADC contract](../docs/ADC.md), the
 [watchdog policy](../docs/WATCHDOG.md), the [boot self-test](../docs/BOOT_SELF_TEST.md),
 and the [debugger diagnostic record](../docs/DIAGNOSTICS.md). The next control
-integration step after the aligned-torque hardware gate is the existing portable
-velocity layer, followed by position control; Menu and readiness-loss fault
-injection remain parallel hardware checks.
+integration step after the aligned-torque hardware gate is the existing motion
+candidate's velocity layer, fed only by the product rotor observation, followed
+by position control; Menu and readiness-loss fault injection remain parallel
+hardware checks.

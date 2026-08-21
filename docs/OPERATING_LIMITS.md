@@ -1,6 +1,6 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.23.2 separates the bench-validated envelope from the larger
+Status: firmware 0.24.15 separates the bench-validated envelope from the larger
 envelope firmware permits for deliberate evaluation. A validated point is
 evidence, not automatically a request ceiling.
 
@@ -19,7 +19,7 @@ evidence, not automatically a request ceiling.
 
 ## Current firmware inventory
 
-| Quantity | Firmware 0.23.2 value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.24.15 value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Aligned q-current request | ±495 counts, ±2.999 A nominal | Evaluation envelope matching the attached motor's reported 3 A rating | `aligned_torque_controller` | 757.4 mA is validated; evaluate 1.503 A and 2.25 A before 2.999 A |

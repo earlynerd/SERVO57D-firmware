@@ -34,6 +34,12 @@ cmake --preset firmware-debug
 cmake --build --preset firmware-debug
 ```
 
+Every firmware build also cross-compiles `mks57d_motion_candidate`, the outer
+application/trajectory/servo modules that are intentionally not linked into
+`mks57d.elf`. The explicit target is `motion-candidate-arm`; successful
+compilation is not evidence that the candidate owns bridge authority or is
+enabled in the product image.
+
 For the size-optimized configuration:
 
 ```powershell
@@ -84,8 +90,9 @@ Use a current-limited supply appropriate for the intended run. On the tested
 board the motor may remain connected while flashing; a new or reworked bridge
 backend should first be checked unloaded. The script requires a valid RDP L0
 option-byte state and does not release read protection or erase option bytes.
-After reset, bridge authority remains under the firmware's local or RS-485
-current-loop command path.
+After reset, bridge authority remains under the product supervisor. RS-485
+diagnostic and motion commands are the current operating interfaces; local
+Next/Enter inputs cannot energize the bridge.
 
 ## Host tests
 
@@ -137,8 +144,10 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.22.0 is the current bench-validated product build. Firmware 0.23.2
-is the current host/Arm-validated hardware candidate. It:
+Firmware 0.24.13 is the current bench-validated product build. Firmware 0.24.14
+is flashed for the bring-up-path-removal regression. Firmware 0.24.15 is the
+current host/Arm candidate and adds the single-estimator rotor-observation
+boundary without enabling the outer loop. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -149,7 +158,7 @@ is the current host/Arm-validated hardware candidate. It:
 7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
-10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and schedules bounded foreground MT6816 burst reads every 1 ms after a 20 ms power-up delay. Accepted samples receive microsecond timestamps and feed the shared mechanical estimator; native telemetry reports latest/maximum observed intervals.
+10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
 12. Parses native v1.7 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
@@ -159,8 +168,8 @@ is the current host/Arm-validated hardware candidate. It:
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
 14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
-16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. Holding Enter after the required release requests diagnostic authority for a bounded fixed-point A/B loop with a nominal 150 mA rotating reference; raw release or Menu stops the backend, releases authority, and returns to `ZERO`.
-17. Continues RS-485 foreground processing and the 1 kHz candidate encoder schedule while active so current state, rotor motion, estimator timing, and STOP remain observable throughout a run.
+16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. The retired local Next/Enter phase selector cannot request authority. RS-485 may request the bounded rotating-current diagnostic through the supervisor/current backend; deadline, STOP, transport failure, or raw Menu returns it to `ZERO`.
+17. Keeps RS-485, display, and configuration work in foreground while the timer/DMA/PendSV rotor service remains deterministic and observable during active operation.
 18. Loads a motor alignment only from a schema/range/CRC/commit-valid record
     whose geometry matches the running firmware. A successful alignment is
     saved automatically only after backend and authority release; no active
@@ -170,7 +179,7 @@ is the current host/Arm-validated hardware candidate. It:
     backend at zero demand from that sample, and updates signed A/B
     references from calibrated 1 kHz electrical phase under independent current,
     slew, velocity, acceleration, feedback-age, duration, and fault contracts.
-20. Publishes firmware `0.23.2`, authoritative drive state, reset cause,
+20. Publishes firmware `0.24.15`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -179,33 +188,16 @@ is the current host/Arm-validated hardware candidate. It:
 21. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
 22. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
-Firmware 0.21.0 retains the 0.19.0 supervisor-authorized local hold-to-run and
-duration-bounded RS-485 current diagnostics. The timer AF mapping, all four
-bridge legs, 20 kHz DMA-completion loop, low-zero modulation, feedback signs,
-active encoder polling, remote STOP, and motor rotation are bench-proven. The
-0.19.0 supervisor path completed a 303 mA, 5 electrical Hz, two-second
-deadline-bounded run and a separate 151.5 mA explicit-STOP run. Both released
-authority, returned the bridge to `ZERO`, restored the guarded configuration,
-and left reset/panic health clean. Encoder-loss fault injection and the local
-button path remain pending. The 0.20.0 1 kHz estimator schedule, sample jitter,
-stationary noise, and velocity output pass their initial idle and 757 mA / 20 Hz
-hardware regression. Two successful 757.4 mA automatic alignments and a
-generic-STOP abort pass with clean release and no fault/reset; Menu and
-estimator readiness-loss injection remain pending on hardware. Use
-the guarded wrapper for the same board/probe setup.
+Firmware 0.24.13 passed the deterministic rotor-service regression on COM14:
+more than 54,000 idle samples held 1000-1001 us intervals with zero transport
+errors, and a 606 mA aligned-q-current run completed 100,000 current-loop
+updates over five seconds with zero encoder, DMA, estimator, backend, control,
+reset, or panic faults. Earlier automatic-alignment and persistent-configuration
+power-cycle gates remain accepted.
 
-The 0.22.0 persistence build passes its first-save, unchanged-save,
-power-cycle, persistent-clear, and no-restored-authority hardware gate.
-Programming-tool preservation of the two reserved pages is not yet an update
-contract; validate runtime power cycling independently of reflashing. The
-validated Debug image uses 36,188 bytes of the 124 KiB application region and
-5,476 bytes of SRAM1; Release uses 32,148 bytes and the same SRAM1, with zero
-allocation in both configuration slots and SRAM2.
-
-The 0.23.2 candidate passes portable controller, byte-exact native protocol,
-Debug Arm, Release Arm, and host builds. Its signed multi-second deadline,
-direction, STOP, Menu, expanded-current, and encoder/readiness-loss hardware
-gate remains pending. Debug uses 39,876 bytes of the 124 KiB application region;
-Release uses 35,024 bytes, and
-both use 5,476 bytes of SRAM1 with zero allocation in the configuration slots
-and SRAM2.
+Firmware 0.24.15 passes native tests plus clean Debug and Release Arm builds.
+Debug uses 42,084 bytes of the 124 KiB application region and 6,420 bytes of
+SRAM1; Release uses 37,808 bytes and the same SRAM1, with no allocation in the
+configuration slots or SRAM2. Its hardware regression must confirm READY boot,
+that Next/Enter cannot energize the bridge, that the RS-485 diagnostic still
+starts/stops through the supervisor, and that raw Menu still stops it.

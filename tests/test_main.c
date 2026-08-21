@@ -15,8 +15,6 @@
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
-#include "mks57d/bridge_characterizer.h"
-#include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_store.h"
 #include "mks57d/current_controller.h"
@@ -126,12 +124,6 @@ typedef struct
 static servo_core_config_t test_servo_config(void)
 {
     const servo_core_config_t config = {
-        .angle_tracker = {
-            .counts_per_revolution = 16384u,
-            .maximum_sample_interval_us = 2000u,
-            .maximum_velocity_revolutions_per_second = 20.0f,
-            .velocity_filter_alpha = 0.25f,
-        },
         .motion_profile = {
             .maximum_velocity_revolutions_per_second = 2.0f,
             .maximum_acceleration_revolutions_per_second_squared = 4.0f,
@@ -145,8 +137,10 @@ static servo_core_config_t test_servo_config(void)
             .output_limit = 2.0f,
             .integrator_limit = 2.0f,
         },
-        .encoder_stale_timeout_us = 3000u,
+        .maximum_feedback_interval_us = 2000u,
+        .feedback_stale_timeout_us = 3000u,
         .maximum_control_interval_us = 2000u,
+        .maximum_feedback_velocity_revolutions_per_second = 20.0f,
         .position_gain_per_second = 8.0f,
         .maximum_following_error_revolutions = 0.5f,
         .maximum_current_amperes = 2.0f,
@@ -161,12 +155,6 @@ static application_core_config_t test_application_config(
 {
     const application_core_config_t config = {
         .servo = {
-            .angle_tracker = {
-                .counts_per_revolution = 16384u,
-                .maximum_sample_interval_us = 2000u,
-                .maximum_velocity_revolutions_per_second = 20.0f,
-                .velocity_filter_alpha = 0.25f,
-            },
             .motion_profile = {
                 .maximum_velocity_revolutions_per_second = 2.0f,
                 .maximum_acceleration_revolutions_per_second_squared = 4.0f,
@@ -180,8 +168,10 @@ static application_core_config_t test_application_config(
                 .output_limit = 2.0f,
                 .integrator_limit = 2.0f,
             },
-            .encoder_stale_timeout_us = 3000u,
+            .maximum_feedback_interval_us = 2000u,
+            .feedback_stale_timeout_us = 3000u,
             .maximum_control_interval_us = 2000u,
+            .maximum_feedback_velocity_revolutions_per_second = 20.0f,
             .position_gain_per_second = 8.0f,
             .maximum_following_error_revolutions = 0.5f,
             .maximum_current_amperes = 2.0f,
@@ -200,21 +190,38 @@ static application_core_config_t test_application_config(
     return config;
 }
 
-static uint16_t simulated_encoder_raw(float position_revolutions)
+static servo_core_status_t observe_servo(
+    servo_core_t* core,
+    float position_revolutions,
+    float velocity_revolutions_per_second,
+    uint32_t timestamp_us)
 {
-    float wrapped = fmodf(position_revolutions, 1.0f);
-    uint32_t raw;
+    const rotor_observation_t observation = {
+        .position_revolutions = position_revolutions,
+        .velocity_revolutions_per_second =
+            velocity_revolutions_per_second,
+        .timestamp_us = timestamp_us,
+        .valid = true,
+    };
 
-    if (wrapped < 0.0f)
-    {
-        wrapped += 1.0f;
-    }
-    raw = (uint32_t)((wrapped * 16384.0f) + 0.5f);
-    if (raw >= 16384u)
-    {
-        raw = 0u;
-    }
-    return (uint16_t)raw;
+    return servo_core_observe_rotor(core, &observation);
+}
+
+static application_core_status_t observe_application(
+    application_core_t* application,
+    float position_revolutions,
+    float velocity_revolutions_per_second,
+    uint32_t timestamp_us)
+{
+    const rotor_observation_t observation = {
+        .position_revolutions = position_revolutions,
+        .velocity_revolutions_per_second =
+            velocity_revolutions_per_second,
+        .timestamp_us = timestamp_us,
+        .valid = true,
+    };
+
+    return application_core_observe_rotor(application, &observation);
 }
 
 #define EXPECT_TRUE(expression)                                                     \
@@ -901,7 +908,7 @@ static void test_diagnostics_record_abi(void)
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_CURRENT_LOOP) != 0u);
     EXPECT_TRUE((capabilities &
-                 DIAGNOSTICS_CAPABILITY_BRIDGE_CHARACTERIZER) != 0u);
+                 DIAGNOSTICS_CAPABILITY_CURRENT_DIAGNOSTIC) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_PRODUCT_IMAGE) != 0u);
     EXPECT_TRUE((capabilities &
@@ -1285,10 +1292,10 @@ static void test_adc_zero_calibration_and_milliamp_conversion(void)
         &current_a_milliamperes));
 }
 
-static void test_servo57d_oled_candidate_profile_is_valid(void)
+static void test_servo57d_oled_profile_is_valid(void)
 {
     const ssd1306_panel_config_t* config =
-        &SSD1306_PANEL_SERVO57D_CANDIDATE;
+        &SSD1306_PANEL_SERVO57D;
 
     EXPECT_TRUE(ssd1306_config_is_valid(config));
     EXPECT_TRUE(config->address_7bit == 0x3Cu);
@@ -1532,128 +1539,6 @@ static void test_pulse_input_display_labels_three_raw_levels(void)
     EXPECT_TRUE(memcmp(all_low, invalid, sizeof(all_low)) != 0);
 }
 
-static void test_bridge_characterizer_requires_release_and_stops_raw(void)
-{
-    bridge_characterizer_t characterizer = {0};
-    uint32_t raw = USER_INPUT_MASK;
-    uint32_t debounced = USER_INPUT_MASK;
-
-    EXPECT_TRUE(!bridge_characterizer_init(NULL, raw, debounced));
-    EXPECT_TRUE(!bridge_characterizer_init(
-        &characterizer,
-        raw | (1u << 12),
-        debounced));
-    EXPECT_TRUE(bridge_characterizer_init(&characterizer,
-                                          raw,
-                                          debounced));
-    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A1);
-    EXPECT_TRUE(!characterizer.active);
-
-    raw &= ~((uint32_t)USER_INPUT_KEY_NEXT);
-    debounced &= ~((uint32_t)USER_INPUT_KEY_NEXT);
-    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
-                                             raw,
-                                             debounced));
-    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A2);
-    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
-                                              raw,
-                                              debounced));
-    EXPECT_TRUE(characterizer.selected_leg == BRIDGE_CHARACTERIZER_LEG_A2);
-
-    raw |= USER_INPUT_KEY_NEXT;
-    debounced |= USER_INPUT_KEY_NEXT;
-    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
-                                              raw,
-                                              debounced));
-    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
-    debounced &= ~((uint32_t)USER_INPUT_KEY_ENTER);
-    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
-                                             raw,
-                                             debounced));
-    EXPECT_TRUE(characterizer.active);
-
-    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
-                                              raw,
-                                              debounced));
-    EXPECT_TRUE(characterizer.active);
-
-    raw |= USER_INPUT_KEY_ENTER;
-    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
-                                             raw,
-                                             debounced));
-    EXPECT_TRUE(!characterizer.active);
-
-    bridge_characterizer_stop(&characterizer);
-    EXPECT_TRUE(!characterizer.active);
-}
-
-static void test_bridge_characterizer_does_not_start_held_at_boot(void)
-{
-    bridge_characterizer_t characterizer = {0};
-    uint32_t raw = USER_INPUT_MASK & ~((uint32_t)USER_INPUT_KEY_ENTER);
-    uint32_t debounced = raw;
-
-    EXPECT_TRUE(bridge_characterizer_init(&characterizer,
-                                          raw,
-                                          debounced));
-    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
-                                              raw,
-                                              debounced));
-    EXPECT_TRUE(!characterizer.active);
-
-    raw |= USER_INPUT_KEY_ENTER;
-    debounced |= USER_INPUT_KEY_ENTER;
-    EXPECT_TRUE(!bridge_characterizer_update(&characterizer,
-                                              raw,
-                                              debounced));
-    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
-    debounced &= ~((uint32_t)USER_INPUT_KEY_ENTER);
-    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
-                                             raw,
-                                             debounced));
-    EXPECT_TRUE(characterizer.active);
-
-    raw &= ~((uint32_t)USER_INPUT_KEY_MENU);
-    EXPECT_TRUE(bridge_characterizer_update(&characterizer,
-                                             raw,
-                                             debounced));
-    EXPECT_TRUE(!characterizer.active);
-}
-
-static void test_bridge_display_labels_leg_and_zero_run_state(void)
-{
-    uint8_t a1_zero[BRIDGE_DISPLAY_FRAME_BYTES];
-    uint8_t a1_run[BRIDGE_DISPLAY_FRAME_BYTES];
-    uint8_t b2_zero[BRIDGE_DISPLAY_FRAME_BYTES];
-
-    EXPECT_TRUE(!bridge_display_render(NULL,
-                                       sizeof(a1_zero),
-                                       BRIDGE_CHARACTERIZER_LEG_A1,
-                                       false));
-    EXPECT_TRUE(!bridge_display_render(a1_zero,
-                                       sizeof(a1_zero) - 1u,
-                                       BRIDGE_CHARACTERIZER_LEG_A1,
-                                       false));
-    EXPECT_TRUE(!bridge_display_render(a1_zero,
-                                       sizeof(a1_zero),
-                                       BRIDGE_CHARACTERIZER_LEG_COUNT,
-                                       false));
-    EXPECT_TRUE(bridge_display_render(a1_zero,
-                                      sizeof(a1_zero),
-                                      BRIDGE_CHARACTERIZER_LEG_A1,
-                                      false));
-    EXPECT_TRUE(bridge_display_render(a1_run,
-                                      sizeof(a1_run),
-                                      BRIDGE_CHARACTERIZER_LEG_A1,
-                                      true));
-    EXPECT_TRUE(bridge_display_render(b2_zero,
-                                      sizeof(b2_zero),
-                                      BRIDGE_CHARACTERIZER_LEG_B2,
-                                      false));
-    EXPECT_TRUE(memcmp(a1_zero, a1_run, sizeof(a1_zero)) != 0);
-    EXPECT_TRUE(memcmp(a1_zero, b2_zero, sizeof(a1_zero)) != 0);
-}
-
 static void test_ssd1306_init_uses_one_bounded_command_transaction(void)
 {
     mock_i2c_t mock = {0};
@@ -1664,7 +1549,7 @@ static void test_ssd1306_init_uses_one_bounded_command_transaction(void)
 
     EXPECT_TRUE(ssd1306_initialize(
                     &bus,
-                    &SSD1306_PANEL_SERVO57D_CANDIDATE) == I2C_STATUS_OK);
+                    &SSD1306_PANEL_SERVO57D) == I2C_STATUS_OK);
     EXPECT_TRUE(mock.call_count == 1u);
     EXPECT_TRUE(mock.addresses[0] == 0x3Cu);
     EXPECT_TRUE(mock.lengths[0] <= MOCK_I2C_MAX_BYTES);
@@ -1690,7 +1575,7 @@ static void test_ssd1306_frame_uses_configured_visible_window(void)
 
     EXPECT_TRUE(ssd1306_write_frame(
                     &bus,
-                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    &SSD1306_PANEL_SERVO57D,
                     pixels,
                     sizeof(pixels)) == I2C_STATUS_OK);
     EXPECT_TRUE(mock.call_count == 13u);
@@ -1717,7 +1602,7 @@ static void test_ssd1306_partial_pages_use_requested_window(void)
 
     EXPECT_TRUE(ssd1306_write_pages(
                     &bus,
-                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    &SSD1306_PANEL_SERVO57D,
                     ENCODER_DISPLAY_START_PAGE,
                     ENCODER_DISPLAY_PAGE_COUNT,
                     pixels,
@@ -1730,7 +1615,7 @@ static void test_ssd1306_partial_pages_use_requested_window(void)
     EXPECT_TRUE(mock.lengths[5] == 21u);
     EXPECT_TRUE(ssd1306_write_pages(
                     &bus,
-                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    &SSD1306_PANEL_SERVO57D,
                     4u,
                     2u,
                     pixels,
@@ -1748,7 +1633,7 @@ static void test_ssd1306_stops_after_transport_failure(void)
 
     EXPECT_TRUE(ssd1306_write_frame(
                     &bus,
-                    &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                    &SSD1306_PANEL_SERVO57D,
                     pixels,
                     sizeof(pixels)) == I2C_STATUS_DATA_NACK);
     EXPECT_TRUE(mock.call_count == 2u);
@@ -3390,14 +3275,14 @@ static void test_pi_controller_prevents_integrator_windup(void)
     EXPECT_TRUE(controller.integrator < 0.0f);
 }
 
-static void test_servo_core_latches_stale_encoder_feedback(void)
+static void test_servo_core_latches_stale_rotor_feedback(void)
 {
     const servo_core_config_t config = test_servo_config();
     servo_core_t core;
     servo_core_output_t output;
 
     EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, 0u) ==
+    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, 0u) ==
                 SERVO_CORE_STATUS_OK);
     EXPECT_TRUE(servo_core_step(&core, 1000u, &output) ==
                 SERVO_CORE_STATUS_OK);
@@ -3407,7 +3292,28 @@ static void test_servo_core_latches_stale_encoder_feedback(void)
                 SERVO_CORE_STATUS_FAULTED);
     EXPECT_TRUE(!output.valid);
     EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
-    EXPECT_TRUE((output.fault_flags & SERVO_FAULT_STALE_ENCODER) != 0u);
+    EXPECT_TRUE((output.fault_flags & SERVO_FAULT_STALE_FEEDBACK) != 0u);
+}
+
+static void test_servo_core_rejects_invalid_rotor_observations(void)
+{
+    const servo_core_config_t config = test_servo_config();
+    const rotor_observation_t duplicate_timestamp = {
+        .position_revolutions = 0.1f,
+        .velocity_revolutions_per_second = 1.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    servo_core_t core;
+
+    EXPECT_TRUE(servo_core_init(&core, &config));
+    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, 0u) ==
+                SERVO_CORE_STATUS_OK);
+    EXPECT_TRUE(servo_core_observe_rotor(&core, &duplicate_timestamp) ==
+                SERVO_CORE_STATUS_FAULTED);
+    EXPECT_TRUE((core.fault_flags & SERVO_FAULT_INVALID_FEEDBACK) != 0u);
+    EXPECT_TRUE(core.feedback_position_revolutions == 0.0f);
+    EXPECT_TRUE(core.last_feedback_timestamp_us == 0u);
 }
 
 static void test_servo_core_latches_following_error(void)
@@ -3420,7 +3326,7 @@ static void test_servo_core_latches_following_error(void)
 
     config.maximum_following_error_revolutions = 0.005f;
     EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
                 SERVO_CORE_STATUS_OK);
     EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
                 SERVO_CORE_STATUS_OK);
@@ -3430,7 +3336,7 @@ static void test_servo_core_latches_following_error(void)
          ++iteration)
     {
         timestamp_us += 1000u;
-        EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+        EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
                     SERVO_CORE_STATUS_OK);
         (void)servo_core_step(&core, timestamp_us, &output);
     }
@@ -3451,7 +3357,7 @@ static void test_servo_core_closes_position_loop_against_simple_plant(void)
     unsigned int iteration;
 
     EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
                 SERVO_CORE_STATUS_OK);
     EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
                 SERVO_CORE_STATUS_OK);
@@ -3461,10 +3367,10 @@ static void test_servo_core_closes_position_loop_against_simple_plant(void)
         float acceleration;
 
         timestamp_us += 1000u;
-        EXPECT_TRUE(servo_core_observe_encoder(
-                        &core,
-                        simulated_encoder_raw(plant_position),
-                        timestamp_us) == SERVO_CORE_STATUS_OK);
+        EXPECT_TRUE(observe_servo(&core,
+                                  plant_position,
+                                  plant_velocity,
+                                  timestamp_us) == SERVO_CORE_STATUS_OK);
         EXPECT_TRUE(servo_core_step(&core, timestamp_us, &output) ==
                     SERVO_CORE_STATUS_OK);
         EXPECT_TRUE(output.valid);
@@ -4106,7 +4012,7 @@ static void test_motion_manager_reports_simulated_move_completion(void)
     unsigned int iteration;
 
     EXPECT_TRUE(servo_core_init(&core, &servo_config));
-    EXPECT_TRUE(servo_core_observe_encoder(&core, 0u, timestamp_us) ==
+    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
                 SERVO_CORE_STATUS_OK);
     EXPECT_TRUE(motion_manager_init(&manager, &manager_config, 0.0f));
     EXPECT_TRUE(motion_manager_submit(&manager,
@@ -4134,10 +4040,10 @@ static void test_motion_manager_reports_simulated_move_completion(void)
         float acceleration;
 
         timestamp_us += 1000u;
-        EXPECT_TRUE(servo_core_observe_encoder(
-                        &core,
-                        simulated_encoder_raw(plant_position),
-                        timestamp_us) == SERVO_CORE_STATUS_OK);
+        EXPECT_TRUE(observe_servo(&core,
+                                  plant_position,
+                                  plant_velocity,
+                                  timestamp_us) == SERVO_CORE_STATUS_OK);
         EXPECT_TRUE(servo_core_step(&core,
                                     timestamp_us,
                                     &servo_output) ==
@@ -4188,9 +4094,10 @@ static void test_application_core_executes_remote_move(void)
     unsigned int iteration;
 
     EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(application_core_observe_encoder(&application,
-                                                  0u,
-                                                  timestamp_us) ==
+    EXPECT_TRUE(observe_application(&application,
+                                    0.0f,
+                                    0.0f,
+                                    timestamp_us) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_step(&application,
                                       timestamp_us,
@@ -4216,10 +4123,11 @@ static void test_application_core_executes_remote_move(void)
         float acceleration;
 
         timestamp_us += 1000u;
-        EXPECT_TRUE(application_core_observe_encoder(
-                        &application,
-                        simulated_encoder_raw(plant_position),
-                        timestamp_us) == APPLICATION_CORE_STATUS_OK);
+        EXPECT_TRUE(observe_application(&application,
+                                        plant_position,
+                                        plant_velocity,
+                                        timestamp_us) ==
+                    APPLICATION_CORE_STATUS_OK);
         EXPECT_TRUE(application_core_step(&application,
                                           timestamp_us,
                                           &output) ==
@@ -4259,9 +4167,10 @@ static void test_application_core_lease_stops_and_disables_plant(void)
     unsigned int iteration;
 
     EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(application_core_observe_encoder(&application,
-                                                  0u,
-                                                  timestamp_us) ==
+    EXPECT_TRUE(observe_application(&application,
+                                    0.0f,
+                                    0.0f,
+                                    timestamp_us) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_submit_motion(&application,
                                                 &request,
@@ -4280,10 +4189,11 @@ static void test_application_core_lease_stops_and_disables_plant(void)
         float acceleration;
 
         timestamp_us += 1000u;
-        EXPECT_TRUE(application_core_observe_encoder(
-                        &application,
-                        simulated_encoder_raw(plant_position),
-                        timestamp_us) == APPLICATION_CORE_STATUS_OK);
+        EXPECT_TRUE(observe_application(&application,
+                                        plant_position,
+                                        plant_velocity,
+                                        timestamp_us) ==
+                    APPLICATION_CORE_STATUS_OK);
         EXPECT_TRUE(application_core_step(&application,
                                           timestamp_us,
                                           &output) ==
@@ -4324,7 +4234,7 @@ static void test_application_core_maps_step_direction_stream(void)
     motion_submit_status_t submit_status;
 
     EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_submit_motion(&application,
                                                 &remote_enable,
@@ -4335,7 +4245,7 @@ static void test_application_core_maps_step_direction_stream(void)
                                                        false,
                                                        0u,
                                                        &submit_status));
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 1000u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 1000u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_update_step_direction(&application,
                                                        0,
@@ -4343,7 +4253,7 @@ static void test_application_core_maps_step_direction_stream(void)
                                                        1000u,
                                                        &submit_status));
     EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 2000u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 2000u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_update_step_direction(&application,
                                                        160,
@@ -4359,7 +4269,7 @@ static void test_application_core_maps_step_direction_stream(void)
     EXPECT_TRUE(fabsf(output.motion.target_position_revolutions - 0.05f) <
                 0.0001f);
 
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 3000u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 3000u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_update_step_direction(&application,
                                                        160,
@@ -4388,28 +4298,34 @@ static void test_application_core_fault_requires_safe_recovery(void)
     application_core_output_t output;
 
     EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_submit_motion(&application,
                                                 &enable,
                                                 0u) ==
                 MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(application_core_observe_encoder(&application,
-                                                  20000u,
-                                                  1000u) ==
+    EXPECT_TRUE(observe_application(&application,
+                                    0.0f,
+                                    21.0f,
+                                    1000u) ==
                 APPLICATION_CORE_STATUS_FAULTED);
     EXPECT_TRUE(application_core_step(&application, 1000u, &output) ==
                 APPLICATION_CORE_STATUS_FAULTED);
     EXPECT_TRUE(!output.control_enabled);
     EXPECT_TRUE(output.motion.state == MOTION_STATE_FAULT);
-    EXPECT_TRUE(!application_core_recover(&application,
-                                          false,
-                                          0u,
-                                          2000u));
-    EXPECT_TRUE(application_core_recover(&application,
-                                         true,
-                                         0u,
-                                         2000u));
+    {
+        const rotor_observation_t recovery_observation = {
+            .position_revolutions = 0.0f,
+            .velocity_revolutions_per_second = 0.0f,
+            .timestamp_us = 2000u,
+            .valid = true,
+        };
+
+        EXPECT_TRUE(!application_core_recover(
+            &application, false, &recovery_observation));
+        EXPECT_TRUE(application_core_recover(
+            &application, true, &recovery_observation));
+    }
     EXPECT_TRUE(application_core_step(&application, 2000u, &output) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
@@ -4425,7 +4341,7 @@ static void test_application_core_invalid_step_stream_faults_immediately(void)
     motion_submit_status_t submit_status;
 
     EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 0u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(application_core_update_step_direction(&application,
                                                        0,
@@ -4434,7 +4350,7 @@ static void test_application_core_invalid_step_stream_faults_immediately(void)
                                                        &submit_status));
     EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
     EXPECT_TRUE(application.control_enabled);
-    EXPECT_TRUE(application_core_observe_encoder(&application, 0u, 1000u) ==
+    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 1000u) ==
                 APPLICATION_CORE_STATUS_OK);
     EXPECT_TRUE(!application_core_update_step_direction(&application,
                                                         1000,
@@ -4910,16 +4826,13 @@ int main(void)
     test_adc_sample_rejects_values_outside_12_bits();
     test_adc_calibration_uses_measured_front_end_scaling();
     test_adc_zero_calibration_and_milliamp_conversion();
-    test_servo57d_oled_candidate_profile_is_valid();
+    test_servo57d_oled_profile_is_valid();
     test_adc_display_labels_channels_and_rejects_invalid_values();
     test_adc_display_renders_both_signed_milliamp_values();
     test_encoder_display_renders_position_and_invalid_state();
     test_user_inputs_debounce_each_active_low_signal_independently();
     test_input_display_labels_five_raw_levels();
     test_pulse_input_display_labels_three_raw_levels();
-    test_bridge_characterizer_requires_release_and_stops_raw();
-    test_bridge_characterizer_does_not_start_held_at_boot();
-    test_bridge_display_labels_leg_and_zero_run_state();
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();
     test_ssd1306_partial_pages_use_requested_window();
@@ -4949,7 +4862,8 @@ int main(void)
     test_motion_profile_respects_velocity_and_acceleration_limits();
     test_motion_profile_controlled_stop_decelerates_to_rest();
     test_pi_controller_prevents_integrator_windup();
-    test_servo_core_latches_stale_encoder_feedback();
+    test_servo_core_latches_stale_rotor_feedback();
+    test_servo_core_rejects_invalid_rotor_observations();
     test_servo_core_latches_following_error();
     test_servo_core_closes_position_loop_against_simple_plant();
     test_park_transform_round_trip();

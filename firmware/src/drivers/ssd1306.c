@@ -14,7 +14,7 @@ enum
     SSD1306_DATA_CHUNK_BYTES = 31u
 };
 
-const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D_CANDIDATE = {
+const ssd1306_panel_config_t SSD1306_PANEL_SERVO57D = {
     .address_7bit = 0x3Cu,
     .width = 72u,
     .height = 40u,

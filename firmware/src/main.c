@@ -13,7 +13,6 @@
 #include "mks57d/board.h"
 #include "mks57d/board_inputs.h"
 #include "mks57d/boot_self_test.h"
-#include "mks57d/bridge_characterizer.h"
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_flash.h"
 #include "mks57d/configuration_store.h"
@@ -74,10 +73,18 @@ enum
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
     CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = INT32_MAX,
+    CURRENT_TEST_INITIAL_LEG_A1 = 0u,
+    CURRENT_TEST_INITIAL_LEG_A2 = 1u,
+    CURRENT_TEST_INITIAL_LEG_B1 = 2u,
+    CURRENT_TEST_INITIAL_LEG_B2 = 3u,
+    CURRENT_TEST_INITIAL_LEG_COUNT = 4u,
     ALIGNMENT_MINIMUM_CURRENT_COUNTS = 50u,
     ENCODER_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0
 };
 
+/* Foreground command-adapter wiring and request mailboxes. This aggregate does
+ * not own rotor estimation, bridge state, or a control loop; new motion state
+ * belongs in a product motion service rather than growing this context. */
 typedef struct
 {
     app_supervisor_t* supervisor;
@@ -99,7 +106,6 @@ typedef struct
     aligned_torque_controller_t* aligned_torque_controller;
     rotor_control_runtime_t* rotor_control_runtime;
     configuration_store_t* configuration_store;
-    bridge_characterizer_t* bridge_characterizer;
     uint32_t* raw_input_levels;
     uint32_t* input_levels;
     const phase_current_loop_config_t* current_loop_config;
@@ -119,7 +125,7 @@ typedef struct
     uint32_t torque_duration_millis;
     bool torque_start_requested;
     bool torque_stop_requested;
-} commissioning_command_context_t;
+} product_command_context_t;
 
 static bool encoder_control_ready(
     const diagnostics_encoder_t* encoder_diagnostics,
@@ -152,18 +158,17 @@ static int32_t float_to_q16_16(float value)
     return (int32_t)(value * 65536.0f);
 }
 
-static uint32_t current_test_initial_phase(
-    bridge_characterizer_leg_t selected_leg)
+static uint32_t current_test_initial_phase(uint8_t selected_leg)
 {
     switch (selected_leg)
     {
-        case BRIDGE_CHARACTERIZER_LEG_A1:
+        case CURRENT_TEST_INITIAL_LEG_A1:
             return 0x80000000u;
-        case BRIDGE_CHARACTERIZER_LEG_B1:
-            return 0x40000000u;
-        case BRIDGE_CHARACTERIZER_LEG_A2:
+        case CURRENT_TEST_INITIAL_LEG_A2:
             return 0x00000000u;
-        case BRIDGE_CHARACTERIZER_LEG_B2:
+        case CURRENT_TEST_INITIAL_LEG_B1:
+            return 0x40000000u;
+        case CURRENT_TEST_INITIAL_LEG_B2:
             return 0xC0000000u;
         default:
             return 0u;
@@ -182,7 +187,7 @@ static command_status_t commissioning_get_status(
     void* context,
     command_commissioning_status_t* status)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     current_loop_backend_snapshot_t loop = {0};
     uint32_t now;
 
@@ -247,8 +252,7 @@ static command_status_t commissioning_get_status(
     status->debounced_input_levels =
         (uint8_t)*commissioning->input_levels;
     status->adc_status = (uint8_t)*commissioning->adc_status;
-    status->selected_leg =
-        (uint8_t)commissioning->bridge_characterizer->selected_leg;
+    status->selected_leg = commissioning->remote_start_leg;
     status->fault_flags = loop.fault_flags;
     status->sample_count = loop.sample_count;
     status->current_a_raw = commissioning->adc_snapshot->current_a_raw;
@@ -311,7 +315,7 @@ static command_status_t commissioning_configure(
     const command_current_test_config_t* requested,
     command_current_test_config_t* applied)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
 
     if ((commissioning == NULL) || (requested == NULL) ||
         (applied == NULL))
@@ -329,7 +333,6 @@ static command_status_t commissioning_configure(
         return COMMAND_STATUS_INVALID_PAYLOAD;
     }
     if (app_supervisor_bridge_authorized(commissioning->supervisor) ||
-        commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
         commissioning->alignment_start_requested ||
         commissioning->torque_start_requested ||
@@ -352,14 +355,14 @@ static command_status_t commissioning_start(
     uint8_t selected_leg,
     uint32_t duration_millis)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     current_loop_backend_snapshot_t loop = {0};
 
     if (commissioning == NULL)
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
-    if ((selected_leg >= (uint8_t)BRIDGE_CHARACTERIZER_LEG_COUNT) ||
+    if ((selected_leg >= CURRENT_TEST_INITIAL_LEG_COUNT) ||
         (duration_millis < CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS) ||
         (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
     {
@@ -372,7 +375,6 @@ static command_status_t commissioning_start(
         (commissioning->supervisor->authority != APP_AUTHORITY_NONE) ||
         !*commissioning->bridge_ready ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
-        commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
         commissioning->alignment_start_requested ||
         commissioning->torque_start_requested ||
@@ -395,7 +397,7 @@ static command_status_t commissioning_start(
 
 static command_status_t commissioning_stop(void* context)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
 
     if (commissioning == NULL)
     {
@@ -415,7 +417,7 @@ static command_status_t alignment_start(
     void* context,
     uint16_t alignment_current_counts)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     current_loop_backend_snapshot_t loop = {0};
 
     if ((commissioning == NULL) ||
@@ -435,7 +437,6 @@ static command_status_t alignment_start(
         (commissioning->supervisor->authority != APP_AUTHORITY_NONE) ||
         !*commissioning->bridge_ready ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
-        commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
         commissioning->alignment_start_requested ||
         commissioning->torque_start_requested ||
@@ -459,7 +460,7 @@ static command_status_t alignment_get_status(
     void* context,
     command_alignment_status_t* status)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     alignment_controller_status_t controller_status;
     motor_alignment_status_t alignment_status;
     current_loop_backend_snapshot_t loop = {0};
@@ -575,7 +576,7 @@ static command_status_t aligned_torque_start(
     int16_t q_current_counts,
     uint32_t duration_millis)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     motor_alignment_status_t alignment_status;
     current_loop_backend_snapshot_t loop = {0};
     int32_t q_current_magnitude = q_current_counts;
@@ -589,7 +590,6 @@ static command_status_t aligned_torque_start(
         (commissioning->encoder_diagnostics == NULL) ||
         (commissioning->angle_tracker == NULL) ||
         (commissioning->estimator_fault_flags == NULL) ||
-        (commissioning->bridge_characterizer == NULL) ||
         (commissioning->raw_input_levels == NULL))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
@@ -621,7 +621,6 @@ static command_status_t aligned_torque_start(
             commissioning->angle_tracker,
             *commissioning->estimator_fault_flags) ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
-        commissioning->bridge_characterizer->active ||
         commissioning->remote_start_requested ||
         commissioning->alignment_start_requested ||
         commissioning->torque_start_requested ||
@@ -646,7 +645,7 @@ static command_status_t aligned_torque_get_status(
     void* context,
     command_aligned_torque_status_t* status)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     aligned_torque_status_t controller_status;
     motor_alignment_status_t alignment_status;
     current_loop_backend_snapshot_t loop = {0};
@@ -761,7 +760,7 @@ static bool build_product_configuration(
 }
 
 static bool configuration_write_allowed(
-    const commissioning_command_context_t* commissioning)
+    const product_command_context_t* commissioning)
 {
     current_loop_backend_snapshot_t loop = {0};
 
@@ -771,7 +770,6 @@ static bool configuration_write_allowed(
         (commissioning->alignment_controller == NULL) ||
         (commissioning->aligned_torque_controller == NULL) ||
         (commissioning->rotor_control_runtime == NULL) ||
-        (commissioning->bridge_characterizer == NULL) ||
         (commissioning->supervisor == NULL))
     {
         return false;
@@ -782,7 +780,6 @@ static bool configuration_write_allowed(
            (commissioning->supervisor->authority == APP_AUTHORITY_NONE) &&
            !app_supervisor_bridge_authorized(commissioning->supervisor) &&
            !loop.active && (loop.fault_flags == 0u) &&
-           !commissioning->bridge_characterizer->active &&
            !alignment_controller_is_active(
                 commissioning->alignment_controller) &&
            !aligned_torque_controller_is_active(
@@ -799,7 +796,7 @@ static command_status_t configuration_get_status(
     void* context,
     command_configuration_status_t* status)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     product_configuration_t active;
     product_configuration_t stored;
     const configuration_store_t* store;
@@ -881,7 +878,7 @@ static command_status_t configuration_get_status(
 
 static command_status_t configuration_save_active(void* context)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     product_configuration_t configuration;
 
     if ((commissioning == NULL) ||
@@ -905,7 +902,7 @@ static command_status_t configuration_save_active(void* context)
 
 static command_status_t configuration_clear_calibration(void* context)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     product_configuration_t configuration;
 
     if ((commissioning == NULL) ||
@@ -956,7 +953,7 @@ static command_status_t commissioning_get_encoder_status(
     void* context,
     command_encoder_status_t* status)
 {
-    commissioning_command_context_t* commissioning = context;
+    product_command_context_t* commissioning = context;
     const diagnostics_encoder_t* encoder;
     const angle_tracker_t* angle_tracker;
     motor_alignment_status_t alignment_status;
@@ -1075,7 +1072,7 @@ static void wait_milliseconds(uint32_t duration)
     }
 }
 
-static bool display_bringup_attempt(i2c_bus_t* bus)
+static bool display_initialize(i2c_bus_t* bus)
 {
     enum
     {
@@ -1104,14 +1101,14 @@ static bool display_bringup_attempt(i2c_bus_t* bus)
     memset(s_display_frame, 0, sizeof(s_display_frame));
     if (ssd1306_initialize(
             bus,
-            &SSD1306_PANEL_SERVO57D_CANDIDATE) != I2C_STATUS_OK)
+            &SSD1306_PANEL_SERVO57D) != I2C_STATUS_OK)
     {
         return false;
     }
 
     return ssd1306_write_frame(
                bus,
-               &SSD1306_PANEL_SERVO57D_CANDIDATE,
+               &SSD1306_PANEL_SERVO57D,
                s_display_frame,
                sizeof(s_display_frame)) == I2C_STATUS_OK;
 }
@@ -1412,11 +1409,10 @@ int main(void)
     uint32_t input_levels = USER_INPUT_MASK;
     uint32_t raw_input_levels = USER_INPUT_MASK;
     user_inputs_debouncer_t input_debouncer = {0};
-    bridge_characterizer_t bridge_characterizer = {0};
     uint32_t uptime_millis = 0u;
     watchdog_supervisor_t watchdog;
     watchdog_status_t watchdog_status = WATCHDOG_STATUS_NOT_STARTED;
-    commissioning_command_context_t commissioning_context = {
+    product_command_context_t commissioning_context = {
         .supervisor = &drive_supervisor,
         .adc_ready = &adc_ready,
         .adc_snapshot_valid = &adc_snapshot_valid,
@@ -1438,7 +1434,6 @@ int main(void)
         .aligned_torque_controller = &aligned_torque_controller,
         .rotor_control_runtime = &rotor_control_runtime,
         .configuration_store = &configuration_store,
-        .bridge_characterizer = &bridge_characterizer,
         .raw_input_levels = &raw_input_levels,
         .input_levels = &input_levels,
         .current_loop_config = &current_loop_config,
@@ -1613,7 +1608,7 @@ int main(void)
                         (uint32_t)watchdog_status,
                         &self_test);
 
-    display_ready = display_bringup_attempt(&display_bus);
+    display_ready = display_initialize(&display_bus);
     adc_status = adc1_init_passive(SystemCoreClock);
     adc_ready = adc_status == ADC1_STATUS_OK;
     if (!adc_zero_calibrator_init(&adc_zero_calibrator,
@@ -1630,12 +1625,9 @@ int main(void)
             raw_input_levels);
         input_levels = user_inputs_debounced_levels(&input_debouncer);
     }
-    if (!inputs_ready ||
-        !bridge_characterizer_init(&bridge_characterizer,
-                                   raw_input_levels,
-                                   input_levels))
+    if (!inputs_ready)
     {
-        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+        platform_panic(PANIC_DRIVE_CONTROL);
     }
     if (adc_ready)
     {
@@ -1645,12 +1637,12 @@ int main(void)
     if (adc_ready &&
         !tim2_current_trigger_init(platform_apb1_timer_clock_hz()))
     {
-        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+        platform_panic(PANIC_DRIVE_CONTROL);
     }
-    if (!board_bridge_characterizer_init(
+    if (!board_bridge_pwm_init(
             platform_apb1_timer_clock_hz()))
     {
-        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+        platform_panic(PANIC_DRIVE_CONTROL);
     }
     /* Current feedback is proven before bridge authority is restored. */
     bridge_ready = false;
@@ -1762,8 +1754,6 @@ int main(void)
         const uint32_t now = timebase_millis();
         const uint32_t rotor_events =
             rotor_control_runtime_take_events(&rotor_control_runtime);
-        bool bridge_was_active;
-
         if ((now != last_rotor_snapshot_millis) ||
             (rotor_events != ROTOR_CONTROL_EVENT_NONE))
         {
@@ -1805,7 +1795,6 @@ int main(void)
 
         if ((rotor_events & ROTOR_CONTROL_EVENT_FAULT) != 0u)
         {
-            bridge_characterizer_stop(&bridge_characterizer);
             commissioning_context.remote_authority_active = false;
             commissioning_context.remote_start_requested = false;
             commissioning_context.remote_stop_requested = false;
@@ -1988,59 +1977,30 @@ int main(void)
             diagnostics_due = true;
         }
 
-        bridge_was_active = bridge_characterizer.active;
-        if (bridge_ready)
+        if (commissioning_context.remote_authority_active &&
+            (((raw_input_levels & USER_INPUT_KEY_MENU) == 0u) ||
+             ((int32_t)(now - commissioning_context.
+                                  remote_run_deadline_millis) >= 0)))
         {
-            if (commissioning_context.remote_authority_active &&
-                (((raw_input_levels & USER_INPUT_KEY_MENU) == 0u) ||
-                 ((int32_t)(now - commissioning_context.
-                                      remote_run_deadline_millis) >= 0)))
-            {
-                commissioning_context.remote_stop_requested = true;
-            }
+            commissioning_context.remote_stop_requested = true;
+        }
 
-            if (commissioning_context.remote_stop_requested)
-            {
-                bridge_characterizer_stop(&bridge_characterizer);
-                bridge_characterizer.previous_debounced_levels =
-                    input_levels;
-                bridge_characterizer.enter_release_seen =
-                    (raw_input_levels & USER_INPUT_KEY_ENTER) != 0u;
-                commissioning_context.remote_authority_active = false;
-                commissioning_context.remote_stop_requested = false;
-            }
-            else if (commissioning_context.remote_start_requested)
-            {
-                bridge_characterizer.selected_leg =
-                    (bridge_characterizer_leg_t)
-                        commissioning_context.remote_start_leg;
-                bridge_characterizer.active = true;
-                commissioning_context.remote_authority_active = true;
-                commissioning_context.remote_run_deadline_millis =
-                    now + commissioning_context.
-                              remote_start_duration_millis;
-                commissioning_context.remote_start_requested = false;
-            }
-            else if (!commissioning_context.remote_authority_active)
-            {
-                if (drive_supervisor.state == APP_STATE_READY)
-                {
-                    (void)bridge_characterizer_update(
-                        &bridge_characterizer,
-                        raw_input_levels,
-                        input_levels);
-                }
-            }
+        if (commissioning_context.remote_stop_requested)
+        {
+            const bool was_active =
+                commissioning_context.remote_authority_active;
 
-            if (bridge_was_active && !bridge_characterizer.active)
+            commissioning_context.remote_start_requested = false;
+            commissioning_context.remote_authority_active = false;
+            commissioning_context.remote_stop_requested = false;
+            if (was_active)
             {
                 if (!current_loop_backend_stop())
                 {
                     board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    platform_panic(PANIC_DRIVE_CONTROL);
                 }
                 current_loop_backend_get_snapshot(&current_loop_snapshot);
-                commissioning_context.remote_authority_active = false;
                 if (current_loop_snapshot.fault_flags != 0u)
                 {
                     bridge_ready = false;
@@ -2060,74 +2020,67 @@ int main(void)
                 }
                 diagnostics_due = true;
             }
-            else if (bridge_characterizer.active && !bridge_was_active)
+        }
+        else if (commissioning_context.remote_start_requested)
+        {
+            const app_transition_context_t energize_context = {
+                .safe_to_energize =
+                    bridge_ready && adc_snapshot_valid &&
+                    encoder_control_ready(
+                        &encoder_diagnostics,
+                        &angle_tracker,
+                        estimator_fault_flags),
+            };
+
+            commissioning_context.remote_start_requested = false;
+            if (bridge_ready && adc_snapshot_valid &&
+                app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED,
+                    energize_context))
             {
-                const app_transition_context_t energize_context = {
-                    .safe_to_energize =
-                        bridge_ready && adc_snapshot_valid &&
-                        encoder_control_ready(
-                            &encoder_diagnostics,
-                            &angle_tracker,
-                            estimator_fault_flags),
-                };
+                int16_t current_a_reference_counts;
+                int16_t current_b_reference_counts;
 
-                if (!adc_snapshot_valid ||
-                    !app_supervisor_handle_event(
-                        &drive_supervisor,
-                        APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED,
-                        energize_context))
+                if (!rotating_current_test_init(
+                        &current_test_generator,
+                        (int16_t)commissioning_context.
+                            test_amplitude_counts,
+                        current_test_phase_increment(
+                            commissioning_context.
+                                test_frequency_millihz),
+                        current_test_initial_phase(
+                            commissioning_context.remote_start_leg)) ||
+                    !rotating_current_test_step(
+                        &current_test_generator,
+                        &current_a_reference_counts,
+                        &current_b_reference_counts) ||
+                    !current_loop_backend_set_reference_counts(
+                        current_a_reference_counts,
+                        current_b_reference_counts) ||
+                    !current_loop_backend_start())
                 {
-                    bridge_characterizer_stop(&bridge_characterizer);
                     commissioning_context.remote_authority_active = false;
-                    if (!current_loop_backend_stop())
-                    {
-                        board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                    }
+                    (void)app_supervisor_handle_event(
+                        &drive_supervisor,
+                        APP_EVENT_FAULT_DETECTED,
+                        (app_transition_context_t){0});
+                    board_bridge_force_low_zero();
+                    platform_panic(PANIC_DRIVE_CONTROL);
                 }
-                else
-                {
-                    int16_t current_a_reference_counts;
-                    int16_t current_b_reference_counts;
-
-                    if (!rotating_current_test_init(
-                            &current_test_generator,
-                            (int16_t)commissioning_context.
-                                test_amplitude_counts,
-                            current_test_phase_increment(
-                                commissioning_context.
-                                    test_frequency_millihz),
-                            current_test_initial_phase(
-                                bridge_characterizer.selected_leg)) ||
-                        !rotating_current_test_step(
-                            &current_test_generator,
-                            &current_a_reference_counts,
-                            &current_b_reference_counts) ||
-                        !current_loop_backend_set_reference_counts(
-                            current_a_reference_counts,
-                            current_b_reference_counts) ||
-                        !current_loop_backend_start())
-                    {
-                        bridge_characterizer_stop(&bridge_characterizer);
-                        commissioning_context.remote_authority_active = false;
-                        (void)app_supervisor_handle_event(
-                            &drive_supervisor,
-                            APP_EVENT_FAULT_DETECTED,
-                            (app_transition_context_t){0});
-                        board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
-                    }
-                    next_current_reference =
-                        now + CURRENT_TEST_REFERENCE_PERIOD_MS;
-                    diagnostics_due = true;
-                }
+                commissioning_context.remote_authority_active = true;
+                commissioning_context.remote_run_deadline_millis =
+                    now + commissioning_context.
+                              remote_start_duration_millis;
+                next_current_reference =
+                    now + CURRENT_TEST_REFERENCE_PERIOD_MS;
             }
+            diagnostics_due = true;
         }
 
-        if (bridge_characterizer.active &&
+        if (commissioning_context.remote_authority_active &&
             !app_supervisor_bridge_authorized(&drive_supervisor))
         {
-            bridge_characterizer_stop(&bridge_characterizer);
             commissioning_context.remote_authority_active = false;
             (void)app_supervisor_handle_event(
                 &drive_supervisor,
@@ -2168,7 +2121,7 @@ int main(void)
 
         if (app_supervisor_bridge_authorized(&drive_supervisor) &&
             (drive_supervisor.authority == APP_AUTHORITY_DIAGNOSTIC) &&
-            bridge_characterizer.active &&
+            commissioning_context.remote_authority_active &&
             ((int32_t)(now - next_current_reference) >= 0))
         {
             int16_t current_a_reference_counts;
@@ -2179,16 +2132,14 @@ int main(void)
                     &current_a_reference_counts,
                     &current_b_reference_counts))
             {
-                bridge_characterizer_stop(&bridge_characterizer);
                 board_bridge_force_low_zero();
-                platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                platform_panic(PANIC_DRIVE_CONTROL);
             }
             if (!current_loop_backend_set_reference_counts(
                     current_a_reference_counts,
                     current_b_reference_counts))
             {
                 current_loop_backend_get_snapshot(&current_loop_snapshot);
-                bridge_characterizer_stop(&bridge_characterizer);
                 commissioning_context.remote_authority_active = false;
                 bridge_ready = false;
                 (void)app_supervisor_handle_event(
@@ -2199,7 +2150,7 @@ int main(void)
                     !current_loop_backend_stop())
                 {
                     board_bridge_force_low_zero();
-                    platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                    platform_panic(PANIC_DRIVE_CONTROL);
                 }
                 current_loop_backend_get_snapshot(&current_loop_snapshot);
                 update_current_loop_diagnostics(
@@ -2250,7 +2201,7 @@ int main(void)
                     if (!current_loop_backend_init(&current_loop_config))
                     {
                         board_bridge_force_low_zero();
-                        platform_panic(PANIC_BRIDGE_CHARACTERIZER_INIT);
+                        platform_panic(PANIC_DRIVE_CONTROL);
                     }
                     current_loop_initialized = true;
                     bridge_ready = true;
@@ -2271,7 +2222,6 @@ int main(void)
             {
                 adc_ready = false;
                 adc_snapshot_valid = false;
-                bridge_characterizer_stop(&bridge_characterizer);
                 rotor_control_runtime_force_fault(
                     &rotor_control_runtime, timebase_micros());
                 commissioning_context.remote_authority_active = false;
@@ -2299,7 +2249,6 @@ int main(void)
                     &current_loop_diagnostics);
                 if (current_loop_snapshot.fault_flags != 0u)
                 {
-                    bridge_characterizer_stop(&bridge_characterizer);
                     rotor_control_runtime_force_fault(
                         &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
@@ -2324,14 +2273,13 @@ int main(void)
                         next_display_refresh = now;
                     }
                 }
-                else if ((bridge_characterizer.active ||
+                else if ((commissioning_context.remote_authority_active ||
                           alignment_controller_is_active(
                               &alignment_controller) ||
                           aligned_torque_controller_is_active(
                               &aligned_torque_controller)) &&
                          !current_loop_snapshot.active)
                 {
-                    bridge_characterizer_stop(&bridge_characterizer);
                     rotor_control_runtime_force_fault(
                         &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
@@ -2383,7 +2331,6 @@ int main(void)
 
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
-                    bridge_characterizer_stop(&bridge_characterizer);
                     rotor_control_runtime_force_fault(
                         &rotor_control_runtime, timebase_micros());
                     commissioning_context.remote_authority_active = false;
@@ -2479,7 +2426,7 @@ int main(void)
             if (!rendered ||
                 (ssd1306_write_pages(
                      &display_bus,
-                     &SSD1306_PANEL_SERVO57D_CANDIDATE,
+                     &SSD1306_PANEL_SERVO57D,
                      ADC_DISPLAY_START_PAGE,
                      ADC_DISPLAY_PAGE_COUNT,
                      s_display_frame,

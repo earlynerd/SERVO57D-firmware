@@ -27,7 +27,6 @@ enum
     MASTER_TRIGGER_ON_UPDATE = TIM_CTRL2_MMSEL_1
 };
 
-static uint16_t s_active_compare;
 static uint16_t s_period_counts;
 static bool s_initialized;
 static tim3_bridge_pwm_update_handler_t s_update_handler;
@@ -77,7 +76,6 @@ bool tim3_bridge_pwm_init(uint32_t timer_clock_hz)
     uint32_t period_counts;
 
     s_initialized = false;
-    s_active_compare = 0u;
     s_period_counts = 0u;
     s_update_handler = NULL;
     s_update_handler_context = NULL;
@@ -124,7 +122,6 @@ bool tim3_bridge_pwm_init(uint32_t timer_clock_hz)
     DBG->CTRL &= ~((uint32_t)DBG_CTRL_TIM3_STOP);
     __DSB();
 
-    s_active_compare = (uint16_t)(period_counts / 2u);
     s_period_counts = (uint16_t)period_counts;
     s_initialized =
         (TIM3->PSC == 0u) &&
@@ -173,27 +170,6 @@ bool tim3_bridge_pwm_stage_duties(
     write_duty_compares(compares);
     __DMB();
     return duty_compares_match(compares) &&
-           ((TIM3->CTRL1 & TIM_CTRL1_CNTEN) != 0u) &&
-           ((TIM3->CCEN & ALL_CHANNEL_OUTPUTS_ENABLED) ==
-            ALL_CHANNEL_OUTPUTS_ENABLED);
-}
-
-bool tim3_bridge_pwm_apply(uint32_t selected_channel, bool active)
-{
-    const uint16_t compare = active ? s_active_compare : 0u;
-
-    if (!s_initialized ||
-        (selected_channel >= TIM3_BRIDGE_PWM_CHANNEL_COUNT))
-    {
-        return false;
-    }
-
-    write_compares(selected_channel, compare);
-    TIM3->EVTGEN = TIM_EVTGEN_UDGN;
-    TIM3->STS = ~((uint32_t)TIM_STS_UDITF);
-    __DSB();
-
-    return compares_match(selected_channel, compare) &&
            ((TIM3->CTRL1 & TIM_CTRL1_CNTEN) != 0u) &&
            ((TIM3->CCEN & ALL_CHANNEL_OUTPUTS_ENABLED) ==
             ALL_CHANNEL_OUTPUTS_ENABLED);
@@ -265,7 +241,6 @@ bool tim3_bridge_pwm_update_irq_enable(bool enable)
 void tim3_bridge_pwm_stop(void)
 {
     s_initialized = false;
-    s_active_compare = 0u;
     s_period_counts = 0u;
     s_update_handler = NULL;
     s_update_handler_context = NULL;

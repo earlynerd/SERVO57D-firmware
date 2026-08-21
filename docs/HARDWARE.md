@@ -181,11 +181,12 @@ fixed dead time is adequate and that ordinary switching has no gross
 cross-conduction. Reset, watchdog, and debugger-halt transitions remain
 separate validation cases.
 
-The retained bridge characterizer replaced the foreground pattern with edge-aligned 20 kHz,
-50% TIM3 PWM. Cycling A1, A2, B1, and B2 on the physical board produced the
+The now-retired bridge characterizer replaced the foreground pattern with
+edge-aligned 20 kHz, 50% TIM3 PWM during bring-up. Cycling A1, A2, B1, and B2 on the physical board produced the
 expected selected-phase magnitude and polarity while the unselected phase
 remained at zero. This bench-proves TIM3 channels 1-4 on AF2 for PA6, PA7,
-PB0, and PB1 on the tested board.
+PB0, and PB1 on the tested board. Production firmware no longer exposes its
+local phase selector or direct fixed-duty helper.
 
 Firmware 0.19.0 retains the closed hardware milestone: the two-rank A/B ADC path,
 20 kHz DMA-completion PI loop, phase-specific current signs, low-zero

@@ -1,6 +1,6 @@
 # Debugger Diagnostic Record
 
-Status: firmware 0.23.2 publishes schema 5 continuously and the layout remains
+Status: firmware 0.24.15 publishes schema 5 continuously and the layout remains
 ABI-checked by host and post-link tests. Equivalent current, encoder, fault,
 and reset data are bench-proven through the OLED and native protocol; direct
 debugger inspection remains an optional validation path.
@@ -30,8 +30,8 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 4 | `schema_version` | Record schema, currently `5` |
 | 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.23.2` |
-| 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, legacy bridge-characterizer UI, current-loop, automatic-alignment, persistent-configuration, and aligned-torque capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.24.15` |
+| 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, rotating-current diagnostic, current-loop, automatic-alignment, persistent-configuration, and aligned-torque capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -73,7 +73,7 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 176 | `native_protocol_unexpected_message_types` | Responses or events observed by the request server and ignored |
 | 180 | `native_protocol_transmit_rejections` | Replies rejected because encoding or the bounded TX path was unavailable |
 | 184 | `current_loop_ready` | One after zero calibration and backend initialization |
-| 188 | `current_loop_active` | One while Enter-held bridge authority is active |
+| 188 | `current_loop_active` | One while the supervisor-authorized current backend is active |
 | 192 | `current_loop_fault_flags` | Latched phase-loop and backend fault bitmap |
 | 196 | `current_loop_sample_count` | DMA samples accepted by the active loop |
 | 200 | `current_loop_a_reference_counts` | Signed A reference encoded in two's-complement 32-bit form |
@@ -126,7 +126,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 For a new board or diagnostic-schema validation:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.23.2`, schema is 5, and record size is 240;
+- confirm `firmware_version` decodes to `0.24.15`, schema is 5, and record size is 240;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;

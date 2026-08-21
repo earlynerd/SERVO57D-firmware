@@ -1,31 +1,22 @@
 set(FIRMWARE_TARGET mks57d)
 
-set(PORTABLE_CONTROL_SOURCES
+set(MOTION_CANDIDATE_SOURCES
     src/app/application_core.c
     src/app/motion_manager.c
     src/app/step_direction.c
-    src/control/aligned_torque_controller.c
-    src/control/alignment_controller.c
-    src/control/angle_tracker.c
     src/control/current_controller.c
     src/control/motion_profile.c
-    src/control/motor_alignment.c
     src/control/pi_controller.c
-    src/control/phase_current_loop.c
-    src/control/phase_current_reference.c
-    src/control/rotating_current_test.c
     src/control/servo_core.c
-    src/services/configuration_store.c
 )
 
-# Cross-compile the complete portable control core on every firmware build.
-# The fixed-point phase loop and rotating diagnostic reference are also linked
-# explicitly below; outer servo/application integration proceeds through the
-# product supervisor as hardware timing and motor-personality contracts mature.
-add_library(mks57d_portable_control OBJECT ${PORTABLE_CONTROL_SOURCES})
-target_include_directories(mks57d_portable_control PRIVATE include)
-target_compile_features(mks57d_portable_control PRIVATE c_std_11)
-target_compile_options(mks57d_portable_control PRIVATE
+# Cross-compile only the motion modules that are not yet linked into the product
+# image. This is compile coverage for a candidate layer, not a second firmware
+# personality or an alternate bridge-authority path.
+add_library(mks57d_motion_candidate OBJECT ${MOTION_CANDIDATE_SOURCES})
+target_include_directories(mks57d_motion_candidate PRIVATE include)
+target_compile_features(mks57d_motion_candidate PRIVATE c_std_11)
+target_compile_options(mks57d_motion_candidate PRIVATE
     -mcpu=cortex-m4
     -mthumb
     -mfloat-abi=soft
@@ -59,7 +50,6 @@ set(PROJECT_SOURCES
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c
     src/drivers/adc_sample.c
-    src/drivers/bridge_characterizer.c
     src/drivers/dma_ring.c
     src/drivers/encoder_display.c
     src/drivers/input_display.c
@@ -111,7 +101,7 @@ target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
-add_custom_target(portable-control-arm DEPENDS mks57d_portable_control)
+add_custom_target(motion-candidate-arm DEPENDS mks57d_motion_candidate)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)
 target_compile_options(${FIRMWARE_TARGET} PRIVATE

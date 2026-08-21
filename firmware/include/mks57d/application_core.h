@@ -48,10 +48,9 @@ bool application_core_config_is_valid(
     const application_core_config_t* config);
 bool application_core_init(application_core_t* application,
                            const application_core_config_t* config);
-application_core_status_t application_core_observe_encoder(
+application_core_status_t application_core_observe_rotor(
     application_core_t* application,
-    uint16_t raw_angle,
-    uint32_t timestamp_us);
+    const rotor_observation_t* observation);
 motion_submit_status_t application_core_submit_motion(
     application_core_t* application,
     const motion_request_t* request,
@@ -68,7 +67,6 @@ application_core_status_t application_core_step(
     application_core_output_t* output);
 bool application_core_recover(application_core_t* application,
                               bool safe_to_recover,
-                              uint16_t raw_angle,
-                              uint32_t timestamp_us);
+                              const rotor_observation_t* observation);
 
 #endif

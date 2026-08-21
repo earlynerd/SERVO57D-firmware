@@ -60,8 +60,15 @@ shaft and use the current-limited supply procedure in
 
 ## Current operating envelope
 
-Firmware 0.24.13 / protocol 1.7 is the current bench-validated product build. It
-provides bounded signed encoder-aligned q-current through the same supervisor,
+Firmware 0.24.13 / protocol 1.7 is the current bench-validated product build.
+Firmware 0.24.14 is flashed for its hardware regression: it retires
+the local Next/Enter phase selector and its direct fixed-duty PWM helper while
+retaining the RS-485 rotating-current diagnostic through the product supervisor
+and current backend. Firmware 0.24.15 makes the deterministic rotor runtime the
+sole estimator owner and gives the not-yet-linked motion candidate an immutable,
+timestamped position/velocity observation instead of raw encoder samples. The
+current product line provides bounded signed
+encoder-aligned q-current through the same supervisor,
 current backend, and ZERO-vector fault path, and accepts the full wrap-safe
 finite-deadline range. Torque activation is seeded only by newly accepted
 encoder feedback so command-processing latency is not mistaken for an active
@@ -90,13 +97,12 @@ zero at the deadline.
 
 The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
 calibration, initialized current control, and a healthy encoder move the product
-supervisor from `DIAGNOSTIC` to `READY`. A released-then-held Enter button can
-then request diagnostic bridge authority through that supervisor. Next selects
-the initial electrical phase;
-raw Enter release or Menu returns to `ZERO`. The local rotating reference is
-151.5 mA. RS-485 can currently configure 1-495 ADC counts (about 6.06 mA-2.999 A)
+supervisor from `DIAGNOSTIC` to `READY`. The transitional local Next/Enter
+phase selector has been retired; it no longer requests bridge authority. RS-485
+can configure 1-495 ADC counts (about 6.06 mA-2.999 A)
 and 0.001-250 Hz electrical frequency, start a 0.003-2,147,483.647 second run, stream current,
-duty, fault, reset, and encoder state, or stop local or remote authority. The
+duty, fault, reset, and encoder state, or stop diagnostic or motion authority.
+Raw Menu remains an immediate physical stop input. The
 independent raw-current trip is about 3.635 A, phase voltage is limited to 70%
 of the bus, and the timer guardian latches missed current-loop updates. Loss of
 readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
@@ -121,12 +127,13 @@ faults converge on that vector. Reset/halt waveforms, thermal limits, and the
 wider voltage/current/speed envelope remain engineering
 work; they no longer block bounded motor operation on the tested board.
 
-A separate portable application/control build exercises motion ownership,
+A separate motion-candidate build exercises motion ownership,
 remote lease expiry, step/direction behavior, bounded trajectories, servo
 behavior, and fault recovery against host-side deterministic plants. The
-hardware image now uses the shared angle tracker for unwrapped mechanical
-position and velocity, but the outer servo and its torque output are not yet
-connected; no host-test motion limits have been promoted into the product.
+hardware image owns the only angle tracker and publishes validated mechanical
+position/velocity observations. The outer servo consumes that contract in
+tests but is not linked into the product image; no host-test motion limits have
+been promoted into the product.
 
 ## Current project status
 

@@ -185,8 +185,11 @@ Goal: close the mechanical loop incrementally.
 - [ ] Exercise physical Menu abort and induced invalid-encoder/readiness-loss
   shutdown with an immediate supply cutoff available.
 - [x] Integrate the existing host-tested angle unwrapping and velocity estimator
-  with the on-board encoder on a timestamped 1 kHz foreground schedule without
+  with the on-board encoder on the timestamped 1 kHz rotor service without
   enabling the outer servo or importing host-test motion limits.
+- [x] Make the rotor runtime the sole raw-encoder/angle-estimator owner; expose
+  immutable timestamped position/velocity observations to the separately
+  compiled, not-yet-linked motion candidate.
 - [x] Bench-validate estimator sample interval, jitter, stationary noise,
   direction, and velocity during a bounded run; move acquisition to a
   timer-released SPI/DMA path if later outer-loop load makes the initially
@@ -239,8 +242,9 @@ calibration without preserving active authority.
   a supervisor-authorized product motor diagnostic and regression tool.
 - [x] Remove the commissioning-only firmware build personality and historical
   bridge-characterization/current-loop-commissioning target aliases.
-- [ ] Replace or remove the transitional local phase-selector/OLED diagnostic
-  after the aligned motor service interface exists.
+- [x] Remove the transitional local phase-selector/OLED diagnostic and its
+  direct fixed-duty PWM helper after the aligned motor service interface exists;
+  retain the bounded RS-485 motor diagnostic through the product authority path.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
 - [x] Treat useful publicly documented Makerbase commands as optional compatibility aliases rather than the canonical API.
 

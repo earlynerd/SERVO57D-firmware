@@ -15,10 +15,10 @@ labels; START is now a diagnostic request to the product drive supervisor and
 cannot directly own the bridge. The historical commissioning-image and
 bridge-characterization build aliases have been removed.
 
-The local phase selector and its OLED view remain transitional diagnostic UI
-clients of the supervisor. The aligned motor interface now exists; after its
-hardware gate, retain this UI only if it has an independent service role. No
-new feature should extend it into a second control path.
+The transitional local phase selector and its unused OLED renderer have been
+removed. The retained rotating-current workflow is an RS-485 production
+diagnostic through the supervisor and current backend, not a second local
+control path.
 
 `motor_test.py` is the normal human-facing motor diagnostic and regression loop. It runs one
 firmware-bounded rotating-current move, captures the diagnostic stream and
@@ -100,7 +100,7 @@ storage result. `save-configuration` is an idempotent explicit retry;
 calibration. Both write operations are rejected while any drive operation or
 pending start/stop owns the safe-state boundary.
 
-On firmware 0.23.2 / protocol 1.7, `torque-status` reads the complete aligned
+On firmware 0.23.2 and later / protocol 1.7, `torque-status` reads the complete aligned
 q-current state and firmware-owned policy without energizing the bridge.
 `torque` accepts signed counts or signed milliamperes, preflights the absolute
 current and duration against that reported policy, starts the supervisor-owned

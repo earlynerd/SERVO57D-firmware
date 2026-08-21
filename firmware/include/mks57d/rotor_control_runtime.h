@@ -10,6 +10,7 @@
 #include "mks57d/angle_tracker.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/motor_alignment.h"
+#include "mks57d/rotor_observation.h"
 #include "mks57d/spi_bus.h"
 
 enum
@@ -23,6 +24,7 @@ enum
 typedef struct
 {
     diagnostics_encoder_t encoder_diagnostics;
+    rotor_observation_t observation;
     angle_tracker_t angle_tracker;
     motor_alignment_t motor_alignment;
     alignment_controller_t alignment_controller;

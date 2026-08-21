@@ -1,15 +1,15 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.23.2 implements the fast path, production alignment layer,
-safe-state configuration maintenance, and the first aligned torque-current
-motion client:
-edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
-fixed-point current control, a carrier deadline guardian, and a foreground
-automatic-alignment and q-current controllers using the same backend and
-supervisor. The fast
-path is bench-proven with encoder-observed motor rotation; successful,
-repeatable alignment and generic STOP are also bench-proven. This document defines
-the next velocity and position layers.
+Status: firmware 0.24.13 implements the fast current path, production alignment,
+safe-state configuration maintenance, the first aligned torque-current motion
+client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
+20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
+current control, and the carrier deadline guardian remain the project-owned
+backend. Firmware 0.24.14 removes the local fixed-duty characterization path;
+all retained motor operations use the supervisor and current backend. Firmware
+0.24.15 makes the rotor runtime the sole estimator owner and defines the
+immutable observation boundary used by future slower loops. This document
+defines the next velocity and position layers.
 
 ## Goals
 
@@ -268,20 +268,23 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 ### Portable implementation status
 
-The hardware-independent portion is now implemented under
-`firmware/src/control/` and `firmware/src/app/`, compiled for the host and the
-  exact Arm target. Firmware 0.23.2 integrates the authoritative drive
-  supervisor, mechanical angle tracker, measured stepper-alignment geometry,
-  and a signed q-current actuator; the outer velocity/position shell remains
-  excluded while the proven phase-current backend is active:
+The hardware-independent portion is implemented under `firmware/src/control/`
+and `firmware/src/app/`. Product modules are linked into `mks57d`; the outer
+application, trajectory, velocity/position, and d/q voltage modules are instead
+compiled as the explicitly non-product `mks57d_motion_candidate` target and in
+host tests. Firmware 0.23.2 integrates the authoritative drive supervisor,
+mechanical angle tracker, measured stepper-alignment geometry, and a signed
+q-current actuator; the outer velocity/position shell remains excluded while
+the proven phase-current backend is active:
 
-- raw encoder angle is unwrapped in both directions with timestamp, sample-age,
-  maximum-velocity, and filter contracts;
+- `rotor_control_runtime` alone unwraps raw encoder angle in both directions
+  with timestamp, sample-age, maximum-velocity, and filter contracts, then
+  publishes an immutable valid/timestamp/position/velocity observation;
 - a trapezoidal position trajectory independently limits reference velocity
   and acceleration;
-- cascaded position and velocity control emits a hard-clamped torque-current
-  request and latches stale encoder, deadline, following-error, and numeric
-  faults;
+- cascaded position and velocity control consumes only that observation, emits
+  a hard-clamped torque-current request, and latches invalid/stale feedback,
+  deadline, following-error, and numeric faults;
 - one motion manager arbitrates all command sources, retains bounded retry and
   completion history, applies an explicit remote heartbeat/lease contract, and
   converts lease expiry into controlled stop followed by disable;
@@ -291,7 +294,7 @@ The hardware-independent portion is now implemented under
 - Park/inverse-Park transforms and two anti-windup PI axes emit a
   magnitude-limited stationary voltage request; and
 - deterministic mechanical and two-axis RL plant tests exercise the complete
-  portable path through encoder wrapping, command arbitration, lease expiry,
+  candidate path through supplied rotor observations, command arbitration, lease expiry,
   trajectory completion, saturation, fault recovery, and current regulation.
 
 The active 0.23 stepper path does not send the portable d/q controller's voltage

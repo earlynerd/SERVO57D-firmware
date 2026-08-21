@@ -49,13 +49,17 @@ static servo_core_status_t latch_fault(servo_core_t* core,
 bool servo_core_config_is_valid(const servo_core_config_t* config)
 {
     return (config != NULL) &&
-           angle_tracker_config_is_valid(&config->angle_tracker) &&
            motion_profile_config_is_valid(&config->motion_profile) &&
            pi_controller_config_is_valid(&config->velocity_controller) &&
-           (config->encoder_stale_timeout_us != 0u) &&
+           (config->maximum_feedback_interval_us != 0u) &&
+           (config->feedback_stale_timeout_us != 0u) &&
            (config->maximum_control_interval_us != 0u) &&
+           (config->maximum_feedback_interval_us <=
+            config->feedback_stale_timeout_us) &&
            (config->maximum_control_interval_us <=
-            config->encoder_stale_timeout_us) &&
+            config->feedback_stale_timeout_us) &&
+           finite_positive(
+               config->maximum_feedback_velocity_revolutions_per_second) &&
            finite_positive(config->position_gain_per_second) &&
            finite_positive(config->maximum_following_error_revolutions) &&
            finite_positive(config->maximum_current_amperes);
@@ -70,12 +74,10 @@ bool servo_core_init(servo_core_t* core,
     }
 
     core->config = *config;
-    if (!angle_tracker_init(&core->angle_tracker,
-                            &config->angle_tracker))
-    {
-        return false;
-    }
     pi_controller_reset(&core->velocity_controller);
+    core->feedback_position_revolutions = 0.0f;
+    core->feedback_velocity_revolutions_per_second = 0.0f;
+    core->last_feedback_timestamp_us = 0u;
     core->last_control_timestamp_us = 0u;
     core->fault_flags = SERVO_FAULT_NONE;
     core->initialized = true;
@@ -84,11 +86,13 @@ bool servo_core_init(servo_core_t* core,
     return true;
 }
 
-servo_core_status_t servo_core_observe_encoder(servo_core_t* core,
-                                                uint16_t raw_angle,
-                                                uint32_t timestamp_us)
+servo_core_status_t servo_core_observe_rotor(
+    servo_core_t* core,
+    const rotor_observation_t* observation)
 {
-    if ((core == NULL) || !core->initialized)
+    uint32_t elapsed_us;
+
+    if ((core == NULL) || (observation == NULL) || !core->initialized)
     {
         return SERVO_CORE_STATUS_INVALID_ARGUMENT;
     }
@@ -96,28 +100,47 @@ servo_core_status_t servo_core_observe_encoder(servo_core_t* core,
     {
         return SERVO_CORE_STATUS_FAULTED;
     }
-    if (!angle_tracker_push(&core->angle_tracker,
-                            raw_angle,
-                            timestamp_us))
+    if (!observation->valid ||
+        !isfinite(observation->position_revolutions) ||
+        !isfinite(observation->velocity_revolutions_per_second) ||
+        (fabsf(observation->velocity_revolutions_per_second) >
+         core->config.maximum_feedback_velocity_revolutions_per_second))
     {
         return latch_fault(core,
-                           SERVO_FAULT_INVALID_ENCODER_SAMPLE,
+                           SERVO_FAULT_INVALID_FEEDBACK,
                            NULL);
     }
 
-    if (!core->feedback_ready)
+    if (core->feedback_ready)
+    {
+        elapsed_us = observation->timestamp_us -
+                     core->last_feedback_timestamp_us;
+        if ((elapsed_us == 0u) ||
+            (elapsed_us > core->config.maximum_feedback_interval_us))
+        {
+            return latch_fault(core,
+                               SERVO_FAULT_INVALID_FEEDBACK,
+                               NULL);
+        }
+    }
+    else
     {
         if (!motion_profile_init(
                 &core->motion_profile,
-                core->angle_tracker.position_revolutions))
+                observation->position_revolutions))
         {
             return latch_fault(core,
                                SERVO_FAULT_INTERNAL_NUMERIC,
                                NULL);
         }
-        core->last_control_timestamp_us = timestamp_us;
+        core->last_control_timestamp_us = observation->timestamp_us;
         core->feedback_ready = true;
     }
+    core->feedback_position_revolutions =
+        observation->position_revolutions;
+    core->feedback_velocity_revolutions_per_second =
+        observation->velocity_revolutions_per_second;
+    core->last_feedback_timestamp_us = observation->timestamp_us;
     return SERVO_CORE_STATUS_OK;
 }
 
@@ -183,7 +206,7 @@ servo_core_status_t servo_core_suspend(servo_core_t* core)
         return SERVO_CORE_STATUS_NOT_READY;
     }
     if (!motion_profile_init(&core->motion_profile,
-                             core->angle_tracker.position_revolutions))
+                             core->feedback_position_revolutions))
     {
         return latch_fault(core, SERVO_FAULT_INTERNAL_NUMERIC, NULL);
     }
@@ -208,7 +231,7 @@ servo_core_status_t servo_core_resume(servo_core_t* core,
         return SERVO_CORE_STATUS_NOT_READY;
     }
     if (!motion_profile_init(&core->motion_profile,
-                             core->angle_tracker.position_revolutions))
+                             core->feedback_position_revolutions))
     {
         return latch_fault(core, SERVO_FAULT_INTERNAL_NUMERIC, NULL);
     }
@@ -223,7 +246,7 @@ servo_core_status_t servo_core_step(servo_core_t* core,
                                     servo_core_output_t* output)
 {
     uint32_t elapsed_us;
-    uint32_t encoder_age_us;
+    uint32_t feedback_age_us;
     float elapsed_seconds;
     float following_error;
     float velocity_request;
@@ -255,11 +278,10 @@ servo_core_status_t servo_core_step(servo_core_t* core,
                            SERVO_FAULT_CONTROL_DEADLINE,
                            output);
     }
-    encoder_age_us =
-        timestamp_us - core->angle_tracker.last_timestamp_us;
-    if (encoder_age_us > core->config.encoder_stale_timeout_us)
+    feedback_age_us = timestamp_us - core->last_feedback_timestamp_us;
+    if (feedback_age_us > core->config.feedback_stale_timeout_us)
     {
-        return latch_fault(core, SERVO_FAULT_STALE_ENCODER, output);
+        return latch_fault(core, SERVO_FAULT_STALE_FEEDBACK, output);
     }
 
     elapsed_seconds = (float)elapsed_us * 1.0e-6f;
@@ -274,7 +296,7 @@ servo_core_status_t servo_core_step(servo_core_t* core,
 
     following_error =
         core->motion_profile.position_revolutions -
-        core->angle_tracker.position_revolutions;
+        core->feedback_position_revolutions;
     if (!isfinite(following_error) ||
         (fabsf(following_error) >
          core->config.maximum_following_error_revolutions))
@@ -292,7 +314,7 @@ servo_core_status_t servo_core_step(servo_core_t* core,
             &core->velocity_controller,
             &core->config.velocity_controller,
             velocity_request -
-                core->angle_tracker.velocity_revolutions_per_second,
+                core->feedback_velocity_revolutions_per_second,
             elapsed_seconds,
             &current_request))
     {
@@ -311,9 +333,9 @@ servo_core_status_t servo_core_step(servo_core_t* core,
         &core->config.motion_profile);
     output->fault_flags = core->fault_flags;
     output->measured_position_revolutions =
-        core->angle_tracker.position_revolutions;
+        core->feedback_position_revolutions;
     output->measured_velocity_revolutions_per_second =
-        core->angle_tracker.velocity_revolutions_per_second;
+        core->feedback_velocity_revolutions_per_second;
     output->reference_position_revolutions =
         core->motion_profile.position_revolutions;
     output->reference_velocity_revolutions_per_second =

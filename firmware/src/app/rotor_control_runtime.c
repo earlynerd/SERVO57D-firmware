@@ -66,6 +66,20 @@ static void publish_snapshot(rotor_control_runtime_t* runtime)
     ++runtime->snapshot_sequence;
     __DMB();
     runtime->published.encoder_diagnostics = runtime->encoder_diagnostics;
+    runtime->published.observation.position_revolutions =
+        runtime->angle_tracker.position_revolutions;
+    runtime->published.observation.velocity_revolutions_per_second =
+        runtime->angle_tracker.velocity_revolutions_per_second;
+    runtime->published.observation.timestamp_us =
+        runtime->angle_tracker.last_timestamp_us;
+    runtime->published.observation.valid =
+        runtime->angle_tracker.initialized &&
+        (runtime->encoder_diagnostics.status ==
+         (uint32_t)MT6816_STATUS_OK) &&
+        (runtime->encoder_diagnostics.transport_status ==
+         (uint32_t)SPI_STATUS_OK) &&
+        (runtime->encoder_diagnostics.flags == 0u) &&
+        (runtime->estimator_fault_flags == 0u);
     runtime->published.angle_tracker = runtime->angle_tracker;
     runtime->published.motor_alignment = runtime->motor_alignment;
     runtime->published.alignment_controller = runtime->alignment_controller;

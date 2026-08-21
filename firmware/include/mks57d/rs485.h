@@ -36,7 +36,7 @@ typedef struct
 } rs485_stats_t;
 
 /*
- * Active, receive-first USART1 transport for purchased-board bring-up:
+ * Active, receive-first USART1 transport for the product board:
  * PC13 low receives, PC13 high transmits, PA9 is USART1_TX, and PA10 is
  * USART1_RX. RX byte movement is continuous on DMA channel 4; TX frames use
  * DMA channel 5 and release PC13 only after the USART transmission-complete

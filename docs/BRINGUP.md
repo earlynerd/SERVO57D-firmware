@@ -92,11 +92,11 @@ the already-tested board.
 
 ## Stage 6 — Current-regulated motor operation
 
-Firmware 0.19.0 operates an attached two-phase stepper through independent
-20 kHz winding-current loops. Local Enter remains hold-to-run; release or Menu
-commands `ZERO`. Both local and RS-485 operations request diagnostic authority
-from the product drive supervisor after current-path and encoder readiness.
-RS-485 provides configurable current amplitude, electrical
+Current product firmware operates an attached two-phase stepper through
+independent 20 kHz winding-current loops. The retired local Next/Enter selector
+cannot request bridge authority. RS-485 requests diagnostic authority from the
+product drive supervisor after current-path and encoder readiness and provides
+configurable current amplitude, electrical
 frequency, initial phase, run duration, STOP, and live current plus encoder
 telemetry. Timeout, Menu, transport failure, or STOP ends authority.
 
