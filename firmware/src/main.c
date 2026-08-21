@@ -15,6 +15,8 @@
 #include "mks57d/bridge_characterizer.h"
 #include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
+#include "mks57d/configuration_flash.h"
+#include "mks57d/configuration_store.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/i2c1.h"
@@ -90,6 +92,7 @@ typedef struct
     uint32_t* estimator_maximum_sample_interval_us;
     motor_alignment_t* motor_alignment;
     alignment_controller_t* alignment_controller;
+    configuration_store_t* configuration_store;
     bridge_characterizer_t* bridge_characterizer;
     uint32_t* raw_input_levels;
     uint32_t* input_levels;
@@ -541,6 +544,191 @@ static command_status_t alignment_get_status(
     return COMMAND_STATUS_OK;
 }
 
+static bool build_product_configuration(
+    const motor_alignment_t* motor_alignment,
+    product_configuration_t* configuration)
+{
+    if ((motor_alignment == NULL) || (configuration == NULL) ||
+        !motor_alignment->initialized)
+    {
+        return false;
+    }
+
+    memset(configuration, 0, sizeof(*configuration));
+    configuration->encoder_counts_per_revolution =
+        motor_alignment->config.encoder_counts_per_revolution;
+    configuration->electrical_cycles_per_revolution =
+        motor_alignment->config.electrical_cycles_per_revolution;
+    motor_alignment_get_status(
+        motor_alignment, &configuration->alignment);
+    return product_configuration_is_valid(configuration);
+}
+
+static bool configuration_write_allowed(
+    const commissioning_command_context_t* commissioning)
+{
+    current_loop_backend_snapshot_t loop = {0};
+
+    if ((commissioning == NULL) ||
+        (commissioning->configuration_store == NULL) ||
+        (commissioning->motor_alignment == NULL) ||
+        (commissioning->alignment_controller == NULL) ||
+        (commissioning->bridge_characterizer == NULL) ||
+        (commissioning->supervisor == NULL))
+    {
+        return false;
+    }
+    current_loop_backend_get_snapshot(&loop);
+    return ((commissioning->supervisor->state == APP_STATE_READY) ||
+            (commissioning->supervisor->state == APP_STATE_DIAGNOSTIC)) &&
+           (commissioning->supervisor->authority == APP_AUTHORITY_NONE) &&
+           !app_supervisor_bridge_authorized(commissioning->supervisor) &&
+           !loop.active && (loop.fault_flags == 0u) &&
+           !commissioning->bridge_characterizer->active &&
+           !alignment_controller_is_active(
+               commissioning->alignment_controller) &&
+           !commissioning->remote_start_requested &&
+           !commissioning->remote_stop_requested &&
+           !commissioning->alignment_start_requested &&
+           !commissioning->alignment_stop_requested;
+}
+
+static command_status_t configuration_get_status(
+    void* context,
+    command_configuration_status_t* status)
+{
+    commissioning_command_context_t* commissioning = context;
+    product_configuration_t active;
+    product_configuration_t stored;
+    const configuration_store_t* store;
+
+    if ((commissioning == NULL) || (status == NULL) ||
+        (commissioning->configuration_store == NULL) ||
+        !build_product_configuration(
+            commissioning->motor_alignment, &active))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    store = commissioning->configuration_store;
+    memset(status, 0, sizeof(*status));
+    status->schema_version = 1u;
+    status->active_slot = CONFIGURATION_STORE_INVALID_SLOT;
+    status->record_schema_version =
+        CONFIGURATION_STORE_RECORD_SCHEMA_VERSION;
+    status->active_encoder_counts_per_revolution =
+        active.encoder_counts_per_revolution;
+    status->active_electrical_cycles_per_revolution =
+        active.electrical_cycles_per_revolution;
+    status->active_electrical_zero_raw =
+        active.alignment.electrical_zero_raw;
+    status->active_observed_quarter_step_counts =
+        active.alignment.observed_quarter_step_counts;
+    status->active_quarter_step_error_counts =
+        active.alignment.quarter_step_error_counts;
+    status->active_encoder_direction = active.alignment.encoder_direction;
+    status->flags |= COMMAND_CONFIGURATION_FLAG_WRITE_SUPPORTED;
+    if (store->initialized)
+    {
+        status->flags |= COMMAND_CONFIGURATION_FLAG_STORE_INITIALIZED;
+    }
+    if (active.alignment.valid)
+    {
+        status->flags |=
+            COMMAND_CONFIGURATION_FLAG_ACTIVE_CALIBRATION_VALID;
+    }
+    if ((store->valid_slot_mask & 1u) != 0u)
+    {
+        status->flags |= COMMAND_CONFIGURATION_FLAG_SLOT0_VALID;
+    }
+    if ((store->valid_slot_mask & 2u) != 0u)
+    {
+        status->flags |= COMMAND_CONFIGURATION_FLAG_SLOT1_VALID;
+    }
+    status->last_result = (uint8_t)store->last_result;
+    status->active_slot = store->active_slot;
+    status->generation = store->generation;
+    if (configuration_store_get(store, &stored))
+    {
+        status->flags |= COMMAND_CONFIGURATION_FLAG_RECORD_VALID;
+        if (stored.alignment.valid)
+        {
+            status->flags |=
+                COMMAND_CONFIGURATION_FLAG_STORED_CALIBRATION_VALID;
+        }
+        if (configuration_store_matches(store, &active))
+        {
+            status->flags |=
+                COMMAND_CONFIGURATION_FLAG_ACTIVE_MATCHES_RECORD;
+        }
+        status->stored_encoder_counts_per_revolution =
+            stored.encoder_counts_per_revolution;
+        status->stored_electrical_cycles_per_revolution =
+            stored.electrical_cycles_per_revolution;
+        status->stored_electrical_zero_raw =
+            stored.alignment.electrical_zero_raw;
+        status->stored_observed_quarter_step_counts =
+            stored.alignment.observed_quarter_step_counts;
+        status->stored_quarter_step_error_counts =
+            stored.alignment.quarter_step_error_counts;
+        status->stored_encoder_direction =
+            stored.alignment.encoder_direction;
+    }
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t configuration_save_active(void* context)
+{
+    commissioning_command_context_t* commissioning = context;
+    product_configuration_t configuration;
+
+    if ((commissioning == NULL) ||
+        !build_product_configuration(
+            commissioning->motor_alignment, &configuration))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!configuration.alignment.valid ||
+        !configuration_write_allowed(commissioning))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    board_bridge_force_low_zero();
+    return configuration_store_save(
+               commissioning->configuration_store,
+               &configuration) == CONFIGURATION_STORE_RESULT_OK ?
+        COMMAND_STATUS_OK : COMMAND_STATUS_INTERNAL_ERROR;
+}
+
+static command_status_t configuration_clear_calibration(void* context)
+{
+    commissioning_command_context_t* commissioning = context;
+    product_configuration_t configuration;
+
+    if ((commissioning == NULL) ||
+        !build_product_configuration(
+            commissioning->motor_alignment, &configuration))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!configuration_write_allowed(commissioning))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    memset(&configuration.alignment, 0, sizeof(configuration.alignment));
+    board_bridge_force_low_zero();
+    if (configuration_store_save(
+            commissioning->configuration_store,
+            &configuration) != CONFIGURATION_STORE_RESULT_OK)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    motor_alignment_clear(commissioning->motor_alignment);
+    return COMMAND_STATUS_OK;
+}
+
 static command_status_t commissioning_get_boot_status(
     void* context,
     command_boot_status_t* status)
@@ -879,6 +1067,9 @@ int main(void)
         .velocity_filter_alpha = 0.125f,
     };
     motor_alignment_t motor_alignment;
+    configuration_store_backend_t configuration_backend;
+    configuration_store_t configuration_store;
+    product_configuration_t stored_configuration;
     const motor_alignment_config_t motor_alignment_config = {
         .encoder_counts_per_revolution =
             ENCODER_COUNTS_PER_REVOLUTION,
@@ -981,6 +1172,7 @@ int main(void)
             &estimator_maximum_sample_interval_us,
         .motor_alignment = &motor_alignment,
         .alignment_controller = &alignment_controller,
+        .configuration_store = &configuration_store,
         .bridge_characterizer = &bridge_characterizer,
         .raw_input_levels = &raw_input_levels,
         .input_levels = &input_levels,
@@ -1017,6 +1209,12 @@ int main(void)
             .context = &commissioning_context,
             .stop = commissioning_stop,
         },
+        .configuration = {
+            .context = &commissioning_context,
+            .get_status = configuration_get_status,
+            .save = configuration_save_active,
+            .clear_calibration = configuration_clear_calibration,
+        },
     };
 
     if (!platform_early_memory_ready())
@@ -1035,6 +1233,23 @@ int main(void)
             &alignment_controller, &alignment_controller_config))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
+    if (!configuration_flash_backend_init(&configuration_backend))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
+    (void)configuration_store_init(
+        &configuration_store, &configuration_backend);
+    if (configuration_store_get(
+            &configuration_store, &stored_configuration) &&
+        stored_configuration.alignment.valid &&
+        (stored_configuration.encoder_counts_per_revolution ==
+         motor_alignment.config.encoder_counts_per_revolution) &&
+        (stored_configuration.electrical_cycles_per_revolution ==
+         motor_alignment.config.electrical_cycles_per_revolution))
+    {
+        (void)motor_alignment_restore(
+            &motor_alignment, &stored_configuration.alignment);
     }
 
     boot_self_test_init(&self_test, BOOT_SELF_TEST_REQUIRED_PASSIVE);
@@ -1765,6 +1980,12 @@ int main(void)
                                 board_bridge_force_low_zero();
                                 platform_panic(
                                     PANIC_INTERNAL_INVARIANT);
+                            }
+                            if (supervisor_event ==
+                                APP_EVENT_ALIGNMENT_COMPLETED)
+                            {
+                                (void)configuration_save_active(
+                                    &commissioning_context);
                             }
                             diagnostics_due = true;
                         }

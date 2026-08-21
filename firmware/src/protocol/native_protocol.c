@@ -353,6 +353,15 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_STOP_DRIVE:
             *operation = COMMAND_OPERATION_STOP_DRIVE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_CONFIGURATION_STATUS:
+            *operation = COMMAND_OPERATION_GET_CONFIGURATION_STATUS;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_SAVE_CONFIGURATION:
+            *operation = COMMAND_OPERATION_SAVE_CONFIGURATION;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_CLEAR_CALIBRATION:
+            *operation = COMMAND_OPERATION_CLEAR_CALIBRATION;
+            return true;
         default:
             return false;
     }
@@ -663,6 +672,49 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u16_be(&response_frame->payload[56],
                              status->maximum_current_error_counts);
                 payload_length = 58u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_CONFIGURATION_STATUS:
+            {
+                const command_configuration_status_t* status =
+                    &command_response->data.configuration_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->flags;
+                response_frame->payload[3] = status->last_result;
+                response_frame->payload[4] = status->active_slot;
+                write_u16_be(&response_frame->payload[5],
+                             status->record_schema_version);
+                write_u32_be(&response_frame->payload[7],
+                             status->generation);
+                write_u16_be(&response_frame->payload[11],
+                             status->stored_encoder_counts_per_revolution);
+                write_u16_be(&response_frame->payload[13],
+                             status->stored_electrical_cycles_per_revolution);
+                write_u16_be(&response_frame->payload[15],
+                             status->stored_electrical_zero_raw);
+                write_u16_be(&response_frame->payload[17],
+                             status->stored_observed_quarter_step_counts);
+                write_u16_be(&response_frame->payload[19],
+                             (uint16_t)status->
+                                 stored_quarter_step_error_counts);
+                response_frame->payload[21] =
+                    (uint8_t)status->stored_encoder_direction;
+                write_u16_be(&response_frame->payload[22],
+                             status->active_encoder_counts_per_revolution);
+                write_u16_be(&response_frame->payload[24],
+                             status->active_electrical_cycles_per_revolution);
+                write_u16_be(&response_frame->payload[26],
+                             status->active_electrical_zero_raw);
+                write_u16_be(&response_frame->payload[28],
+                             status->active_observed_quarter_step_counts);
+                write_u16_be(&response_frame->payload[30],
+                             (uint16_t)status->
+                                 active_quarter_step_error_counts);
+                response_frame->payload[32] =
+                    (uint8_t)status->active_encoder_direction;
+                payload_length = 33u;
                 break;
             }
 

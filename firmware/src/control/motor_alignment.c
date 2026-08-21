@@ -126,6 +126,53 @@ bool motor_alignment_calibrate(motor_alignment_t* alignment,
     return true;
 }
 
+bool motor_alignment_restore(motor_alignment_t* alignment,
+                             const motor_alignment_status_t* status)
+{
+    motor_alignment_t candidate;
+    uint32_t phase_quarter_raw;
+
+    if ((alignment == NULL) || (status == NULL) ||
+        !alignment->initialized || !status->valid ||
+        ((status->encoder_direction != 1) &&
+         (status->encoder_direction != -1)) ||
+        ((uint32_t)status->electrical_zero_raw >=
+         alignment->config.encoder_counts_per_revolution) ||
+        (status->observed_quarter_step_counts == 0u) ||
+        ((uint32_t)status->observed_quarter_step_counts >=
+         ((uint32_t)alignment->config.encoder_counts_per_revolution / 2u)))
+    {
+        return false;
+    }
+
+    phase_quarter_raw =
+        (uint32_t)status->electrical_zero_raw +
+        ((status->encoder_direction > 0) ?
+             (uint32_t)status->observed_quarter_step_counts :
+             (uint32_t)alignment->config.encoder_counts_per_revolution -
+                 (uint32_t)status->observed_quarter_step_counts);
+    phase_quarter_raw %=
+        (uint32_t)alignment->config.encoder_counts_per_revolution;
+
+    candidate = *alignment;
+    if (!motor_alignment_calibrate(
+            &candidate,
+            status->electrical_zero_raw,
+            (uint16_t)phase_quarter_raw) ||
+        (candidate.status.observed_quarter_step_counts !=
+         status->observed_quarter_step_counts) ||
+        (candidate.status.quarter_step_error_counts !=
+         status->quarter_step_error_counts) ||
+        (candidate.status.encoder_direction !=
+         status->encoder_direction))
+    {
+        return false;
+    }
+
+    alignment->status = candidate.status;
+    return true;
+}
+
 void motor_alignment_clear(motor_alignment_t* alignment)
 {
     const motor_alignment_status_t empty_status = {0};

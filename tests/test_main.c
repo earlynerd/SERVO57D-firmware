@@ -17,6 +17,7 @@
 #include "mks57d/bridge_characterizer.h"
 #include "mks57d/bridge_display.h"
 #include "mks57d/command_service.h"
+#include "mks57d/configuration_store.h"
 #include "mks57d/current_controller.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
@@ -47,7 +48,9 @@ enum
     MOCK_I2C_MAX_CALLS = 32u,
     MOCK_I2C_MAX_BYTES = 32u,
     MOCK_SPI_MAX_BYTES = 8u,
-    MOCK_PROTOCOL_CAPABILITIES = 0xA55Au
+    MOCK_PROTOCOL_CAPABILITIES = 0xA55Au,
+    MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT =
+        CONFIGURATION_STORE_PAGE_SIZE_BYTES / sizeof(uint32_t)
 };
 
 typedef struct
@@ -78,10 +81,21 @@ typedef struct
 
 typedef struct
 {
+    uint32_t words[CONFIGURATION_STORE_SLOT_COUNT]
+                  [MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT];
+    size_t erase_calls;
+    size_t program_calls;
+    size_t fail_program_call;
+    bool fail_erase;
+} mock_configuration_flash_t;
+
+typedef struct
+{
     command_commissioning_status_t status;
     command_encoder_status_t encoder_status;
     command_current_trace_sample_t current_trace;
     command_alignment_status_t alignment_status;
+    command_configuration_status_t configuration_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -95,6 +109,9 @@ typedef struct
     size_t alignment_start_calls;
     size_t alignment_status_calls;
     size_t drive_stop_calls;
+    size_t configuration_status_calls;
+    size_t configuration_save_calls;
+    size_t calibration_clear_calls;
     uint16_t requested_trace_index;
     uint16_t requested_alignment_current_counts;
 } mock_commissioning_t;
@@ -278,6 +295,99 @@ static bool mock_protocol_send(void* context,
     return true;
 }
 
+static void mock_configuration_flash_init(mock_configuration_flash_t* flash)
+{
+    uint8_t slot;
+    size_t word;
+
+    memset(flash, 0, sizeof(*flash));
+    for (slot = 0u; slot < CONFIGURATION_STORE_SLOT_COUNT; ++slot)
+    {
+        for (word = 0u;
+             word < MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT;
+             ++word)
+        {
+            flash->words[slot][word] = UINT32_MAX;
+        }
+    }
+}
+
+static bool mock_configuration_read_word(void* context,
+                                         uint8_t slot,
+                                         size_t word_index,
+                                         uint32_t* value)
+{
+    mock_configuration_flash_t* flash = context;
+
+    if ((flash == NULL) || (value == NULL) ||
+        (slot >= CONFIGURATION_STORE_SLOT_COUNT) ||
+        (word_index >= MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT))
+    {
+        return false;
+    }
+    *value = flash->words[slot][word_index];
+    return true;
+}
+
+static bool mock_configuration_erase_slot(void* context, uint8_t slot)
+{
+    mock_configuration_flash_t* flash = context;
+    size_t word;
+
+    if ((flash == NULL) || (slot >= CONFIGURATION_STORE_SLOT_COUNT) ||
+        flash->fail_erase)
+    {
+        return false;
+    }
+    ++flash->erase_calls;
+    for (word = 0u;
+         word < MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT;
+         ++word)
+    {
+        flash->words[slot][word] = UINT32_MAX;
+    }
+    return true;
+}
+
+static bool mock_configuration_program_word(void* context,
+                                             uint8_t slot,
+                                             size_t word_index,
+                                             uint32_t value)
+{
+    mock_configuration_flash_t* flash = context;
+
+    if ((flash == NULL) || (slot >= CONFIGURATION_STORE_SLOT_COUNT) ||
+        (word_index >= MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT))
+    {
+        return false;
+    }
+    ++flash->program_calls;
+    if ((flash->fail_program_call != 0u) &&
+        (flash->program_calls == flash->fail_program_call))
+    {
+        return false;
+    }
+    if (flash->words[slot][word_index] != UINT32_MAX)
+    {
+        return false;
+    }
+    flash->words[slot][word_index] = value;
+    return true;
+}
+
+static configuration_store_backend_t mock_configuration_backend(
+    mock_configuration_flash_t* flash)
+{
+    const configuration_store_backend_t backend = {
+        .context = flash,
+        .read_word = mock_configuration_read_word,
+        .erase_slot = mock_configuration_erase_slot,
+        .program_word = mock_configuration_program_word,
+    };
+
+    return backend;
+}
+
 static command_status_t mock_commissioning_get_status(
     void* context,
     command_commissioning_status_t* status)
@@ -392,6 +502,33 @@ static command_status_t mock_drive_stop(void* context)
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_configuration_get_status(
+    void* context,
+    command_configuration_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->configuration_status_calls;
+    *status = mock->configuration_status;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_configuration_save(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->configuration_save_calls;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_calibration_clear(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->calibration_clear_calls;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -439,6 +576,12 @@ static bool init_commissioning_server(native_protocol_server_t* server,
         .drive = {
             .context = commissioning,
             .stop = mock_drive_stop,
+        },
+        .configuration = {
+            .context = commissioning,
+            .get_status = mock_configuration_get_status,
+            .save = mock_configuration_save,
+            .clear_calibration = mock_calibration_clear,
         },
     };
 
@@ -1858,6 +2001,26 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .maximum_closure_error_counts = 12u,
             .maximum_current_error_counts = 8u,
         },
+        .configuration_status = {
+            .schema_version = 1u,
+            .flags = 0xFFu,
+            .last_result = 0u,
+            .active_slot = 1u,
+            .record_schema_version = 1u,
+            .generation = 0x01020304u,
+            .stored_encoder_counts_per_revolution = 16384u,
+            .stored_electrical_cycles_per_revolution = 50u,
+            .stored_electrical_zero_raw = 9302u,
+            .stored_observed_quarter_step_counts = 80u,
+            .stored_quarter_step_error_counts = -2,
+            .stored_encoder_direction = -1,
+            .active_encoder_counts_per_revolution = 16384u,
+            .active_electrical_cycles_per_revolution = 50u,
+            .active_electrical_zero_raw = 9302u,
+            .active_observed_quarter_step_counts = 80u,
+            .active_quarter_step_error_counts = -2,
+            .active_encoder_direction = -1,
+        },
     };
     native_protocol_frame_t response;
     size_t wire_length;
@@ -2161,6 +2324,80 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.drive_stop_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        30u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_CONFIGURATION_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.configuration_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 33u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 0xFFu);
+    EXPECT_TRUE(response.payload[4] == 1u);
+    EXPECT_TRUE(response.payload[5] == 0u);
+    EXPECT_TRUE(response.payload[6] == 1u);
+    EXPECT_TRUE(response.payload[7] == 1u);
+    EXPECT_TRUE(response.payload[10] == 4u);
+    EXPECT_TRUE(response.payload[11] == 0x40u);
+    EXPECT_TRUE(response.payload[12] == 0u);
+    EXPECT_TRUE(response.payload[13] == 0u);
+    EXPECT_TRUE(response.payload[14] == 50u);
+    EXPECT_TRUE(response.payload[15] == 0x24u);
+    EXPECT_TRUE(response.payload[16] == 0x56u);
+    EXPECT_TRUE(response.payload[17] == 0u);
+    EXPECT_TRUE(response.payload[18] == 80u);
+    EXPECT_TRUE(response.payload[19] == 0xFFu);
+    EXPECT_TRUE(response.payload[20] == 0xFEu);
+    EXPECT_TRUE(response.payload[21] == 0xFFu);
+    EXPECT_TRUE(response.payload[22] == 0x40u);
+    EXPECT_TRUE(response.payload[32] == 0xFFu);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        31u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_SAVE_CONFIGURATION,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.configuration_save_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        32u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_CLEAR_CALIBRATION,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.calibration_clear_calls == 1u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
 }
@@ -2471,6 +2708,164 @@ static void test_motor_alignment_accepts_measured_stepper_geometry(void)
         &alignment, 1000u, 1400u));
     motor_alignment_get_status(&alignment, &status);
     EXPECT_TRUE(!status.valid);
+
+    {
+        motor_alignment_t restored;
+        motor_alignment_status_t persisted = {
+            .electrical_zero_raw = 9302u,
+            .observed_quarter_step_counts = 80u,
+            .quarter_step_error_counts = -2,
+            .encoder_direction = -1,
+            .valid = true,
+        };
+
+        EXPECT_TRUE(motor_alignment_init(&restored, &config));
+        EXPECT_TRUE(motor_alignment_restore(&restored, &persisted));
+        motor_alignment_get_status(&restored, &status);
+        EXPECT_TRUE(status.valid);
+        EXPECT_TRUE(status.electrical_zero_raw == 9302u);
+        EXPECT_TRUE(status.observed_quarter_step_counts == 80u);
+        EXPECT_TRUE(status.quarter_step_error_counts == -2);
+        EXPECT_TRUE(status.encoder_direction == -1);
+
+        persisted.quarter_step_error_counts = 3;
+        EXPECT_TRUE(!motor_alignment_restore(&restored, &persisted));
+        motor_alignment_get_status(&restored, &status);
+        EXPECT_TRUE(status.electrical_zero_raw == 9302u);
+    }
+}
+
+static product_configuration_t test_product_configuration(void)
+{
+    const product_configuration_t configuration = {
+        .encoder_counts_per_revolution = 16384u,
+        .electrical_cycles_per_revolution = 50u,
+        .alignment = {
+            .electrical_zero_raw = 9302u,
+            .observed_quarter_step_counts = 80u,
+            .quarter_step_error_counts = -2,
+            .encoder_direction = -1,
+            .valid = true,
+        },
+    };
+
+    return configuration;
+}
+
+static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
+{
+    mock_configuration_flash_t flash;
+    configuration_store_t store;
+    configuration_store_t reloaded;
+    product_configuration_t configuration = test_product_configuration();
+    product_configuration_t loaded;
+    configuration_store_backend_t backend;
+
+    mock_configuration_flash_init(&flash);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_EMPTY);
+    EXPECT_TRUE(!configuration_store_get(&store, &loaded));
+    EXPECT_TRUE(configuration_store_save(&store, &configuration) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(store.active_slot == 0u);
+    EXPECT_TRUE(store.generation == 1u);
+    EXPECT_TRUE(flash.erase_calls == 1u);
+    EXPECT_TRUE(flash.program_calls == 8u);
+
+    EXPECT_TRUE(configuration_store_save(&store, &configuration) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(flash.erase_calls == 1u);
+    EXPECT_TRUE(flash.program_calls == 8u);
+
+    EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
+    EXPECT_TRUE(configuration_store_matches(&reloaded, &configuration));
+    EXPECT_TRUE(loaded.alignment.valid);
+    EXPECT_TRUE(loaded.alignment.electrical_zero_raw == 9302u);
+    EXPECT_TRUE(loaded.alignment.encoder_direction == -1);
+}
+
+static void test_configuration_store_interrupted_update_keeps_old_slot(void)
+{
+    mock_configuration_flash_t flash;
+    configuration_store_t store;
+    configuration_store_t reloaded;
+    product_configuration_t original = test_product_configuration();
+    product_configuration_t updated = original;
+    product_configuration_t loaded;
+    configuration_store_backend_t backend;
+
+    mock_configuration_flash_init(&flash);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_EMPTY);
+    EXPECT_TRUE(configuration_store_save(&store, &original) ==
+                CONFIGURATION_STORE_RESULT_OK);
+
+    updated.alignment.electrical_zero_raw = 9304u;
+    flash.fail_program_call = 16u;
+    EXPECT_TRUE(configuration_store_save(&store, &updated) ==
+                CONFIGURATION_STORE_RESULT_IO_ERROR);
+    EXPECT_TRUE(store.active_slot == 0u);
+    EXPECT_TRUE(store.generation == 1u);
+
+    flash.fail_program_call = 0u;
+    EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
+    EXPECT_TRUE(loaded.alignment.electrical_zero_raw ==
+                original.alignment.electrical_zero_raw);
+    EXPECT_TRUE(reloaded.active_slot == 0u);
+    EXPECT_TRUE(reloaded.valid_slot_mask == 1u);
+}
+
+static void test_configuration_store_crc_fallback_and_persistent_clear(void)
+{
+    mock_configuration_flash_t flash;
+    configuration_store_t store;
+    configuration_store_t reloaded;
+    product_configuration_t original = test_product_configuration();
+    product_configuration_t updated = original;
+    product_configuration_t cleared = {0};
+    product_configuration_t loaded;
+    configuration_store_backend_t backend;
+
+    mock_configuration_flash_init(&flash);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_EMPTY);
+    EXPECT_TRUE(configuration_store_save(&store, &original) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    updated.alignment.electrical_zero_raw = 9304u;
+    EXPECT_TRUE(configuration_store_save(&store, &updated) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(store.active_slot == 1u);
+    EXPECT_TRUE(store.generation == 2u);
+
+    flash.words[1][4] ^= 1u;
+    EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
+    EXPECT_TRUE(reloaded.active_slot == 0u);
+    EXPECT_TRUE(loaded.alignment.electrical_zero_raw == 9302u);
+
+    mock_configuration_flash_init(&flash);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_EMPTY);
+    EXPECT_TRUE(configuration_store_save(&store, &original) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    cleared.encoder_counts_per_revolution = 16384u;
+    cleared.electrical_cycles_per_revolution = 50u;
+    EXPECT_TRUE(configuration_store_save(&store, &cleared) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
+    EXPECT_TRUE(reloaded.generation == 2u);
+    EXPECT_TRUE(!loaded.alignment.valid);
 }
 
 static alignment_controller_config_t test_alignment_controller_config(void)
@@ -4147,6 +4542,9 @@ int main(void)
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_motor_alignment_accepts_measured_stepper_geometry();
+    test_configuration_store_persists_and_avoids_unchanged_writes();
+    test_configuration_store_interrupted_update_keeps_old_slot();
+    test_configuration_store_crc_fallback_and_persistent_clear();
     test_alignment_controller_commits_closed_sequence();
     test_alignment_controller_failure_preserves_calibration();
     test_alignment_controller_aborts_and_rejects_bad_feedback();

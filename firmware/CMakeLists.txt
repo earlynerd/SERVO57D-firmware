@@ -13,6 +13,7 @@ set(PORTABLE_CONTROL_SOURCES
     src/control/phase_current_loop.c
     src/control/rotating_current_test.c
     src/control/servo_core.c
+    src/services/configuration_store.c
 )
 
 # Cross-compile the complete portable control core on every firmware build.
@@ -64,6 +65,7 @@ set(PROJECT_SOURCES
     src/drivers/user_inputs.c
     src/platform/adc1.c
     src/platform/current_loop_backend.c
+    src/platform/configuration_flash.c
     src/platform/i2c1.c
     src/platform/spi1.c
     src/platform/tim2_current_trigger.c
@@ -79,6 +81,7 @@ set(PROJECT_SOURCES
     src/safety/boot_self_test.c
     src/safety/fault_latch.c
     src/safety/watchdog_policy.c
+    src/services/configuration_store.c
 )
 
 set(NATIONS_SOURCES

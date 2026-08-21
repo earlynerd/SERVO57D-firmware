@@ -91,7 +91,7 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.21.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
+Firmware 0.22.0 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
 PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
 three consecutive changed samples update each independently. The physical keys
 are left Next, center Enter, and right Menu, and both auxiliary inputs respond
@@ -111,7 +111,7 @@ bounded number of bytes into the native v1 COBS/CRC parser. TX uses channel 5
 and keeps PC13 high until USART transmission-complete, not merely DMA
 completion.
 
-Native protocol 1.5 replies to complete, CRC-valid address-1 discovery, boot,
+Native protocol 1.6 replies to complete, CRC-valid address-1 discovery, boot,
 raw/estimated encoder, current-loop, alignment, and generic-STOP requests.
 Framing, address checks, command validation, and reply creation remain bounded
 foreground work; the product drive supervisor owns bridge authority. Complete

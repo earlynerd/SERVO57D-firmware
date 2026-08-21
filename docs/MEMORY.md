@@ -1,6 +1,27 @@
 # Memory Map and SRAM2 Startup
 
-The initial firmware follows the N32L406xB memory map in N32L40x User Manual V2.6 rather than treating the part's 24 KiB SRAM total as one contiguous block.
+The firmware follows the N32L406xB memory map in N32L40x User Manual V2.6 rather than treating the part's 24 KiB SRAM total as one contiguous block.
+
+## Flash layout
+
+| Region | Address range | Size | Use |
+| --- | --- | ---: | --- |
+| Application Flash | `0x08000000`–`0x0801EFFF` | 124 KiB | Vector table, code, constants, and initialized-data image |
+| Configuration slot 0 | `0x0801F000`–`0x0801F7FF` | 2 KiB | Alternating versioned motor-configuration record |
+| Configuration slot 1 | `0x0801F800`–`0x0801FFFF` | 2 KiB | Alternating versioned motor-configuration record |
+
+The manual defines a 2 KiB minimum erase page and 32-bit programming. The
+linker excludes both configuration pages from the application region and the
+post-link verifier checks all three boundaries. A slot is valid only after its
+magic, schema, length, generation, semantic bounds, CRC-32, and final commit
+word validate. Updating erases only the inactive slot and programs its commit
+word last, leaving the previous record recoverable across an interrupted write.
+
+This reservation provides runtime reset/power-cycle persistence. Preservation
+across a firmware programming operation depends on the programmer's erase
+policy and is not part of the current update contract.
+
+## SRAM layout
 
 | Region | Address range | Size | Initial use |
 | --- | --- | ---: | --- |

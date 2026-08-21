@@ -34,6 +34,8 @@ bool motor_alignment_init(motor_alignment_t* alignment,
 bool motor_alignment_calibrate(motor_alignment_t* alignment,
                                uint16_t phase_zero_raw,
                                uint16_t phase_quarter_raw);
+bool motor_alignment_restore(motor_alignment_t* alignment,
+                             const motor_alignment_status_t* status);
 void motor_alignment_clear(motor_alignment_t* alignment);
 bool motor_alignment_electrical_phase_q32(
     const motor_alignment_t* alignment,

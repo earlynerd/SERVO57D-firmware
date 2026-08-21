@@ -38,10 +38,16 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)   : ORIGIN = 0x08000000, LENGTH = 128K
+    FLASH (rx)   : ORIGIN = 0x08000000, LENGTH = 124K
+    CONFIG0 (r)  : ORIGIN = 0x0801F000, LENGTH = 2K
+    CONFIG1 (r)  : ORIGIN = 0x0801F800, LENGTH = 2K
     SRAM1 (xrw)  : ORIGIN = 0x20000000, LENGTH = 16K
     SRAM2 (xrw)  : ORIGIN = 0x20006000, LENGTH = 8K
 }
+
+__configuration_slot0_start__ = ORIGIN(CONFIG0);
+__configuration_slot1_start__ = ORIGIN(CONFIG1);
+__configuration_slot1_end__ = ORIGIN(CONFIG1) + LENGTH(CONFIG1);
 
 /* Keep the initial stack wholly inside SRAM1. */
 _estack = ORIGIN(SRAM1) + LENGTH(SRAM1);
@@ -173,3 +179,9 @@ ASSERT(__sram2_end__ == 0x20008000, "N32L406CBL7 SRAM2 end is incorrect")
 ASSERT(SIZEOF(.sram2) == 0, "Initial image must not allocate objects in SRAM2")
 ASSERT(_end <= __StackLimit, "N32L406CBL7 SRAM1 overflow: less than 2 KiB stack remains")
 ASSERT(SIZEOF(.isr_vector) > 0, "Interrupt vector table is missing")
+ASSERT(__configuration_slot0_start__ == 0x0801F000,
+       "Configuration slot 0 must occupy Flash page 62")
+ASSERT(__configuration_slot1_start__ == 0x0801F800,
+       "Configuration slot 1 must occupy Flash page 63")
+ASSERT(__configuration_slot1_end__ == 0x08020000,
+       "Configuration slots must end at the 128 KiB Flash boundary")

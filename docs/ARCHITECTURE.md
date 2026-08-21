@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.21.0 implements the reset-safe foundation, continuous
+Status: firmware 0.22.0 implements the reset-safe foundation, continuous
 encoder and synchronous ADC acquisition, OLED diagnostics, DMA RS-485
 transport, native product diagnostics and alignment, an authoritative drive supervisor, and a
 20 kHz fixed-point A/B current
@@ -15,6 +15,10 @@ mechanical estimator and measured stepper geometry and passed its initial
 hardware regression. Firmware 0.21.0 adds transactional automatic alignment;
 two successful runs plus generic STOP are bench-proven, while Menu and
 readiness-loss injection remain open.
+The 0.22.0 candidate adds versioned, CRC-protected, dual-slot motor
+configuration storage and boot-time alignment restore; host tests and Arm
+builds pass, while reset/power-cycle behavior remains to be accepted on the
+board.
 
 ## Design priorities
 
@@ -62,6 +66,10 @@ The current image implements:
   adapter serving discovery, boot and encoder telemetry, and supervisor-gated
   current diagnostics and automatic alignment from foreground, including
   status and generic STOP while active.
+- A project-owned persistent-configuration service using the final two 2 KiB
+  Flash pages as alternating records. Schema, length, generation, CRC-32,
+  semantic validation, and a commit-last marker protect boot loading; a newer
+  incomplete or corrupt slot falls back to the previous record.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - An edge-aligned 20 kHz TIM3 backend mapping channels 1-4 to
@@ -77,6 +85,11 @@ The current image implements:
   positive-quarter, and return-zero current vectors through the proven backend;
   validates current tracking, encoder stability, geometry, closure, and its
   deadline; and transactionally commits zero/direction only on full success.
+- Automatic alignment persistence only after the backend is stopped and motion
+  authority is released. Boot restores motor geometry/alignment but never
+  authority, pending work, leases, faults, or startup current-sensor zeros;
+  explicit safe-state save and persistent-clear operations use the same
+  production configuration service.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
@@ -94,8 +107,9 @@ on the tested board. Calibration accuracy, analog bandwidth, switching-edge
 margin, and protection latency remain characterization work as the operating
 envelope expands.
 
-The portable control and application modules live under
-`firmware/src/control/` and `firmware/src/app/`. They are compiled for both the
+The portable control, application, and configuration-service modules live under
+`firmware/src/control/`, `firmware/src/app/`, and `firmware/src/services/`.
+They are compiled for both the
 host and the exact Arm target. The fixed-point phase loop, rotating current
 reference, angle tracker, and alignment geometry are linked into `mks57d`; the
 outer application, trajectory, and d/q servo path remain excluded. Their contracts use
@@ -160,6 +174,11 @@ flowchart LR
 - **Encoder acquisition ISR (future):** publishes a timestamped angle snapshot but does not run the outer control loops. The present 1 kHz candidate reader runs cooperatively in foreground and exposes its latest and maximum observed intervals for the hardware scheduling decision.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
+
+The N32L406 has single-bank Flash behavior: erase/program stalls code fetches.
+Configuration maintenance therefore runs only in foreground with interrupts
+masked, the bridge forced to `ZERO`, no backend activity, and no supervisor
+authority. The old slot remains valid throughout the new-slot transaction.
 
 The active current loop runs at 20 kHz from DMA completion after a TIM2 compare
 at 80% of the TIM3 carrier. Encoder acquisition is scheduled at 1 kHz in

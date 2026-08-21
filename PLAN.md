@@ -197,7 +197,11 @@ Goal: close the mechanical loop incrementally.
 - [ ] Inventory every production limit with units, basis, enforcement owner,
   reporting, and test; remove, configure, or replace inherited commissioning
   ceilings and host-test defaults that have no defensible product basis.
-- [ ] Persist calibration using a versioned, CRC-protected configuration record.
+- [x] Implement alignment persistence with versioned, CRC-protected,
+  commit-last dual-slot records, safe-state writes, boot validation, automatic
+  post-alignment save, and production status/save/clear commands.
+- [x] Bench-validate first save, unchanged-save wear avoidance, reset and power-
+  cycle restore, persistent clear, and no restored authority/backend activity.
 
 Milestone target: controlled moves and disturbances remain stable, faults
 return the bridge to its defined state, and power cycling preserves valid
@@ -240,7 +244,9 @@ replay/fuzz coverage, measured timing, and hardware-in-the-loop coverage remain
 open.
 
 - [x] Add host unit tests for control math and protocol parsing.
-- [ ] Add host tests for versioned configuration migration.
+- [x] Add host tests for initial versioned configuration storage, CRC fallback,
+  interrupted commits, persistent clear, and unchanged-write suppression.
+- [ ] Add host tests for configuration migration when schema 2 is introduced.
 - [ ] Add hardware-in-the-loop tests for reset, brownout, watchdog, communications, and fault shutdown.
 - [ ] Measure CPU load, ISR latency, stack use, flash use, and worst-case loop timing.
 - [ ] Test multiple board revisions and motors.

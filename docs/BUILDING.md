@@ -48,9 +48,20 @@ Artifacts are written under `build/firmware-debug/firmware/` or `build/firmware-
 - `mks57d.bin` for raw flash programming
 - `mks57d.map` for memory and symbol analysis
 
-The linker follows the N32L406xB memory map in User Manual V2.6: 128 KiB flash, 16 KiB SRAM1 at `0x20000000`, an 8 KiB address gap, and 8 KiB SRAM2 at `0x20006000`. The initial image confines all allocated sections to SRAM1 and reserves its final 2 KiB for the stack. SRAM2 is initialized for parity but a link-time assertion rejects allocations there until hardware validation.
+The linker follows the N32L406xB memory map in User Manual V2.6: 128 KiB
+flash, 16 KiB SRAM1 at `0x20000000`, an 8 KiB address gap, and 8 KiB SRAM2 at
+`0x20006000`. Application Flash is limited to 124 KiB; the final two 2 KiB
+erase pages at `0x0801F000` and `0x0801F800` are reserved as alternating
+configuration slots. The image confines all allocated runtime sections to
+SRAM1 and reserves its final 2 KiB for the stack. SRAM2 is initialized for
+parity but a link-time assertion rejects allocations there until hardware
+validation.
 
-Every firmware build also runs a post-link check that verifies the initial vector stack pointer and the SRAM bank boundary symbols. This catches a regression to the incompatible contiguous layouts present in the vendor SDK and CMSIS pack metadata.
+Every firmware build also runs a post-link check that verifies the initial
+vector stack pointer, SRAM bank boundaries, and all three application/config
+Flash boundaries. This catches a regression to the incompatible contiguous
+layouts present in the vendor SDK and CMSIS pack metadata or an image that can
+overwrite persistent configuration.
 
 ## First J-Link flash
 
@@ -119,7 +130,8 @@ Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.21.0 is the current bench-validated current-regulated product build. It:
+Firmware 0.21.0 remains the current bench-validated current-regulated product
+build. Firmware 0.22.0 is the current host/Arm-validated candidate. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -132,15 +144,27 @@ Firmware 0.21.0 is the current bench-validated current-regulated product build. 
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower and schedules bounded foreground MT6816 burst reads every 1 ms after a 20 ms power-up delay. Accepted samples receive microsecond timestamps and feed the shared mechanical estimator; native telemetry reports latest/maximum observed intervals.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.5 COBS/CRC frames in foreground and replies to valid address-1 discovery, boot, raw/estimated encoder, current-diagnostic, automatic-alignment, and generic-STOP requests, including live status while active.
+12. Parses native v1.6 COBS/CRC frames in foreground and replies to valid
+    address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
+    automatic-alignment, generic-STOP, and persistent-configuration requests,
+    including live status while active.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
 14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
 16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. Holding Enter after the required release requests diagnostic authority for a bounded fixed-point A/B loop with a nominal 150 mA rotating reference; raw release or Menu stops the backend, releases authority, and returns to `ZERO`.
 17. Continues RS-485 foreground processing and the 1 kHz candidate encoder schedule while active so current state, rotor motion, estimator timing, and STOP remain observable throughout a run.
-18. Publishes firmware `0.21.0`, authoritative drive state, reset cause, retained panic, uptime, heartbeat, watchdog health, priority policy, self-test masks, raw encoder state, RS-485 transport state, native-protocol counters, and current-loop state through the unchanged 240-byte schema-5 `g_diagnostics` RAM record; estimator and alignment-progress fields are presently on wire rather than appended to that debugger ABI.
-19. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
-20. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+18. Loads a motor alignment only from a schema/range/CRC/commit-valid record
+    whose geometry matches the running firmware. A successful alignment is
+    saved automatically only after backend and authority release; no active
+    operation or startup ADC zero is persisted.
+19. Publishes firmware `0.22.0`, authoritative drive state, reset cause,
+    retained panic, uptime, heartbeat, watchdog health, priority policy,
+    self-test masks, raw encoder state, RS-485 transport state, native-protocol
+    counters, and current-loop state through the unchanged 240-byte schema-5
+    `g_diagnostics` RAM record; estimator, alignment, and configuration fields
+    are presently on wire rather than appended to that debugger ABI.
+20. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
+21. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Firmware 0.21.0 retains the 0.19.0 supervisor-authorized local hold-to-run and
 duration-bounded RS-485 current diagnostics. The timer AF mapping, all four
@@ -156,3 +180,11 @@ hardware regression. Two successful 757.4 mA automatic alignments and a
 generic-STOP abort pass with clean release and no fault/reset; Menu and
 estimator readiness-loss injection remain pending on hardware. Use
 the guarded wrapper for the same board/probe setup.
+
+The 0.22.0 persistence candidate passes its first-save, unchanged-save,
+power-cycle, persistent-clear, and no-restored-authority hardware gate.
+Programming-tool preservation of the two reserved pages is not yet an update
+contract; validate runtime power cycling independently of reflashing. The
+validated Debug image uses 36,188 bytes of the 124 KiB application region and
+5,476 bytes of SRAM1; Release uses 32,148 bytes and the same SRAM1, with zero
+allocation in both configuration slots and SRAM2.

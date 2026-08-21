@@ -184,7 +184,8 @@ The rotating-current test proves the inverter, current loop, motor geometry,
 and encoder direction. Firmware 0.20.0 bench-validated the timestamped
 mechanical estimator. Firmware 0.21.0 adds the production automatic-alignment
 operation; it must pass the gate below before aligned torque or an outer loop
-uses electrical phase.
+uses electrical phase. Firmware 0.22.0 adds automatic persistence after the
+backend and motion authority are released.
 
 Initial result on the tested motor: accepted. Two 757.4 mA runs each measured
 `9302 → 9222 → 9302`, an -80-count quarter step versus 82 expected, direction
@@ -195,13 +196,14 @@ the accepted zero/direction. Menu and induced readiness-loss injection remain.
 
 Use the already accepted motor, 12 V supply, and a current-limited supply
 setting appropriate for the 757 mA test point. Confirm the flashed identity is
-0.21.0 / protocol 1.5 and that the drive is `READY` with no faults:
+0.22.0 / protocol 1.6 and that the drive is `READY` with no faults:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 identity
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 encoder
 py tools/mks57d_rs485.py --port COM14 alignment
+py tools/mks57d_rs485.py --port COM14 configuration
 ```
 
 Keep clear of the shaft: alignment deliberately steps the rotor between known
@@ -225,6 +227,46 @@ Acceptance requires all of the following:
 5. Run a second sequence and confirm repeatable zero, direction, quarter step,
    closure, and clean release. Do not promote the initial timing/tolerance
    candidates without recording the observed distributions.
+6. `configuration` reports `record_valid`, `stored_calibration_valid`,
+   `active_calibration_valid`, and `active_matches_record`; last result is
+   `ok`, the selected slot is 0 or 1, and stored/active zero and direction are
+   identical. Repeating an identical alignment must leave the generation and
+   selected slot unchanged, proving the wear-avoidance path.
+
+After ordinary and STOP alignment behavior pass, validate persistence without
+reflashing:
+
+1. Record `configuration`, `encoder`, `status`, and `boot` output.
+2. Reset the controller, then repeat all four queries. The same zero and
+   direction must load before motion, while supervisor authority and backend
+   activity remain clear.
+3. Power the controller off fully, wait for rails to discharge, restore power,
+   and repeat the queries. Stored and active calibration must still match with
+   no new fault or retained panic.
+4. With the bridge inactive, issue the persistent clear and power-cycle:
+
+   ```powershell
+   py tools/mks57d_rs485.py --port COM14 clear-calibration
+   ```
+
+   `configuration`, `alignment`, and `encoder` must all report calibration
+   invalid after the clear and after the power cycle. No authority or backend
+   activity may appear.
+5. Run the bounded alignment once more to restore the accepted calibration and
+   verify a final power cycle.
+
+The two slots protect runtime updates against an interrupted erase/program.
+Preservation across a firmware flash depends on the programming tool's erase
+policy and is not part of this gate; do not substitute reflashing for reset or
+power-cycle testing.
+
+Persistence result on the tested board: accepted. A 757.4 mA alignment saved
+`9302 / -1 / 80` in slot 0 at generation 1; an unchanged explicit save left the
+generation unchanged. A complete power cycle restored the same calibration
+with authority, backend, references, duties, faults, and retained panic clear.
+Persistent clear selected slot 1 at generation 2, remained invalid across a
+second power cycle, and did not restore authority. A final 757.4 mA alignment
+saved the accepted `9301 / -1 / 79` result in slot 0 at generation 3.
 
 Validate stop separately by starting `align` in one terminal and issuing the
 following from another during the first settle interval:

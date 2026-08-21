@@ -1,5 +1,14 @@
 # Debug Log
 
+## 2026-08-20 — Firmware 0.22 configuration persistence passed hardware acceptance
+
+- **Observation:** After flashing 0.22.0, automatic alignment save, unchanged-save wear avoidance, power-cycle restore, persistent clear, slot alternation, and safe boot restoration required validation on COM14.
+- **Root cause:** No defect observed; `firmware/src/services/configuration_store.c:223` selected and verified alternating records, while `firmware/src/main.c:1241` restored only validated calibration and `firmware/src/main.c:1987` saved only after alignment completion and authority release.
+- **Fix:** No firmware change required; accept the dual-slot runtime persistence path after generation 1 restore, generation 2 persistent clear, and generation 3 re-alignment all completed without authority, backend, fault, reset, or panic leakage.
+- **Class:** configuration-persistence-bench-validation
+- **Recently-touched?** yes
+- **Time to fix:** no fix required; approximately one complete save/power-cycle/clear/power-cycle/restore pass
+
 ## 2026-08-20 — Firmware 0.20 estimator passed initial hardware regression
 
 - **Observation:** After flashing 0.20.0, the new 1 kHz estimator needed identity, idle-noise, timing, direction, velocity, and active-load validation before servo integration.

@@ -1,9 +1,9 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.21.0 schedules encoder reads at 1 kHz in foreground,
+Status: firmware 0.22.0 schedules encoder reads at 1 kHz in foreground,
 including during current-loop operation, assigns accepted samples microsecond
 timestamps, and feeds the shared mechanical angle/velocity estimator and
-automatic-alignment controller. Native protocol 1.5 exposes raw health,
+automatic-alignment controller. Native protocol 1.6 exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, and alignment progress/result. The 1 kHz schedule passed its
 initial idle and active hardware regression; two automatic alignments reproduced

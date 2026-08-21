@@ -1,10 +1,11 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.21.0 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.22.0 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor and adds a bounded automatic alignment service
 to the product's timestamped 1 kHz mechanical estimator and measured
-50-electrical-cycle alignment geometry. Two successful 757.4 mA alignments and
+50-electrical-cycle alignment geometry. It also adds versioned, CRC-protected,
+dual-slot persistence for the accepted alignment. Two successful 757.4 mA alignments and
 a generic-STOP abort are bench-proven on the tested motor with zero faults,
 reset, or retained panic. The
 0.19.0 supervisor path is bench-proven through a
@@ -18,13 +19,17 @@ initial idle and active hardware regression. Firmware 0.21.0 automatic alignment
 and generic STOP are bench-proven; Menu and readiness-loss injection remain to
 be exercised.
 
+The 0.22.0 storage and protocol implementation passes host failure-injection
+tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
+restore, persistent clear, and no-restored-authority behavior pass on COM14.
+
 ## Current operating contract
 
 - Startup verifies the reset-default 4 MHz MSI, then enables the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK. PCLK2 is 32 MHz, PCLK1 is 16 MHz, and TIM3 receives the doubled 32 MHz APB1 timer clock.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
-- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware 0.21.0 preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a 1 kHz foreground schedule, including while the motor runs. Accepted samples receive microsecond timestamps and feed the shared unwrap/velocity estimator. Native protocol 1.5 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, and automatic-alignment progress/results. The foreground rate is a hardware-validation candidate; a future timer-released SPI/DMA path remains available if measured jitter requires it.
+- PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware 0.22.0 preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a 1 kHz foreground schedule, including while the motor runs. Accepted samples receive microsecond timestamps and feed the shared unwrap/velocity estimator. Native protocol 1.6 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, and persistent configuration state. The foreground rate is a hardware-validation candidate; a future timer-released SPI/DMA path remains available if measured jitter requires it.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
@@ -64,6 +69,13 @@ be exercised.
   after the complete observation passes. STOP, Menu, transport loss, encoder
   loss, current-loop failure, or readiness loss stop the backend and converge
   on the supervisor's normal release/fault path.
+- The final two 2 KiB Flash pages are alternating motor-configuration slots.
+  A successful alignment is automatically saved only after backend and motion
+  authority release. Boot restores alignment only after schema, length,
+  generation, CRC-32, commit marker, semantic bounds, and motor geometry all
+  validate; it never restores authority, pending work, or current-sensor zeros.
+  Explicit status/save/clear operations are available only through the same
+  safe-state production command service.
 
 ## Layout
 
@@ -75,6 +87,7 @@ be exercised.
 | `src/platform/` | Startup-adjacent runtime, timebase, TIM3 PWM, panic handling, and IWDG access |
 | `src/protocol/` | Foreground framing and wire-protocol adapters |
 | `src/safety/` | Hardware-independent fault state and watchdog liveness policy |
+| `src/services/` | Versioned product configuration storage |
 | `linker/` | Exact N32L406CBL7 memory layout |
 | `vendor/nations/` | Minimal, license-preserving CMSIS/device subset |
 

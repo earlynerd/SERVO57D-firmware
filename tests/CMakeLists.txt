@@ -30,6 +30,7 @@ add_executable(host_unit_tests
     ../firmware/src/safety/boot_self_test.c
     ../firmware/src/safety/fault_latch.c
     ../firmware/src/safety/watchdog_policy.c
+    ../firmware/src/services/configuration_store.c
 )
 
 target_include_directories(host_unit_tests PRIVATE ../firmware/include)

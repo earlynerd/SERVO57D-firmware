@@ -1,8 +1,9 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.5, discovery, boot and encoder telemetry, the
-current diagnostic service, generic drive STOP, and automatic alignment are
-implemented and host-tested. Firmware 0.18.2
+Status: native protocol 1.6, discovery, boot and encoder telemetry, the
+current diagnostic service, generic drive STOP, automatic alignment, and
+power-loss-safe motor-configuration storage are implemented and host-tested.
+Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
 the product drive supervisor and has passed both deadline-release and explicit-
@@ -111,6 +112,9 @@ from causing reply storms.
 | `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
 | `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
 | `0x0202` | `STOP_DRIVE` | Empty | Empty |
+| `0x0300` | `GET_CONFIGURATION_STATUS` | Empty | Schema-1 persistent/active configuration status block described below |
+| `0x0301` | `SAVE_CONFIGURATION` | Empty | Empty |
+| `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
 
 The product ID is `0x4D4B5335` (`MKS5`). Firmware 0.19.0 / protocol 1.3 is the
 bench-proven converged supervisor image. Firmware 0.20.0 / protocol 1.4 appends
@@ -119,7 +123,10 @@ to `GET_ENCODER_STATUS`; the current host tool decodes both schema 1 and schema
 2, while fixed-length third-party clients must check identity/schema before
 decoding. Firmware 0.21.0 / protocol 1.5 adds the bounded automatic-alignment
 service and a generic STOP operation; successful, repeatable alignment and STOP
-are bench-proven on the tested motor. Protocol 1.3 added the bounded current trace validated
+are bench-proven on the tested motor. Firmware 0.22.0 / protocol 1.6 adds the
+versioned dual-slot configuration record and its production service commands;
+the host and target builds pass, while reset/power-cycle acceptance remains a
+hardware gate. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
@@ -148,6 +155,14 @@ under `ALIGN` motion authority. It samples only settled encoder/current data,
 checks the observed quarter-step geometry and final closure, and transactionally
 commits zero and direction only after the whole sequence passes. Failed or
 aborted attempts preserve an earlier valid calibration.
+
+After a successful alignment, firmware first stops the current backend and
+releases motion authority, then automatically persists the accepted motor
+geometry, electrical zero, observed quarter step, error, and direction. An
+unchanged calibration causes no Flash erase or program operation. A storage
+failure does not invalidate the accepted RAM calibration for the current boot;
+configuration status reports the failure and that the active calibration does
+not match the stored record.
 
 The initial 50-count minimum is an alignment policy candidate based on the
 repeatable 303 mA cardinal test; 165 counts is the existing current-backend
@@ -233,6 +248,57 @@ response payload is 58 bytes. Hosts should preflight from these reported policy
 fields rather than duplicating firmware constants; firmware still validates
 every request independently.
 
+`GET_CONFIGURATION_STATUS` returns this schema-1 body after the common status
+byte. The stored and active halves are both reported so a host can distinguish
+a boot-restored calibration, an unsaved active calibration, a persistent clear,
+and a record whose motor geometry is incompatible with the running firmware.
+
+| Body offset | Type | Configuration schema-1 field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 1 |
+| 1 | `u8` | Store/record/calibration/match/slot/write flags |
+| 2 | `u8` | Last store result: 0 OK, 1 empty, 2 invalid argument, 3 I/O error, 4 verify error |
+| 3 | `u8` | Active slot, 0 or 1; `0xFF` when no valid record exists |
+| 4 | `u16` | Configuration-record schema supported by this firmware |
+| 6 | `u32` | Active record generation |
+| 10 | `u16` | Stored encoder counts per mechanical revolution |
+| 12 | `u16` | Stored electrical cycles per mechanical revolution |
+| 14 | `u16` | Stored electrical-zero raw encoder count |
+| 16 | `u16` | Stored observed quarter-step magnitude |
+| 18 | `i16` | Stored observed-minus-expected quarter-step error |
+| 20 | `i8` | Stored encoder direction |
+| 21 | `u16` | Active encoder counts per mechanical revolution |
+| 23 | `u16` | Active electrical cycles per mechanical revolution |
+| 25 | `u16` | Active electrical-zero raw encoder count |
+| 27 | `u16` | Active observed quarter-step magnitude |
+| 29 | `i16` | Active observed-minus-expected quarter-step error |
+| 31 | `i8` | Active encoder direction |
+
+Flag bits are 0 store initialized, 1 valid record selected, 2 stored
+calibration valid, 3 active calibration valid, 4 active configuration exactly
+matches the record, 5 slot 0 valid, 6 slot 1 valid, and 7 writes supported.
+The status body is 32 bytes and the complete successful response payload is 33
+bytes.
+
+`SAVE_CONFIGURATION` is accepted only with a valid active alignment and while
+the supervisor has no authority, the current backend and alignment controller
+are inactive, no start/stop request is pending, and the supervisor is in
+`READY` or `DIAGNOSTIC`. `CLEAR_CALIBRATION` has the same safe-state gate; it
+first commits a newer record with calibration invalid, then clears the RAM
+alignment. A failed clear therefore leaves the previous active calibration
+untouched. Both actions are idempotent at the configuration layer, so retrying
+an already-applied request does not consume another erase cycle despite native
+v1 not yet caching sequence numbers.
+
+The N32L406 storage backend reserves Flash pages 62 and 63 as alternating 2 KiB
+slots. Each record carries magic, schema, length, generation, semantic range
+checks, and CRC-32; the commit word is programmed last. The previously selected
+slot is never erased until a complete newer slot verifies, so reset or power
+loss during an update falls back to the older record. Flash programming is a
+foreground maintenance operation on this single-bank device and is performed
+only after the bridge is forced to `ZERO`; no authority, lease, pending command,
+fault state, or current-sensor startup zero is persisted.
+
 `GET_CURRENT_TRACE` is available only after current-loop authority has ended.
 Each start clears a fixed 256-entry buffer, then the DMA-completion ISR records
 the first 12.8 ms of 20 kHz loop sample number, references, measurements, and
@@ -292,6 +358,7 @@ the complete successful response payload is 64 bytes.
 | 11 | Legacy bridge-characterizer diagnostic UI capability |
 | 12 | TIM3 bridge PWM and bounded current-loop operation |
 | 13 | Bounded production automatic alignment |
+| 14 | Versioned dual-slot persistent motor configuration |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -363,7 +430,9 @@ All adapters are untrusted-input boundaries and follow the same rules:
   trajectory stop and disables control after the stopped trajectory and
   measured motion satisfy their completion tolerances.
 - Configuration that affects control or safety is immutable while running and
-  changes only through a validated safe-state transaction.
+  changes only through a validated safe-state transaction. Same-bank Flash
+  maintenance is permitted only with bridge authority absent and the backend
+  inactive; boot restore never restores authority or an active operation.
 - Broadcast commands never produce replies. Broadcast motion is accepted only
   for operations explicitly declared broadcast-safe.
 - Multidrop RS-485 telemetry is polled or granted a transmission slot. Devices
@@ -395,8 +464,8 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.21.0 links the mechanical estimator, transactional alignment
-controller, and native alignment/STOP service, while the outer motion shell
+target; firmware 0.22.0 links the mechanical estimator, transactional alignment
+controller, native alignment/STOP service, and persistent configuration, while the outer motion shell
 remains excluded.
 
 ## Implementation sequence
@@ -404,8 +473,10 @@ remains excluded.
 1. **Complete:** define host-testable command request, response, error,
    capability, and dispatcher types with no wire-format dependency.
 2. **In progress:** the COBS/CRC native v1 framer, discovery commands, boot and
-   encoder telemetry, and current-loop console are implemented and bench-proven.
-   General application and motion status plus broader fuzz coverage remain.
+   encoder telemetry, current-loop console, and safe motor-configuration
+   transaction are implemented. The motor diagnostics are bench-proven;
+   persistence passes its reset/power-cycle gate. General application and
+   motion status plus broader fuzz coverage remain.
 3. Add the Modbus RTU adapter and project-owned register map to the same
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
@@ -413,9 +484,9 @@ remains excluded.
 5. **Application prerequisite complete:** the portable application shell,
    limits, command arbiter, retry history, lease, safe-stop, and completion
    behavior exist and have end-to-end simulated-plant tests. The hardware
-   current-control state is now proven and automatic alignment is implemented;
-   bench-accept it, then add native velocity and position wire mappings. Homing
-   remains deferred until alignment is bench-proven.
+   current-control state and automatic alignment are bench-proven, and
+   alignment persistence passes its power-cycle gate. Add
+   native velocity and position wire mappings after the aligned torque path.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

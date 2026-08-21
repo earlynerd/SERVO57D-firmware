@@ -29,6 +29,9 @@ COMMAND_GET_CURRENT_TRACE = 0x0106
 COMMAND_START_ALIGNMENT = 0x0200
 COMMAND_GET_ALIGNMENT_STATUS = 0x0201
 COMMAND_STOP_DRIVE = 0x0202
+COMMAND_GET_CONFIGURATION_STATUS = 0x0300
+COMMAND_SAVE_CONFIGURATION = 0x0301
+COMMAND_CLEAR_CALIBRATION = 0x0302
 
 STATUS_NAMES = {
     0: "ok",
@@ -165,11 +168,31 @@ ALIGNMENT_FLAG_NAMES = {
     3: "backend_active",
 }
 
+CONFIGURATION_FLAG_NAMES = {
+    0: "store_initialized",
+    1: "record_valid",
+    2: "stored_calibration_valid",
+    3: "active_calibration_valid",
+    4: "active_matches_record",
+    5: "slot0_valid",
+    6: "slot1_valid",
+    7: "write_supported",
+}
+
+CONFIGURATION_RESULT_NAMES = {
+    0: "ok",
+    1: "empty",
+    2: "invalid_argument",
+    3: "io_error",
+    4: "verify_error",
+}
+
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
+CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -624,6 +647,65 @@ def query_alignment(client: Client) -> dict[str, Any]:
     }
 
 
+def query_configuration(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_CONFIGURATION_STATUS)
+    if len(body) != CONFIGURATION_STATUS_BODY.size:
+        raise ProtocolError(
+            "configuration-status response has an unexpected length"
+        )
+    (
+        schema,
+        flags,
+        last_result,
+        active_slot,
+        record_schema,
+        generation,
+        stored_counts_per_revolution,
+        stored_electrical_cycles,
+        stored_zero,
+        stored_quarter_step,
+        stored_quarter_error,
+        stored_direction,
+        active_counts_per_revolution,
+        active_electrical_cycles,
+        active_zero,
+        active_quarter_step,
+        active_quarter_error,
+        active_direction,
+    ) = CONFIGURATION_STATUS_BODY.unpack(body)
+    names = active_names(flags, CONFIGURATION_FLAG_NAMES)
+    return {
+        "schema": schema,
+        "flags": names,
+        "last_result": CONFIGURATION_RESULT_NAMES.get(
+            last_result, f"result_{last_result}"
+        ),
+        "active_slot": None if active_slot == 0xFF else active_slot,
+        "record_schema": record_schema,
+        "generation": generation,
+        "dirty": (
+            "active_calibration_valid" in names
+            and "active_matches_record" not in names
+        ),
+        "stored": {
+            "encoder_counts_per_revolution": stored_counts_per_revolution,
+            "electrical_cycles_per_revolution": stored_electrical_cycles,
+            "electrical_zero_raw": stored_zero,
+            "observed_quarter_step_counts": stored_quarter_step,
+            "quarter_step_error_counts": stored_quarter_error,
+            "encoder_direction": stored_direction,
+        },
+        "active": {
+            "encoder_counts_per_revolution": active_counts_per_revolution,
+            "electrical_cycles_per_revolution": active_electrical_cycles,
+            "electrical_zero_raw": active_zero,
+            "observed_quarter_step_counts": active_quarter_step,
+            "quarter_step_error_counts": active_quarter_error,
+            "encoder_direction": active_direction,
+        },
+    }
+
+
 def stop_drive(client: Client) -> None:
     try:
         client.transact(COMMAND_STOP_DRIVE)
@@ -650,6 +732,15 @@ def make_parser() -> argparse.ArgumentParser:
     commands.add_parser("boot", help="read reset cause, panic, and uptime")
     commands.add_parser("encoder", help="read live encoder position and health")
     commands.add_parser("alignment", help="read alignment progress and result")
+    commands.add_parser(
+        "configuration", help="read persistent and active motor configuration"
+    )
+    commands.add_parser(
+        "save-configuration", help="persist the active alignment configuration"
+    )
+    commands.add_parser(
+        "clear-calibration", help="persistently invalidate motor alignment"
+    )
     trace = commands.add_parser(
         "trace", help="read the completed 20 kHz current-loop startup trace"
     )
@@ -768,6 +859,14 @@ def main() -> int:
             print_json(query_encoder(client))
         elif args.command == "alignment":
             print_json(query_alignment(client))
+        elif args.command == "configuration":
+            print_json(query_configuration(client))
+        elif args.command == "save-configuration":
+            client.transact(COMMAND_SAVE_CONFIGURATION)
+            print_json(query_configuration(client))
+        elif args.command == "clear-calibration":
+            client.transact(COMMAND_CLEAR_CALIBRATION)
+            print_json(query_configuration(client))
         elif args.command == "trace":
             samples = read_current_trace(client)
             if args.output:

@@ -1,6 +1,7 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.21.0 implements the fast path and production alignment layer:
+Status: firmware 0.22.0 implements the fast path, production alignment layer,
+and safe-state configuration maintenance:
 edge-aligned 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion
 fixed-point current control, a carrier deadline guardian, and a foreground
 automatic-alignment controller using the same backend and supervisor. The fast

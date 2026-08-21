@@ -44,11 +44,15 @@ are the next motor-control milestone.
 
 ## Current operating envelope
 
-Firmware 0.21.0 is the current bench-validated product build. It runs from the fitted
+Firmware 0.22.0 is the current bench-validated product build. It adds protocol
+1.6 and power-loss-safe dual-slot motor-configuration storage; its host, Arm,
+first-save, unchanged-save, power-cycle restore, persistent-clear, and no-
+restored-authority gates pass. The firmware runs from the fitted
 8 MHz crystal at a bench-proven 64 MHz system clock, closes independent A/B
 winding-current loops at 20 kHz, schedules timestamped encoder acquisition at
-1 kHz in foreground, updates the OLED, and serves native RS-485 protocol 1.5
-telemetry, automatic alignment, and the bounded 20 kHz startup-trace service.
+1 kHz in foreground, updates the OLED, and serves native RS-485 telemetry,
+automatic alignment, persistent configuration in protocol 1.6, and the bounded
+20 kHz startup-trace service.
 Two 757.4 mA automatic alignments and a generic-STOP abort passed on the tested
 motor with clean authority release, zero faults, and no reset or retained panic. The 0.19.0
 supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
@@ -140,7 +144,13 @@ five seconds. During a 757 mA / 20 Hz run, sampled encoder intervals were
 
 Successful/repeatable automatic alignment and explicit STOP are accepted on the
 tested motor. Menu abort and induced readiness-loss behavior remain physical
-fault-injection checks. The next functional milestone is the aligned
+fault-injection checks. Firmware 0.22.0 reserves the final two 2 KiB Flash pages
+for alternating versioned configuration records, validates schema, CRC-32,
+generation, commit marker, and motor geometry at boot, automatically persists
+alignment only after authority/backend release, and exposes status/save/clear
+through the production command service. Interrupted-write fallback is host-
+tested, and physical power-cycle restore plus persistent clear are bench-
+accepted. The next functional milestone is the aligned
 torque/current interface followed by velocity and position control. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,

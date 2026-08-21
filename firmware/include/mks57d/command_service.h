@@ -25,7 +25,10 @@ typedef enum
     COMMAND_OPERATION_GET_CURRENT_TRACE,
     COMMAND_OPERATION_START_ALIGNMENT,
     COMMAND_OPERATION_GET_ALIGNMENT_STATUS,
-    COMMAND_OPERATION_STOP_DRIVE
+    COMMAND_OPERATION_STOP_DRIVE,
+    COMMAND_OPERATION_GET_CONFIGURATION_STATUS,
+    COMMAND_OPERATION_SAVE_CONFIGURATION,
+    COMMAND_OPERATION_CLEAR_CALIBRATION
 } command_operation_t;
 
 typedef enum
@@ -181,6 +184,40 @@ typedef struct
     uint16_t maximum_current_error_counts;
 } command_alignment_status_t;
 
+enum
+{
+    COMMAND_CONFIGURATION_FLAG_STORE_INITIALIZED = 1u << 0,
+    COMMAND_CONFIGURATION_FLAG_RECORD_VALID = 1u << 1,
+    COMMAND_CONFIGURATION_FLAG_STORED_CALIBRATION_VALID = 1u << 2,
+    COMMAND_CONFIGURATION_FLAG_ACTIVE_CALIBRATION_VALID = 1u << 3,
+    COMMAND_CONFIGURATION_FLAG_ACTIVE_MATCHES_RECORD = 1u << 4,
+    COMMAND_CONFIGURATION_FLAG_SLOT0_VALID = 1u << 5,
+    COMMAND_CONFIGURATION_FLAG_SLOT1_VALID = 1u << 6,
+    COMMAND_CONFIGURATION_FLAG_WRITE_SUPPORTED = 1u << 7
+};
+
+typedef struct
+{
+    uint8_t schema_version;
+    uint8_t flags;
+    uint8_t last_result;
+    uint8_t active_slot;
+    uint16_t record_schema_version;
+    uint32_t generation;
+    uint16_t stored_encoder_counts_per_revolution;
+    uint16_t stored_electrical_cycles_per_revolution;
+    uint16_t stored_electrical_zero_raw;
+    uint16_t stored_observed_quarter_step_counts;
+    int16_t stored_quarter_step_error_counts;
+    int8_t stored_encoder_direction;
+    uint16_t active_encoder_counts_per_revolution;
+    uint16_t active_electrical_cycles_per_revolution;
+    uint16_t active_electrical_zero_raw;
+    uint16_t active_observed_quarter_step_counts;
+    int16_t active_quarter_step_error_counts;
+    int8_t active_encoder_direction;
+} command_configuration_status_t;
+
 typedef command_status_t (*command_commissioning_get_status_fn)(
     void* context,
     command_commissioning_status_t* status);
@@ -210,6 +247,10 @@ typedef command_status_t (*command_alignment_get_status_fn)(
     void* context,
     command_alignment_status_t* status);
 typedef command_status_t (*command_drive_stop_fn)(void* context);
+typedef command_status_t (*command_configuration_get_status_fn)(
+    void* context,
+    command_configuration_status_t* status);
+typedef command_status_t (*command_configuration_action_fn)(void* context);
 
 typedef struct
 {
@@ -238,6 +279,14 @@ typedef struct
 
 typedef struct
 {
+    void* context;
+    command_configuration_get_status_fn get_status;
+    command_configuration_action_fn save;
+    command_configuration_action_fn clear_calibration;
+} command_configuration_api_t;
+
+typedef struct
+{
     uint32_t product_id;
     uint8_t firmware_major;
     uint8_t firmware_minor;
@@ -248,6 +297,7 @@ typedef struct
     command_commissioning_api_t commissioning;
     command_alignment_api_t alignment;
     command_drive_api_t drive;
+    command_configuration_api_t configuration;
 } command_service_context_t;
 
 typedef struct
@@ -268,7 +318,8 @@ typedef enum
     COMMAND_RESPONSE_BOOT_STATUS,
     COMMAND_RESPONSE_ENCODER_STATUS,
     COMMAND_RESPONSE_CURRENT_TRACE,
-    COMMAND_RESPONSE_ALIGNMENT_STATUS
+    COMMAND_RESPONSE_ALIGNMENT_STATUS,
+    COMMAND_RESPONSE_CONFIGURATION_STATUS
 } command_response_kind_t;
 
 typedef struct
@@ -302,6 +353,7 @@ typedef struct
         command_encoder_status_t encoder_status;
         command_current_trace_sample_t current_trace;
         command_alignment_status_t alignment_status;
+        command_configuration_status_t configuration_status;
     } data;
 } command_response_t;
 

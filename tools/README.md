@@ -63,7 +63,10 @@ py tools/mks57d_rs485.py --port COM14 identity
 py tools/mks57d_rs485.py --port COM14 boot
 py tools/mks57d_rs485.py --port COM14 encoder
 py tools/mks57d_rs485.py --port COM14 alignment
+py tools/mks57d_rs485.py --port COM14 configuration
 py tools/mks57d_rs485.py --port COM14 align --current-ma 757.5 --interval 0.1
+py tools/mks57d_rs485.py --port COM14 save-configuration
+py tools/mks57d_rs485.py --port COM14 clear-calibration
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
@@ -79,14 +82,21 @@ shorter protocol-1.3 encoder schema. `watch` and `run` attach the same encoder
 snapshot to every current-loop record so electrical commutation and physical
 rotor motion can be compared directly.
 
-On firmware 0.21.0, `alignment` reads the production alignment state without
+On firmware 0.21.0 and later, `alignment` reads the production alignment state without
 energizing the motor. `align` requests the bounded phase-zero/quarter/return
 sequence, polls its structured result, and sends the generic drive STOP on
 Ctrl+C. The recommended first bench command uses the already accepted current
 point shown above. The status output includes the firmware-reported current,
 timing, sample-count, stability, geometry, closure, and current-error policy;
 the CLI preflights current against that contract before START. Calibration is
-updated only if all of those runtime checks pass.
+updated only if all of those runtime checks pass. On protocol 1.6, successful
+alignment is automatically persisted after the backend stops and motion
+authority is released. `configuration` compares the stored record with the
+active alignment and reports generation, selected/valid slots, and the last
+storage result. `save-configuration` is an idempotent explicit retry;
+`clear-calibration` first persists the invalid state and then clears the live
+calibration. Both write operations are rejected while any drive operation or
+pending start/stop owns the safe-state boundary.
 
 Protocol 1.3 and later firmware also records the first 256 current-loop samples
 after each start. Run a nearly stationary reference for a clean startup step,
