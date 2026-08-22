@@ -586,6 +586,37 @@ the run completed 20,001 current-loop updates. Post-run status reported
 bridge duties, no authority, and no ADC, deadline, predictor, encoder, backend, supervisor,
 reset, or panic fault.
 
+### Firmware 0.29.0 in-place fault-recovery gate
+
+After flashing 0.29.0, confirm identity reports protocol 1.11. Cause only a
+bounded, understood software fault for the first gate; a position following
+error is suitable because it already converges on `ZERO` without requiring an
+electrical fault injection. Preserve the terminal position, velocity, encoder,
+and drive status, then issue:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 clear-faults
+```
+
+The user command is the recovery acknowledgment. Do not release the Right
+button, move the shaft, or otherwise manufacture a healthy precondition merely
+to make the firmware accept it. Require JSON result `cleared`, zero remaining
+fault sources, no reset, and a transition through uncommanded `DIAGNOSTIC` to
+`READY` as fresh current and encoder samples arrive. Then run a low-energy
+bounded position or velocity command and require ordinary completion without
+power cycling or resetting the MCU. Repeating `clear-faults` with no latched
+fault should return `no_fault` without disturbing a healthy operation.
+
+The recovery attempt establishes direct-GPIO `ZERO`, restarts ADC/DMA, rebuilds
+TIM3/current-loop state, and resets the estimator/controller operation latches;
+accepted alignment and persistent configuration must remain unchanged. A
+condition that is actually still present is expected to fault again when the
+normal monitor observes it. A `blocked` result is a failed reset transaction to
+investigate, not a declaration that the initiating fault class cannot be
+recovered. Do not create an overcurrent, power-stage, or supply fault solely for
+this gate without the corresponding injection fixture and immediate supply
+cutoff.
+
 ### Expanded velocity evaluation gate
 
 Firmware 0.27.1 permits a direct velocity target through 16 rev/s, inner

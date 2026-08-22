@@ -53,7 +53,7 @@ analyzes the result, and opens a self-contained plot report:
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
-On protocol 1.10 the live line and report use measured bus volts and commanded
+On protocol 1.10 and later the live line and report use measured bus volts and commanded
 carrier-average phase volts; controller-native ratios remain only in the saved
 diagnostic data.
 
@@ -150,9 +150,24 @@ scheduled generic STOP also cleared all current references and duties without
 faults or calibration changes. Physical Right-button stop and loaded
 following-error checks remain pending.
 
+Firmware 0.29.0 source / protocol 1.11 adds explicit in-place fault recovery:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 clear-faults
+```
+
+The command is the operator acknowledgment that the cause has been removed; it
+does not demand a second healthy encoder/current/input observation before
+clearing. It establishes `ZERO`, rebuilds the ADC/DMA, PWM/current backend and
+faulted controller state, and returns the supervisor to uncommanded
+`DIAGNOSTIC`. Normal fresh samples then restore `READY`; a condition that is
+still present simply faults again. `stop` remains a stop request and does not
+clear faults.
+
 ## Current operating envelope
 
-Firmware 0.28.0 / protocol 1.10 is the currently flashed evaluation build.
+Firmware 0.29.0 / protocol 1.11 is the current source candidate; firmware
+0.28.0 / protocol 1.10 remains the currently flashed evaluation build.
 Identity, readiness, generation-3 calibration restore, the 16 rev/s / 256 rev/s² /
 2.999 A nominal live velocity policy, and clean terminal release pass on hardware.
 Positive direct-velocity runs through 6 rev/s at 12 V appeared smooth and

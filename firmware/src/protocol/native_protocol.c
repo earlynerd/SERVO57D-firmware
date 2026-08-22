@@ -353,6 +353,9 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_STOP_DRIVE:
             *operation = COMMAND_OPERATION_STOP_DRIVE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_CLEAR_FAULTS:
+            *operation = COMMAND_OPERATION_CLEAR_FAULTS;
+            return true;
         case NATIVE_PROTOCOL_COMMAND_GET_CONFIGURATION_STATUS:
             *operation = COMMAND_OPERATION_GET_CONFIGURATION_STATUS;
             return true;
@@ -910,6 +913,23 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              (uint32_t)status->
                                  maximum_following_error_revolutions_q16_16);
                 payload_length = 63u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_FAULT_RECOVERY_STATUS:
+            {
+                const command_fault_recovery_status_t* status =
+                    &command_response->data.fault_recovery_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->result;
+                write_u32_be(&response_frame->payload[3],
+                             status->blocker_flags);
+                write_u32_be(&response_frame->payload[7],
+                             status->cleared_fault_flags);
+                write_u32_be(&response_frame->payload[11],
+                             status->remaining_fault_flags);
+                payload_length = 15u;
                 break;
             }
 

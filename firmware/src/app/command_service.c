@@ -221,6 +221,26 @@ void command_service_dispatch(const command_service_context_t* context,
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 
+        case COMMAND_OPERATION_CLEAR_FAULTS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->drive.clear_faults == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->drive.clear_faults(
+                context->drive.context,
+                &response->data.fault_recovery_status);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_FAULT_RECOVERY_STATUS;
+            }
+            return;
+
         case COMMAND_OPERATION_GET_CONFIGURATION_STATUS:
             if (request->payload_length != 0u)
             {

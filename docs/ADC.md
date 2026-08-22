@@ -1,6 +1,6 @@
 # ADC Bring-up
 
-Status: firmware 0.19.0 uses TIM2 compare at 80% of each 20 kHz carrier to
+Status: firmware 0.29.0 retains the TIM2 compare at 80% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 16 MHz, 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.
@@ -189,6 +189,15 @@ addition is bench-confirmed: inactive status reported 23.829 V at the 24 V
 supply setting, all 22 active samples held 23.776-23.815 V during a one-second 1 rev/s /
 606 mA run, 20,001 regular current-loop updates completed, the VBUS counter
 advanced, and all ADC/deadline/control/reset/panic checks remained clear.
+
+Firmware 0.29.0 makes an operator-acknowledged ADC/DMA or current-backend fault
+recoverable without an MCU reset. `CLEAR_FAULTS` first holds the bridge in
+direct-GPIO `ZERO`, disables and clears DMA channel 1 and ADC trigger state,
+re-runs the bounded ADC start/calibration sequence, reinstalls the current-event
+handler, and only then rebuilds zero-duty TIM3/current-loop state. It does not
+require a successful sample before attempting the reset. Fresh samples remain
+an ordinary control input for returning from `DIAGNOSTIC` to `READY`; a DMA,
+range, or current condition that persists re-latches through the normal path.
 
 Remaining analog work is to characterize temperature and unit-to-unit gain
 tolerance, amplifier settling/bandwidth and clipping, and repeat across bus

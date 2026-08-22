@@ -1,11 +1,12 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.10 in flashed firmware 0.28.0. Protocol 1.9 remains
-backward-decodable by the host. Discovery, boot and encoder telemetry, the
+Status: native protocol 1.11 is implemented in firmware 0.29.0 source; protocol
+1.10 in flashed firmware 0.28.0 remains backward-decodable by the host.
+Discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
 power-loss-safe motor-configuration storage, bounded aligned q-current, and the
-first bounded velocity service, and relative-position control are implemented
-and host-tested.
+first bounded velocity service, relative-position control, and explicit fault
+acknowledgment/recovery are implemented and host-tested.
 Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
@@ -115,6 +116,7 @@ from causing reply storms.
 | `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
 | `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
 | `0x0202` | `STOP_DRIVE` | Empty | Empty |
+| `0x0203` | `CLEAR_FAULTS` | Empty | Schema-1 fault-recovery status block described below |
 | `0x0300` | `GET_CONFIGURATION_STATUS` | Empty | Schema-1 persistent/active configuration status block described below |
 | `0x0301` | `SAVE_CONFIGURATION` | Empty | Empty |
 | `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
@@ -163,6 +165,10 @@ phase-command permille, and duty permille remain available as exact controller
 diagnostics; the host treats milliamperes/amperes, measured bus volts, and
 bus-scaled commanded average phase volts as the primary engineering units.
 
+Firmware 0.29.0 / protocol 1.11 adds `CLEAR_FAULTS` without changing any
+existing command or response layout. The host console exposes it directly as
+`clear-faults`.
+
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
@@ -178,6 +184,46 @@ stops a current diagnostic, alignment, aligned-torque, velocity, or position ope
 releasing its authority. A remote run also stops at its deadline, on the physical Right button, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
+
+`CLEAR_FAULTS` is distinct from STOP. STOP requests termination of active
+authority and does not acknowledge or erase a fault. `CLEAR_FAULTS` is the
+operator acknowledgment that the condition which caused the fault is gone.
+Firmware does not require a healthy encoder sample, an in-range current sample,
+released Right button, or any other second proof of that assertion before it
+attempts recovery.
+
+When a fault is present, recovery first cancels all command mailboxes and
+establishes the direct-GPIO all-low `ZERO` vector. It then rebuilds the
+timer-synchronous ADC/DMA acquisition, TIM3 PWM/current backend, estimator when
+faulted, alignment-operation state, aligned-torque state, velocity state, and
+position state; clears pending runtime fault events; and acknowledges the
+supervisor into uncommanded `DIAGNOSTIC`. Accepted motor alignment, persistent
+configuration, reset cause, watchdog history, and retained panic evidence are
+not erased. Fresh current and encoder production subsequently move the normal
+readiness logic from `DIAGNOSTIC` to `READY`. If the asserted condition is still
+present, its ordinary monitor faults again when it is observed or when a new
+operation exercises it.
+
+The command is idempotent: with no recognized fault it returns `no_fault` and
+does not disturb a healthy operation. `blocked` means the attempted ZERO/backend,
+runtime, or supervisor reset did not complete coherently; it does not classify
+the initiating fault source as permanently unrecoverable. The 14-byte schema-1
+body is:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| 0 | `u8` | Schema, currently 1 |
+| 1 | `u8` | Result: 0 cleared, 1 no fault, 2 blocked |
+| 2 | `u32` | Blocker flags |
+| 6 | `u32` | Cleared fault-source flags |
+| 10 | `u32` | Remaining fault-source flags |
+
+Blocker bits are 0 ZERO establishment failed, 1 ADC/PWM/current-backend reset
+failed, 2 rotor-runtime reset failed, and 3 supervisor reset failed. Fault-source
+bits are 0 supervisor, 1 estimator, 2 alignment, 3 aligned torque, 4 velocity,
+5 position, and 6 current backend. A position following-error event commonly
+reports position plus the cascaded velocity/actuator and supervisor sources;
+one successful command clears the complete set.
 
 `START_ALIGNMENT` is accepted only from supervisor `READY`, with current and
 encoder readiness intact, Right button released, no fault, no active/pending current
@@ -582,6 +628,7 @@ to make measured current track the requested current.
 | 15 | Bounded encoder-aligned q-current operation |
 | 16 | Bounded mechanical-velocity control |
 | 17 | Bounded relative-position control |
+| 18 | Explicit operator fault acknowledgment and in-place recovery |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -591,6 +638,7 @@ payloads. Each row is a complete on-wire frame including the final delimiter:
 | `PING` | `03 01 01 03 01 01 02 01 03 21 58 00` |
 | `GET_IDENTITY` | `03 01 01 03 01 01 02 02 03 74 0B 00` |
 | `GET_CAPABILITIES` | `03 01 01 03 01 01 02 03 03 47 3A 00` |
+| `CLEAR_FAULTS` | `03 01 01 05 01 01 02 03 03 29 5A 00` |
 
 The base frame preserves these required properties:
 

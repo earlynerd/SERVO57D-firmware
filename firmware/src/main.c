@@ -75,6 +75,7 @@ enum
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 1u,
     VELOCITY_STATUS_SCHEMA_VERSION = 1u,
     POSITION_STATUS_SCHEMA_VERSION = 1u,
+    FAULT_RECOVERY_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
@@ -146,6 +147,7 @@ struct product_command_context
     bool* adc_snapshot_valid;
     bool* adc_calibration_ready;
     bool* current_loop_initialized;
+    uint16_t* current_loop_fault_code;
     bool* bridge_ready;
     adc1_status_t* adc_status;
     adc1_current_snapshot_t* adc_snapshot;
@@ -520,6 +522,242 @@ static command_status_t commissioning_stop(void* context)
         commissioning->position_commands->start_requested = false;
         commissioning->position_commands->stop_requested = true;
     }
+    return COMMAND_STATUS_OK;
+}
+
+static uint32_t fault_sources_from_rotor_snapshot(
+    const rotor_control_snapshot_t* snapshot)
+{
+    uint32_t sources = 0u;
+
+    if (snapshot == NULL)
+    {
+        return 0u;
+    }
+    if (snapshot->estimator_fault_flags != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_ESTIMATOR;
+    }
+    if (snapshot->alignment_controller.status.state ==
+        ALIGNMENT_CONTROLLER_STATE_FAILED)
+    {
+        sources |= COMMAND_FAULT_SOURCE_ALIGNMENT;
+    }
+    if ((snapshot->torque_controller.status.state ==
+         ALIGNED_TORQUE_STATE_FAILED) ||
+        (snapshot->torque_controller.status.fault_flags != 0u))
+    {
+        sources |= COMMAND_FAULT_SOURCE_ALIGNED_TORQUE;
+    }
+    if ((snapshot->velocity_controller.status.state ==
+         VELOCITY_CONTROL_STATE_FAILED) ||
+        (snapshot->velocity_controller.status.fault_flags != 0u))
+    {
+        sources |= COMMAND_FAULT_SOURCE_VELOCITY;
+    }
+    if ((snapshot->position_controller.status.state ==
+         POSITION_CONTROL_STATE_FAILED) ||
+        (snapshot->position_controller.status.fault_flags != 0u))
+    {
+        sources |= COMMAND_FAULT_SOURCE_POSITION;
+    }
+    return sources;
+}
+
+static uint32_t command_sources_from_runtime_sources(
+    uint32_t runtime_sources)
+{
+    uint32_t sources = 0u;
+
+    if ((runtime_sources & ROTOR_CONTROL_FAULT_SOURCE_ESTIMATOR) != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_ESTIMATOR;
+    }
+    if ((runtime_sources & ROTOR_CONTROL_FAULT_SOURCE_ALIGNMENT) != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_ALIGNMENT;
+    }
+    if ((runtime_sources &
+         ROTOR_CONTROL_FAULT_SOURCE_ALIGNED_TORQUE) != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_ALIGNED_TORQUE;
+    }
+    if ((runtime_sources & ROTOR_CONTROL_FAULT_SOURCE_VELOCITY) != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_VELOCITY;
+    }
+    if ((runtime_sources & ROTOR_CONTROL_FAULT_SOURCE_POSITION) != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_POSITION;
+    }
+    return sources;
+}
+
+static void clear_command_mailboxes(product_command_context_t* commands)
+{
+    commands->remote_start_requested = false;
+    commands->remote_stop_requested = false;
+    commands->remote_authority_active = false;
+    commands->alignment_start_requested = false;
+    commands->alignment_stop_requested = false;
+    commands->torque_start_requested = false;
+    commands->torque_stop_requested = false;
+    if (commands->velocity_commands != NULL)
+    {
+        commands->velocity_commands->start_requested = false;
+        commands->velocity_commands->stop_requested = false;
+    }
+    if (commands->position_commands != NULL)
+    {
+        commands->position_commands->start_requested = false;
+        commands->position_commands->stop_requested = false;
+    }
+}
+
+static command_status_t drive_clear_faults(
+    void* context,
+    command_fault_recovery_status_t* status)
+{
+    product_command_context_t* commands = context;
+    current_loop_backend_snapshot_t loop = {0};
+    rotor_control_snapshot_t rotor = {0};
+    uint32_t sources;
+    uint32_t runtime_sources = 0u;
+    uint32_t backend_faults = 0u;
+
+    if ((commands == NULL) || (status == NULL) ||
+        (commands->supervisor == NULL) ||
+        (commands->rotor_control_runtime == NULL) ||
+        (commands->bridge_ready == NULL) ||
+        (commands->adc_ready == NULL) ||
+        (commands->adc_snapshot_valid == NULL) ||
+        (commands->vbus_snapshot_valid == NULL) ||
+        (commands->adc_status == NULL) ||
+        (commands->angle_tracker == NULL) ||
+        (commands->encoder_feedback_live == NULL) ||
+        (commands->estimator_fault_flags == NULL) ||
+        (commands->estimator_sample_interval_us == NULL) ||
+        (commands->estimator_maximum_sample_interval_us == NULL) ||
+        (commands->alignment_controller == NULL) ||
+        (commands->aligned_torque_controller == NULL) ||
+        (commands->velocity_controller == NULL) ||
+        (commands->current_loop_fault_code == NULL) ||
+        (commands->position_commands == NULL) ||
+        (commands->position_commands->position_controller == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    memset(status, 0, sizeof(*status));
+    status->schema_version = FAULT_RECOVERY_STATUS_SCHEMA_VERSION;
+    current_loop_backend_get_snapshot(&loop);
+    if (!rotor_control_runtime_get_snapshot(
+            commands->rotor_control_runtime, &rotor))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    sources = fault_sources_from_rotor_snapshot(&rotor);
+    if (loop.fault_flags != 0u)
+    {
+        sources |= COMMAND_FAULT_SOURCE_CURRENT_BACKEND;
+    }
+    if (commands->supervisor->state == APP_STATE_FAULT)
+    {
+        sources |= COMMAND_FAULT_SOURCE_SUPERVISOR;
+    }
+    if (sources == 0u)
+    {
+        status->result = COMMAND_FAULT_RECOVERY_RESULT_NO_FAULT;
+        return COMMAND_STATUS_OK;
+    }
+
+    status->result = COMMAND_FAULT_RECOVERY_RESULT_BLOCKED;
+    status->remaining_fault_flags = sources;
+    clear_command_mailboxes(commands);
+    *commands->bridge_ready = false;
+
+    if (!current_loop_backend_recover(&backend_faults))
+    {
+        status->blocker_flags |=
+            COMMAND_FAULT_RECOVERY_BLOCKER_BACKEND_RESET_FAILED;
+        status->remaining_fault_flags |=
+            COMMAND_FAULT_SOURCE_CURRENT_BACKEND;
+        return COMMAND_STATUS_OK;
+    }
+    if (backend_faults != 0u)
+    {
+        status->cleared_fault_flags |=
+            COMMAND_FAULT_SOURCE_CURRENT_BACKEND;
+        status->remaining_fault_flags &=
+            ~((uint32_t)COMMAND_FAULT_SOURCE_CURRENT_BACKEND);
+    }
+
+    if (!rotor_control_runtime_clear_faults(
+            commands->rotor_control_runtime, &runtime_sources))
+    {
+        status->blocker_flags |=
+            COMMAND_FAULT_RECOVERY_BLOCKER_RUNTIME_RESET_FAILED;
+        return COMMAND_STATUS_OK;
+    }
+    status->cleared_fault_flags |=
+        command_sources_from_runtime_sources(runtime_sources);
+    status->remaining_fault_flags &=
+        ~command_sources_from_runtime_sources(runtime_sources);
+
+    if ((commands->supervisor->state != APP_STATE_FAULT) &&
+        !app_supervisor_handle_event(
+            commands->supervisor,
+            APP_EVENT_FAULT_DETECTED,
+            (app_transition_context_t){0}))
+    {
+        status->blocker_flags |=
+            COMMAND_FAULT_RECOVERY_BLOCKER_SUPERVISOR_RESET_FAILED;
+        return COMMAND_STATUS_OK;
+    }
+    if (!app_supervisor_handle_event(
+            commands->supervisor,
+            APP_EVENT_FAULT_ACKNOWLEDGED,
+            (app_transition_context_t){.safe_to_recover = true}))
+    {
+        status->blocker_flags |=
+            COMMAND_FAULT_RECOVERY_BLOCKER_SUPERVISOR_RESET_FAILED;
+        return COMMAND_STATUS_OK;
+    }
+
+    if (!rotor_control_runtime_get_snapshot(
+            commands->rotor_control_runtime, &rotor))
+    {
+        status->blocker_flags |=
+            COMMAND_FAULT_RECOVERY_BLOCKER_RUNTIME_RESET_FAILED;
+        return COMMAND_STATUS_OK;
+    }
+    *commands->angle_tracker = rotor.angle_tracker;
+    *commands->alignment_controller = rotor.alignment_controller;
+    *commands->aligned_torque_controller = rotor.torque_controller;
+    *commands->velocity_controller = rotor.velocity_controller;
+    *commands->position_commands->position_controller =
+        rotor.position_controller;
+    *commands->estimator_fault_flags = rotor.estimator_fault_flags;
+    *commands->estimator_sample_interval_us =
+        rotor.estimator_sample_interval_us;
+    *commands->estimator_maximum_sample_interval_us =
+        rotor.estimator_maximum_sample_interval_us;
+    if ((sources & COMMAND_FAULT_SOURCE_ESTIMATOR) != 0u)
+    {
+        *commands->encoder_feedback_live = false;
+    }
+
+    *commands->adc_ready = true;
+    *commands->adc_snapshot_valid = false;
+    *commands->vbus_snapshot_valid = false;
+    *commands->adc_status = ADC1_STATUS_NO_SAMPLE;
+    *commands->current_loop_fault_code = 0u;
+    *commands->bridge_ready = true;
+    status->cleared_fault_flags |=
+        sources & COMMAND_FAULT_SOURCE_SUPERVISOR;
+    status->remaining_fault_flags = 0u;
+    status->result = COMMAND_FAULT_RECOVERY_RESULT_CLEARED;
     return COMMAND_STATUS_OK;
 }
 
@@ -2148,6 +2386,7 @@ int main(void)
         .adc_snapshot_valid = &adc_snapshot_valid,
         .adc_calibration_ready = &adc_calibration_ready,
         .current_loop_initialized = &current_loop_initialized,
+        .current_loop_fault_code = &current_loop_fault_code,
         .bridge_ready = &bridge_ready,
         .adc_status = &adc_status,
         .adc_snapshot = &adc_snapshot,
@@ -2206,6 +2445,7 @@ int main(void)
         .drive = {
             .context = &commissioning_context,
             .stop = commissioning_stop,
+            .clear_faults = drive_clear_faults,
         },
         .configuration = {
             .context = &commissioning_context,

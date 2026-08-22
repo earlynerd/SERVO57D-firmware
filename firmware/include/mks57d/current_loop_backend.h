@@ -65,6 +65,7 @@ bool current_loop_backend_set_aligned_q_reference(
     uint32_t encoder_timestamp_us);
 bool current_loop_backend_start(void);
 bool current_loop_backend_stop(void);
+bool current_loop_backend_recover(uint32_t* cleared_fault_flags);
 void current_loop_backend_get_snapshot(
     current_loop_backend_snapshot_t* snapshot);
 uint16_t current_loop_backend_trace_count(void);

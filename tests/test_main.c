@@ -103,6 +103,7 @@ typedef struct
     command_aligned_torque_status_t aligned_torque_status;
     command_velocity_status_t velocity_status;
     command_position_status_t position_status;
+    command_fault_recovery_status_t fault_recovery_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -116,6 +117,7 @@ typedef struct
     size_t alignment_start_calls;
     size_t alignment_status_calls;
     size_t drive_stop_calls;
+    size_t drive_clear_faults_calls;
     size_t configuration_status_calls;
     size_t configuration_save_calls;
     size_t calibration_clear_calls;
@@ -578,6 +580,17 @@ static command_status_t mock_drive_stop(void* context)
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_drive_clear_faults(
+    void* context,
+    command_fault_recovery_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->drive_clear_faults_calls;
+    *status = mock->fault_recovery_status;
+    return COMMAND_STATUS_OK;
+}
+
 static command_status_t mock_configuration_get_status(
     void* context,
     command_configuration_status_t* status)
@@ -736,6 +749,7 @@ static bool init_commissioning_server(native_protocol_server_t* server,
         .drive = {
             .context = commissioning,
             .stop = mock_drive_stop,
+            .clear_faults = mock_drive_clear_faults,
         },
         .configuration = {
             .context = commissioning,
@@ -1047,6 +1061,8 @@ static void test_diagnostics_record_abi(void)
                  DIAGNOSTICS_CAPABILITY_ALIGNMENT) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_VELOCITY_CONTROL) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_FAULT_RECOVERY) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -2157,6 +2173,18 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                 4 * 65536,
             .maximum_following_error_revolutions_q16_16 = 1 * 65536 / 4,
         },
+        .fault_recovery_status = {
+            .schema_version = 1u,
+            .result = COMMAND_FAULT_RECOVERY_RESULT_BLOCKED,
+            .blocker_flags =
+                COMMAND_FAULT_RECOVERY_BLOCKER_BACKEND_RESET_FAILED,
+            .cleared_fault_flags =
+                COMMAND_FAULT_SOURCE_SUPERVISOR |
+                COMMAND_FAULT_SOURCE_VELOCITY |
+                COMMAND_FAULT_SOURCE_POSITION,
+            .remaining_fault_flags =
+                COMMAND_FAULT_SOURCE_CURRENT_BACKEND,
+        },
     };
     native_protocol_frame_t response;
     size_t wire_length;
@@ -2240,6 +2268,30 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(commissioning.requested_duration_millis == 5000u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        99u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_CLEAR_FAULTS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.drive_clear_faults_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 15u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] ==
+                COMMAND_FAULT_RECOVERY_RESULT_BLOCKED);
+    EXPECT_TRUE(response.payload[6] == 0x02u);
+    EXPECT_TRUE(response.payload[10] == 0x31u);
+    EXPECT_TRUE(response.payload[14] == 0x40u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,

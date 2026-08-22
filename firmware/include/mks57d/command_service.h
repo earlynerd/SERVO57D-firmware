@@ -26,6 +26,7 @@ typedef enum
     COMMAND_OPERATION_START_ALIGNMENT,
     COMMAND_OPERATION_GET_ALIGNMENT_STATUS,
     COMMAND_OPERATION_STOP_DRIVE,
+    COMMAND_OPERATION_CLEAR_FAULTS,
     COMMAND_OPERATION_GET_CONFIGURATION_STATUS,
     COMMAND_OPERATION_SAVE_CONFIGURATION,
     COMMAND_OPERATION_CLEAR_CALIBRATION,
@@ -61,6 +62,41 @@ typedef enum
     COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT = 1u << 10,
     COMMAND_COMMISSIONING_FLAG_VBUS_SNAPSHOT_VALID = 1u << 11
 } command_commissioning_flag_t;
+
+typedef enum
+{
+    COMMAND_FAULT_RECOVERY_RESULT_CLEARED = 0,
+    COMMAND_FAULT_RECOVERY_RESULT_NO_FAULT,
+    COMMAND_FAULT_RECOVERY_RESULT_BLOCKED
+} command_fault_recovery_result_t;
+
+typedef enum
+{
+    COMMAND_FAULT_RECOVERY_BLOCKER_ZERO_FAILED = 1u << 0,
+    COMMAND_FAULT_RECOVERY_BLOCKER_BACKEND_RESET_FAILED = 1u << 1,
+    COMMAND_FAULT_RECOVERY_BLOCKER_RUNTIME_RESET_FAILED = 1u << 2,
+    COMMAND_FAULT_RECOVERY_BLOCKER_SUPERVISOR_RESET_FAILED = 1u << 3
+} command_fault_recovery_blocker_t;
+
+typedef enum
+{
+    COMMAND_FAULT_SOURCE_SUPERVISOR = 1u << 0,
+    COMMAND_FAULT_SOURCE_ESTIMATOR = 1u << 1,
+    COMMAND_FAULT_SOURCE_ALIGNMENT = 1u << 2,
+    COMMAND_FAULT_SOURCE_ALIGNED_TORQUE = 1u << 3,
+    COMMAND_FAULT_SOURCE_VELOCITY = 1u << 4,
+    COMMAND_FAULT_SOURCE_POSITION = 1u << 5,
+    COMMAND_FAULT_SOURCE_CURRENT_BACKEND = 1u << 6
+} command_fault_source_t;
+
+typedef struct
+{
+    uint8_t schema_version;
+    uint8_t result;
+    uint32_t blocker_flags;
+    uint32_t cleared_fault_flags;
+    uint32_t remaining_fault_flags;
+} command_fault_recovery_status_t;
 
 typedef struct
 {
@@ -364,6 +400,9 @@ typedef command_status_t (*command_alignment_get_status_fn)(
     void* context,
     command_alignment_status_t* status);
 typedef command_status_t (*command_drive_stop_fn)(void* context);
+typedef command_status_t (*command_drive_clear_faults_fn)(
+    void* context,
+    command_fault_recovery_status_t* status);
 typedef command_status_t (*command_configuration_get_status_fn)(
     void* context,
     command_configuration_status_t* status);
@@ -417,6 +456,7 @@ typedef struct
 {
     void* context;
     command_drive_stop_fn stop;
+    command_drive_clear_faults_fn clear_faults;
 } command_drive_api_t;
 
 typedef struct
@@ -488,7 +528,8 @@ typedef enum
     COMMAND_RESPONSE_CONFIGURATION_STATUS,
     COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS,
     COMMAND_RESPONSE_VELOCITY_STATUS,
-    COMMAND_RESPONSE_POSITION_STATUS
+    COMMAND_RESPONSE_POSITION_STATUS,
+    COMMAND_RESPONSE_FAULT_RECOVERY_STATUS
 } command_response_kind_t;
 
 typedef struct
@@ -526,6 +567,7 @@ typedef struct
         command_aligned_torque_status_t aligned_torque_status;
         command_velocity_status_t velocity_status;
         command_position_status_t position_status;
+        command_fault_recovery_status_t fault_recovery_status;
     } data;
 } command_response_t;
 

@@ -7,6 +7,7 @@
 #include "mks57d/board.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/phase_current_reference.h"
+#include "mks57d/platform.h"
 #include "mks57d/tim3_bridge_pwm.h"
 #include "mks57d/timebase.h"
 #include "n32l40x.h"
@@ -19,6 +20,7 @@ enum
 };
 
 static phase_current_loop_config_t s_config;
+static electrical_phase_predictor_config_t s_phase_predictor_config;
 static phase_current_loop_t s_loop;
 static electrical_phase_predictor_t s_phase_predictor;
 static volatile uint32_t s_fault_flags;
@@ -249,6 +251,7 @@ bool current_loop_backend_init(
 
     memset(&s_latest_output, 0, sizeof(s_latest_output));
     s_config = *config;
+    s_phase_predictor_config = *phase_predictor_config;
     s_fault_flags = CURRENT_LOOP_BACKEND_FAULT_NONE;
     s_sample_count = 0u;
     s_output_generation = 0u;
@@ -488,6 +491,74 @@ bool current_loop_backend_stop(void)
         return false;
     }
     return true;
+}
+
+bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
+{
+    uint32_t previous;
+    uint32_t previous_faults;
+    bool recovered;
+
+    if (cleared_fault_flags != NULL)
+    {
+        *cleared_fault_flags = CURRENT_LOOP_BACKEND_FAULT_NONE;
+    }
+    if (!s_initialized)
+    {
+        board_bridge_force_low_zero();
+        return false;
+    }
+
+    previous = control_critical_enter();
+    previous_faults = s_fault_flags;
+
+    /* Recovery is an operator-requested rearm, not a continuation. Tear the
+       switching path back down to the direct-GPIO ZERO vector before
+       rebuilding the idle PWM backend and all of its volatile loop state. */
+    s_active = false;
+    (void)tim3_bridge_pwm_update_irq_enable(false);
+    phase_current_loop_stop(&s_loop);
+    board_bridge_force_low_zero();
+
+    recovered =
+        phase_current_loop_init(&s_loop, &s_config) &&
+        electrical_phase_predictor_init(
+            &s_phase_predictor, &s_phase_predictor_config) &&
+        (adc1_restart_pwm_synchronized_current() == ADC1_STATUS_OK) &&
+        adc1_set_current_event_handler(adc_current_event, NULL) &&
+        board_bridge_pwm_init(platform_apb1_timer_clock_hz()) &&
+        tim3_bridge_pwm_set_update_handler(pwm_update_event, NULL) &&
+        tim3_bridge_pwm_zero();
+
+    memset(&s_latest_output, 0, sizeof(s_latest_output));
+    s_output_generation = 0u;
+    s_last_reference_a_counts = 0;
+    s_last_reference_b_counts = 0;
+    s_aligned_q_reference_counts = 0;
+    s_predicted_electrical_phase_q32 = 0u;
+    s_phase_prediction_age_us = 0u;
+    s_guardian_generation = 0u;
+    s_guardian_empty_updates = 0u;
+    s_guardian_primed = false;
+    s_trace_count = 0u;
+    s_phase_prediction_active = false;
+
+    if (recovered)
+    {
+        s_fault_flags = CURRENT_LOOP_BACKEND_FAULT_NONE;
+        if (cleared_fault_flags != NULL)
+        {
+            *cleared_fault_flags = previous_faults;
+        }
+    }
+    else
+    {
+        board_bridge_force_low_zero();
+        s_fault_flags = previous_faults |
+            CURRENT_LOOP_BACKEND_FAULT_INTERNAL;
+    }
+    control_critical_exit(previous);
+    return recovered;
 }
 
 void current_loop_backend_get_snapshot(

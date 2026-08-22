@@ -1,5 +1,15 @@
 # Debug Log
 
+## 2026-08-22 — Faulted motion could not be acknowledged without resetting
+
+- **Observation:** A position following-error correctly stopped in the common `ZERO` state, but `stop` did not clear the fault and the CLI had no clear/acknowledge operation, so the operator could not continue without resetting the controller.
+- **Root cause:** `app_state` already defined `APP_EVENT_FAULT_ACKNOWLEDGED`, but no production command invoked it. Estimator and motion-controller faults were set-only at runtime, and direct-GPIO fault convergence intentionally stopped TIM3, so coherent recovery also required rebuilding the PWM/current backend rather than clearing one supervisor enum.
+- **Fix:** Firmware 0.29.0 / protocol 1.11 adds `CLEAR_FAULTS` and `clear-faults`. The operator command is sufficient assertion that the initiating condition is gone. Recovery establishes `ZERO`, restarts ADC/DMA, rebuilds TIM3/current-loop/predictor state, resets runtime controller latches, and acknowledges the supervisor while preserving alignment/configuration and reset history. All implemented fault owners have an in-place reset attempt; only a concrete reset-transaction failure returns `blocked`, and a condition that persists faults again normally.
+- **Class:** missing-production-fault-acknowledgment-and-rearm
+- **Recently-touched?** no — fault convergence existed, but the production recovery half of the lifecycle had never been wired
+- **Status:** Resolved in source. Sixteen Python tests, the native C suite, and clean Debug/Release Arm builds pass. Following-error clear and subsequent-command hardware validation remain pending flash.
+- **Time to fix:** one implementation, test, and documentation pass
+
 ## 2026-08-22 — Total encoder-production silence could retain active current demand
 
 - **Observation:** Code review found that invalid SPI/DMA frames and late accepted samples already fail safely, but a complete stop in TIM6 release, an indefinitely incomplete transfer, or lost PendSV delivery produces no rotor callback. In that case the callback-owned controller checks do not run, while the foreground's prior readiness test considered an encoder healthy once it had sampled at least once.

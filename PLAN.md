@@ -265,6 +265,13 @@ Goal: close the mechanical loop incrementally.
 - [x] Bench-validate positive/negative quarter-revolution position through
   settled completion and generic STOP with bounded current, following error,
   encoder timing, and clean backend/authority release.
+- [x] Add explicit operator-acknowledged fault recovery that establishes
+  `ZERO`, rebuilds ADC/DMA and PWM/current-backend state, clears estimator and
+  cascaded controller latches in place, preserves alignment/configuration and
+  reset history, and reports cleared/remaining sources over native protocol.
+- [ ] Bench-validate following-error recovery and a recoverable current-backend
+  fault by issuing `clear-faults`, observing `DIAGNOSTIC` to `READY`, and
+  starting a subsequent bounded command without resetting the MCU.
 - [ ] Bench-validate physical Right-button stop and loaded following-error
   behavior while absolute position, homing, and step/direction work continues
   through the same fault and authority contracts.
@@ -320,6 +327,9 @@ calibration without preserving active authority.
   retain the bounded RS-485 motor diagnostic through the product authority path.
 - [ ] Add a host-side configuration and firmware-update workflow if needed.
 - [x] Treat useful publicly documented Makerbase commands as optional compatibility aliases rather than the canonical API.
+- [x] Add native `CLEAR_FAULTS` plus a host CLI; operator acknowledgment is
+  sufficient to attempt recovery, and STOP remains a separate non-clearing
+  operation.
 
 See [protocol architecture](docs/PROTOCOL.md) for the adopted boundaries,
 safety rules, staged implementation order, and remaining wire-format decisions.

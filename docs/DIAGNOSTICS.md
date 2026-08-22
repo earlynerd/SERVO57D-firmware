@@ -1,6 +1,6 @@
 # Debugger Diagnostic Record
 
-Status: firmware 0.28.0 publishes schema 5 continuously and the layout remains
+Status: firmware 0.29.0 publishes schema 5 continuously and the layout remains
 ABI-checked by host and post-link tests. The new encoder-production guard does
 not change this RAM ABI; liveness is reflected operationally in drive state and
 through the native protocol's existing estimator-ready flag. Equivalent
@@ -32,8 +32,8 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 4 | `schema_version` | Record schema, currently `5` |
 | 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.28.0` |
-| 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, rotating-current diagnostic, current-loop, automatic-alignment, persistent-configuration, aligned-torque, and velocity-control capability bits |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.29.0` |
+| 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, rotating-current diagnostic, current-loop, automatic-alignment, persistent-configuration, aligned-torque, velocity-control, position-control, and fault-recovery capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
@@ -129,7 +129,7 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 For a new board or diagnostic-schema validation:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.28.0`, schema is 5, and record size is 240;
+- confirm `firmware_version` decodes to `0.29.0`, schema is 5, and record size is 240;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;

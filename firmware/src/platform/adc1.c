@@ -476,6 +476,26 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     return ADC1_STATUS_OK;
 }
 
+adc1_status_t adc1_restart_pwm_synchronized_current(void)
+{
+    if (!s_adc1_initialized)
+    {
+        return ADC1_STATUS_NOT_READY;
+    }
+
+    NVIC_DisableIRQ(DMA_Channel1_IRQn);
+    NVIC_ClearPendingIRQ(DMA_Channel1_IRQn);
+    DMA_CH1->CHCFG &= ~((uint32_t)DMA_CHCFG1_CHEN);
+    DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
+    ADC->CTRL2 = 0u;
+    ADC->STS = 0u;
+    s_synchronous_current_started = false;
+    s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
+    __DSB();
+
+    return adc1_start_pwm_synchronized_current();
+}
+
 adc1_status_t adc1_read_synchronized_current(
     adc1_current_snapshot_t* output)
 {

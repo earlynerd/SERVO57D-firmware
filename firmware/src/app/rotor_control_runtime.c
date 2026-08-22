@@ -959,6 +959,114 @@ void rotor_control_runtime_force_fault(rotor_control_runtime_t* runtime,
     runtime_critical_exit(previous);
 }
 
+bool rotor_control_runtime_clear_faults(
+    rotor_control_runtime_t* runtime,
+    uint32_t* cleared_fault_sources)
+{
+    angle_tracker_t angle_tracker;
+    alignment_controller_t alignment_controller;
+    aligned_torque_controller_t torque_controller;
+    velocity_controller_t velocity_controller;
+    position_controller_t position_controller;
+    uint32_t sources = 0u;
+    uint32_t previous;
+    bool reset_estimator;
+
+    if (cleared_fault_sources != NULL)
+    {
+        *cleared_fault_sources = 0u;
+    }
+    if ((runtime == NULL) || !runtime->initialized)
+    {
+        return false;
+    }
+
+    previous = runtime_critical_enter();
+    reset_estimator = runtime->estimator_fault_flags != 0u;
+    if (reset_estimator)
+    {
+        sources |= ROTOR_CONTROL_FAULT_SOURCE_ESTIMATOR;
+    }
+    if (runtime->alignment_controller.status.state ==
+        ALIGNMENT_CONTROLLER_STATE_FAILED)
+    {
+        sources |= ROTOR_CONTROL_FAULT_SOURCE_ALIGNMENT;
+    }
+    if ((runtime->torque_controller.status.state ==
+         ALIGNED_TORQUE_STATE_FAILED) ||
+        (runtime->torque_controller.status.fault_flags != 0u))
+    {
+        sources |= ROTOR_CONTROL_FAULT_SOURCE_ALIGNED_TORQUE;
+    }
+    if ((runtime->velocity_controller.status.state ==
+         VELOCITY_CONTROL_STATE_FAILED) ||
+        (runtime->velocity_controller.status.fault_flags != 0u))
+    {
+        sources |= ROTOR_CONTROL_FAULT_SOURCE_VELOCITY;
+    }
+    if ((runtime->position_controller.status.state ==
+         POSITION_CONTROL_STATE_FAILED) ||
+        (runtime->position_controller.status.fault_flags != 0u))
+    {
+        sources |= ROTOR_CONTROL_FAULT_SOURCE_POSITION;
+    }
+
+    angle_tracker = runtime->angle_tracker;
+    if ((reset_estimator &&
+         !angle_tracker_init(&angle_tracker,
+                             &runtime->angle_tracker.config)) ||
+        !alignment_controller_init(
+            &alignment_controller,
+            &runtime->alignment_controller.config) ||
+        !aligned_torque_controller_init(
+            &torque_controller,
+            &runtime->torque_controller.config) ||
+        !velocity_controller_init(
+            &velocity_controller,
+            &runtime->velocity_controller.config) ||
+        !position_controller_init(
+            &position_controller,
+            &runtime->position_controller.config))
+    {
+        runtime_critical_exit(previous);
+        return false;
+    }
+
+    if (reset_estimator)
+    {
+        runtime->angle_tracker = angle_tracker;
+    }
+    runtime->alignment_controller = alignment_controller;
+    runtime->alignment_controller.alignment = NULL;
+    runtime->torque_controller = torque_controller;
+    runtime->velocity_controller = velocity_controller;
+    runtime->position_controller = position_controller;
+    runtime->estimator_fault_flags = 0u;
+    runtime->estimator_sample_interval_us = 0u;
+    runtime->estimator_maximum_sample_interval_us = 0u;
+    runtime->request_flags = 0u;
+    runtime->requested_alignment_current_counts = 0u;
+    runtime->requested_q_current_counts = 0;
+    runtime->requested_torque_duration_millis = 0u;
+    runtime->requested_velocity_revolutions_per_second_q16_16 = 0;
+    runtime->requested_velocity_current_limit_counts = 0u;
+    runtime->requested_velocity_duration_millis = 0u;
+    runtime->requested_position_displacement_revolutions_q16_16 = 0;
+    runtime->requested_position_maximum_velocity_q16_16 = 0;
+    runtime->requested_position_maximum_acceleration_q16_16 = 0;
+    runtime->requested_position_current_limit_counts = 0u;
+    runtime->requested_position_duration_millis = 0u;
+    runtime->event_flags = ROTOR_CONTROL_EVENT_NONE;
+    publish_snapshot(runtime);
+    runtime_critical_exit(previous);
+
+    if (cleared_fault_sources != NULL)
+    {
+        *cleared_fault_sources = sources;
+    }
+    return true;
+}
+
 bool rotor_control_runtime_clear_alignment(
     rotor_control_runtime_t* runtime)
 {

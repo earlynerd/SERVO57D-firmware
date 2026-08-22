@@ -262,6 +262,39 @@ class VelocityCaptureTests(unittest.TestCase):
             status["loop"]["phase_voltage_command_volts"]["a"]
         )
 
+    def test_fault_recovery_status_decodes_sources_and_blockers(self) -> None:
+        body = console.FAULT_RECOVERY_STATUS_BODY.pack(
+            1,
+            2,
+            1 << 1,
+            (1 << 0) | (1 << 5),
+            1 << 6,
+        )
+
+        status = console.parse_fault_recovery_status(body)
+
+        self.assertEqual(status["result"], "blocked")
+        self.assertEqual(status["blockers"], ["backend_reset_failed"])
+        self.assertEqual(
+            status["cleared_faults"], ["supervisor", "position"]
+        )
+        self.assertEqual(status["remaining_faults"], ["current_backend"])
+
+    def test_clear_faults_is_a_first_class_command(self) -> None:
+        parser = console.make_parser()
+        client = mock.Mock()
+        client.transact.return_value = (
+            console.FAULT_RECOVERY_STATUS_BODY.pack(1, 0, 0, 0x21, 0)
+        )
+
+        args = parser.parse_args(["clear-faults"])
+        status = console.clear_faults(client)
+
+        self.assertEqual(args.command, "clear-faults")
+        client.transact.assert_called_once_with(console.COMMAND_CLEAR_FAULTS)
+        self.assertEqual(status["result"], "cleared")
+        self.assertEqual(status["cleared_faults"], ["supervisor", "position"])
+
     def test_current_commands_accept_milliamperes(self) -> None:
         parser = console.make_parser()
 

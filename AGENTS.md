@@ -18,8 +18,10 @@ truth when documents conflict.
 ## Project state
 
 This is an active clean-sheet firmware project for an N32L406CBL7-based
-Makerbase MKS SERVO57D RS-485 controller. Firmware 0.28.0 / protocol 1.10 is
-the flashed hardware baseline: its 20 kHz two-phase current loop, 1 kHz deterministic rotor
+Makerbase MKS SERVO57D RS-485 controller. Firmware 0.29.0 / protocol 1.11 is
+the current source candidate and adds explicit operator-acknowledged in-place
+fault recovery; firmware 0.28.0 / protocol 1.10 is the flashed hardware
+baseline. Its 20 kHz two-phase current loop, 1 kHz deterministic rotor
 service, persisted alignment, aligned torque, velocity, and relative-position
 stack are bench-proven. At 24 V, +8 rev/s reaches target; a +12 rev/s request
 reaches the 2.999 A nominal q-demand and 70%-of-bus phase-voltage ceilings and

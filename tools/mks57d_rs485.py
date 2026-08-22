@@ -38,6 +38,7 @@ COMMAND_GET_CURRENT_TRACE = 0x0106
 COMMAND_START_ALIGNMENT = 0x0200
 COMMAND_GET_ALIGNMENT_STATUS = 0x0201
 COMMAND_STOP_DRIVE = 0x0202
+COMMAND_CLEAR_FAULTS = 0x0203
 COMMAND_GET_CONFIGURATION_STATUS = 0x0300
 COMMAND_SAVE_CONFIGURATION = 0x0301
 COMMAND_CLEAR_CALIBRATION = 0x0302
@@ -92,6 +93,30 @@ FAULT_NAMES = {
     17: "pwm",
     18: "deadline",
     19: "internal",
+    20: "phase_prediction",
+}
+
+FAULT_RECOVERY_RESULT_NAMES = {
+    0: "cleared",
+    1: "no_fault",
+    2: "blocked",
+}
+
+FAULT_RECOVERY_BLOCKER_NAMES = {
+    0: "zero_failed",
+    1: "backend_reset_failed",
+    2: "runtime_reset_failed",
+    3: "supervisor_reset_failed",
+}
+
+FAULT_SOURCE_NAMES = {
+    0: "supervisor",
+    1: "estimator",
+    2: "alignment",
+    3: "aligned_torque",
+    4: "velocity",
+    5: "position",
+    6: "current_backend",
 }
 
 LEG_VALUES = {"A1": 0, "A2": 1, "B1": 2, "B2": 3}
@@ -330,6 +355,7 @@ CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
 ALIGNED_TORQUE_STATUS_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
 VELOCITY_STATUS_BODY = struct.Struct(">BBBBIiiihhHIIiiiHHiiI")
 POSITION_STATUS_BODY = struct.Struct(">BBBBIiiiiiihhHIIiiii")
+FAULT_RECOVERY_STATUS_BODY = struct.Struct(">BBIII")
 VELOCITY_TELEMETRY_FIELDS = (
     "host_elapsed_seconds",
     "controller_elapsed_millis",
@@ -716,6 +742,34 @@ def parse_status(body: bytes) -> dict[str, Any]:
 
 def query_status(client: Client) -> dict[str, Any]:
     return parse_status(client.transact(COMMAND_GET_COMMISSIONING_STATUS))
+
+
+def parse_fault_recovery_status(body: bytes) -> dict[str, Any]:
+    if len(body) != FAULT_RECOVERY_STATUS_BODY.size:
+        raise ProtocolError(
+            "fault-recovery response has an unexpected length"
+        )
+    schema, result, blockers, cleared, remaining = (
+        FAULT_RECOVERY_STATUS_BODY.unpack(body)
+    )
+    return {
+        "schema": schema,
+        "result": FAULT_RECOVERY_RESULT_NAMES.get(
+            result, f"result_{result}"
+        ),
+        "blocker_flags_hex": f"0x{blockers:08X}",
+        "blockers": active_names(blockers, FAULT_RECOVERY_BLOCKER_NAMES),
+        "cleared_fault_flags_hex": f"0x{cleared:08X}",
+        "cleared_faults": active_names(cleared, FAULT_SOURCE_NAMES),
+        "remaining_fault_flags_hex": f"0x{remaining:08X}",
+        "remaining_faults": active_names(remaining, FAULT_SOURCE_NAMES),
+    }
+
+
+def clear_faults(client: Client) -> dict[str, Any]:
+    return parse_fault_recovery_status(
+        client.transact(COMMAND_CLEAR_FAULTS)
+    )
 
 
 def query_encoder(client: Client) -> dict[str, Any]:
@@ -2358,6 +2412,10 @@ def make_parser() -> argparse.ArgumentParser:
     start.add_argument("--duration-ms", type=int, default=10000)
 
     commands.add_parser("stop", help="stop any active drive operation")
+    commands.add_parser(
+        "clear-faults",
+        help="acknowledge and reset latched drive faults in place",
+    )
 
     align = commands.add_parser(
         "align", help="run the bounded production alignment procedure"
@@ -2611,6 +2669,11 @@ def main() -> int:
         elif args.command == "stop":
             stop_drive(client)
             print_json(query_status(client))
+        elif args.command == "clear-faults":
+            recovery = clear_faults(client)
+            print_json(recovery)
+            if recovery["result"] == "blocked":
+                return 3
         elif args.command == "align":
             if args.counts is not None:
                 alignment_counts = args.counts

@@ -58,6 +58,7 @@ adc1_status_t adc1_read_passive(adc_sample_t* output);
 /* Arm a two-rank currentB/currentA sequence before TIM3 starts. TIM2 issues
  * one software trigger per carrier period and DMA publishes each fresh pair. */
 adc1_status_t adc1_start_pwm_synchronized_current(void);
+adc1_status_t adc1_restart_pwm_synchronized_current(void);
 adc1_status_t adc1_read_synchronized_current(
     adc1_current_snapshot_t* output);
 /* Reads the latest completed PA3 conversion from the automatic injected

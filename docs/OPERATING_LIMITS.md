@@ -1,6 +1,7 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.28.0 / protocol 1.10 is flashed and passes identity, readiness, live-policy,
+Status: firmware 0.29.0 / protocol 1.11 is the current source candidate, while
+firmware 0.28.0 / protocol 1.10 is flashed and passes identity, readiness, live-policy,
 generation-3 calibration restore, and bounded positive-velocity confirmation
 through a 12 rev/s request. It includes the phase predictor and independent
 encoder-liveness guard and permits velocity evaluation through 16 rev/s
@@ -44,7 +45,7 @@ point is evidence, not automatically a request ceiling.
 
 ## Current firmware inventory
 
-| Quantity | Firmware 0.28.0 value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.29.0 source value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Bus-voltage scale | 13.22 mV/count nominal | Tested-board 3.3 V ADC reference and fitted 15.4 kOhm/1 kOhm divider | Automatic-injected PA3 ADC acquisition and host conversion | Inactive 0.28.0 status reported 23.829 V at the 24 V supply setting; all 22 active samples held 23.776-23.815 V with advancing samples and no ADC/deadline fault |

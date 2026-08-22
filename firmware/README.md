@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.28.0 source closes both winding-current loops at 20 kHz through the
+image. Firmware 0.29.0 source closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
@@ -41,6 +41,13 @@ raw count/ratio math. It is flashed: inactive status reported 23.829 V at the
 and no ADC, deadline, encoder, backend, reset, or panic fault. Physical
 readiness-loss injection remains deferred on the
 current assembly while the common fault/ZERO behavior remains automated.
+Firmware 0.29.0 / protocol 1.11 adds an explicit operator `CLEAR_FAULTS`
+transaction. It first establishes direct-GPIO `ZERO`, rebuilds the
+timer-synchronous ADC/DMA and TIM3/current backend, resets faulted estimator and
+controller operation state, preserves motor alignment/configuration and reset
+history, and returns the supervisor to uncommanded `DIAGNOSTIC`. The operator
+command itself is sufficient acknowledgment; a condition that persists faults
+again through its ordinary monitor.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle

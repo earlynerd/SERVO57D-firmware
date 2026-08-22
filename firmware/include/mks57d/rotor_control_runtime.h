@@ -23,6 +23,15 @@ enum
     ROTOR_CONTROL_EVENT_FAULT = 1u << 2
 };
 
+enum
+{
+    ROTOR_CONTROL_FAULT_SOURCE_ESTIMATOR = 1u << 0,
+    ROTOR_CONTROL_FAULT_SOURCE_ALIGNMENT = 1u << 1,
+    ROTOR_CONTROL_FAULT_SOURCE_ALIGNED_TORQUE = 1u << 2,
+    ROTOR_CONTROL_FAULT_SOURCE_VELOCITY = 1u << 3,
+    ROTOR_CONTROL_FAULT_SOURCE_POSITION = 1u << 4
+};
+
 typedef struct
 {
     diagnostics_encoder_t encoder_diagnostics;
@@ -98,6 +107,9 @@ bool rotor_control_runtime_request_position_relative(
 void rotor_control_runtime_request_stop(rotor_control_runtime_t* runtime);
 void rotor_control_runtime_force_fault(rotor_control_runtime_t* runtime,
                                        uint32_t timestamp_us);
+bool rotor_control_runtime_clear_faults(
+    rotor_control_runtime_t* runtime,
+    uint32_t* cleared_fault_sources);
 bool rotor_control_runtime_clear_alignment(
     rotor_control_runtime_t* runtime);
 uint32_t rotor_control_runtime_take_events(

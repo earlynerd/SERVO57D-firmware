@@ -82,6 +82,7 @@ py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace.jsonl
 py tools/mks57d_rs485.py --port COM14 stop
+py tools/mks57d_rs485.py --port COM14 clear-faults
 ```
 
 `encoder` reports the live 14-bit magnetic angle and health counters. On
@@ -174,6 +175,16 @@ milliamperes/amperes first. Raw ADC counts, phase-command ratios, and duties
 remain in machine-readable diagnostics for calibration and saturation analysis.
 Current counts do not vary with input voltage; higher VBUS changes available
 phase-voltage headroom and current tracking.
+
+Firmware 0.29.0 / protocol 1.11 adds `clear-faults`. It sends the operator
+acknowledgment, prints a typed list of cleared and remaining fault owners, and
+returns exit code 3 only if the in-place reset transaction itself is blocked.
+The firmware does not demand a healthy encoder/current/input observation as a
+second acknowledgment. It establishes `ZERO`, rebuilds ADC/DMA and the
+PWM/current backend, resets controller operation latches, and returns to
+uncommanded `DIAGNOSTIC`; normal fresh samples restore `READY`, or a persistent
+condition faults again. `stop` is deliberately separate and never clears a
+fault latch.
 
 `position-status` passively reports target/reference/measured position,
 profile/corrected/measured velocity, requested/applied current, state, result,

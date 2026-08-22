@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.28.0 implements the fast current path, production alignment,
+Status: firmware 0.29.0 source implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -21,6 +21,9 @@ event.
 Firmware 0.28.0 also follows each regular current pair with an automatic-
 injected PA3 VBUS conversion. Regular DMA completion and current-loop release
 remain first; foreground alone consumes the later VBUS result.
+Firmware 0.29.0 keeps fault acknowledgment in foreground: it establishes
+direct-GPIO `ZERO` before rebuilding ADC/DMA, TIM3/current-loop, rotor-runtime,
+and supervisor state. No ISR clears its own latch.
 
 ## Goals
 

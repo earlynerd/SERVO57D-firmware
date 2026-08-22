@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.28.0 implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.29.0 source implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -22,6 +22,8 @@ Firmware 0.27.1 moves aligned-q electrical-phase advance into the authoritative
 fault convergence.
 Firmware 0.28.0 appends automatic-injected PA3 VBUS acquisition and protocol
 1.10 status telemetry without moving the regular DMA/current-control event.
+Firmware 0.29.0 adds foreground-owned operator fault acknowledgment and an
+in-place `ZERO`/ADC/PWM/current-backend/runtime/supervisor recovery transaction.
 
 ## Design priorities
 
