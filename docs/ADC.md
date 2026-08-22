@@ -167,7 +167,9 @@ the loop's switching edges to the first 70% of the period under the current
 phase-voltage bound, so sampling retains at least 5 microseconds after the latest
 permitted PWM edge. The two-rank sequence takes approximately 2.7 microseconds,
 leaving approximately 7 microseconds for DMA completion, fixed-point A/B PI
-control, and preload staging. DMA completion then publishes a new output generation.
+control, phase prediction/A-B mapping, and preload staging. Firmware 0.27.1 uses
+that 7 microsecond estimate as its nominal phase-prediction output lead; scope
+measurement, not the estimate, is the acceptance evidence. DMA completion then publishes a new output generation.
 The TIM3 update guardian allows one empty update for this pipelined result and
 faults on a second consecutive update without a new output.
 
@@ -178,7 +180,7 @@ the successful current operating point. The 80%-phase trigger should be
 scoped to quantify switching-edge contamination, ISR latency, and
 conversion/control completion relative to the following preload boundary.
 Analog-watchdog thresholds and restoring periodic `vBus` acquisition also
-remain later work.
+remain active current/voltage-envelope work.
 
 ## Trust summary
 

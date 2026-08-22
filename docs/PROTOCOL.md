@@ -144,10 +144,13 @@ that same actuator. Positive velocity uses the same mechanical coordinate as
 encoder telemetry; the persisted alignment direction maps controller effort to
 q-current without changing the protocol. Firmware 0.26.0 / protocol 1.9 adds
 bounded relative-position trajectories above that same velocity/current
-actuator and raises the velocity evaluation ceiling to 4 rev/s. Mirrored
+actuator. Mirrored
 relative-position settling and generic STOP are bench-proven. Firmware 0.26.1
 retains protocol 1.9 and its payload layouts while adding the independent
-encoder-production liveness prerequisite. Protocol 1.3 added the bounded current trace validated
+encoder-production liveness prerequisite. Firmware 0.27.1 also retains protocol
+1.9, moves electrical-phase advance/A-B mapping into the 20 kHz backend, opens
+velocity/position evaluation permission, and gives the cascade correction
+headroom; no command or payload layout changes. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
@@ -199,10 +202,13 @@ inventory; they are not motor speed, current, or physical travel limits.
 persisted or newly accepted alignment, healthy timestamped encoder feedback,
 initialized current control, Right button released, no fault, and no other active or
 pending drive operation. It enters `RUN` with motion authority and starts the
-20 kHz backend at zero reference. Every accepted 1 kHz encoder sample maps the
-signed q-current to electrical phase plus 90 degrees and slews the resulting A/B
-phase references through the same bounded current PI and bridge shutdown path
-used by alignment and the production diagnostic. Positive q-current maps to
+20 kHz backend at zero reference. Every accepted 1 kHz encoder sample validates
+and slews signed q-current, then publishes measured electrical phase, filtered
+mechanical velocity, direction, and timestamp to the backend. Every 20 kHz
+current event extrapolates phase to the next preload boundary and regenerates
+the A/B phase references through the same bounded current PI and bridge shutdown
+path used by alignment and the production diagnostic. Prediction age is limited
+to 2,000 us and invalid/stale prediction faults to `ZERO`. Positive q-current maps to
 `A=-Iq*sin(theta), B=Iq*cos(theta)` under the accepted motor convention.
 
 The 0.23.2 evaluation policy is ±495 counts (±2.999 A nominal on the tested
@@ -238,7 +244,7 @@ are big-endian.
 | 4 | `u32` | Aligned-torque fault flags |
 | 8 | `i16` | Requested q-current counts |
 | 10 | `i16` | Applied, slew-limited q-current counts |
-| 12 | `i16,i16` | Applied A/B phase-current references |
+| 12 | `i16,i16` | Latest A/B phase-current references actually applied by the 20 kHz backend; zero after release |
 | 16 | `u32` | Latest calibrated electrical phase, Q0.32 turns |
 | 20 | `i32` | Mechanical velocity, Q16.16 rev/s |
 | 24 | `i32` | Absolute mechanical acceleration, Q16.16 rev/s² |
@@ -265,14 +271,15 @@ overspeed, numeric failure, actuator failure, current-backend failure, or
 readiness loss converges on fault/ZERO. Generic STOP and the physical Right button perform the
 ordinary stopped release path.
 
-The 0.26.0 evaluation policy accepts a nonzero target through ±4 rev/s,
-a positive per-command limit through 100 current counts (about 606 mA nominal),
+The 0.27.1 evaluation policy accepts a nonzero target through ±16 rev/s,
+a positive per-command limit through 495 current counts (about 2.999 A nominal),
 and a 3 through 2,147,483,647 ms finite duration. The reference is limited to
-4 rev/s². Observed velocity is independently bounded to 5 rev/s, feedback age
+256 rev/s². Observed velocity is independently bounded to 20 rev/s, feedback age
 to 2,000 us, and the downstream actuator still independently enforces its
 current slew, speed, acceleration, phase, backend, and deadline contracts. The
 initial PI gains are Kp 100 current counts/(rev/s) and Ki 200 current
-counts/rev. These are bench candidates and not final motor-independent defaults.
+counts/rev. Firmware permission deliberately includes unqualified operation;
+command acceptance does not promise tracking, thermal, or mechanical performance.
 
 `GET_VELOCITY_STATUS` returns this 62-byte schema-1 body after the common status
 byte. All signed values use two's complement and all multi-byte fields are
@@ -311,10 +318,13 @@ bounded position correction to the profile velocity. That dynamic target feeds
 the existing acceleration-limited velocity PI and aligned-q-current actuator;
 position control has no alternate estimator, current loop, PWM, or bridge path.
 
-The 0.26.0 policy permits nonzero relative displacement through ±100
-revolutions, maximum trajectory velocity through 4 rev/s, acceleration through
-4 rev/s², q-current through 100 counts, and a finite 100 through
-2,147,483,647 ms deadline. Feedback is independently limited to 5 rev/s and
+The 0.27.1 policy permits nonzero relative displacement through ±100
+revolutions, maximum trajectory velocity through 16 rev/s, acceleration through
+64 rev/s², q-current through 495 counts, and a finite 100 through
+2,147,483,647 ms deadline. The inner velocity reference may slew at 256 rev/s²
+and the position correction may command through 17 rev/s, preserving fourfold
+rate headroom plus the complete `Kp × following-error` velocity budget above
+the profile ceiling. Feedback is independently limited to 20 rev/s and
 2,000 us age. Following error greater than 0.25 revolution, invalid or stale
 feedback, numeric failure, actuator/backend failure, or readiness loss faults
 and converges on `ZERO`. Completion requires the reference profile at target,

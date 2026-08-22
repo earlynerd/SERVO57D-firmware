@@ -366,3 +366,12 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Recently-touched?** yes — firmware 0.25.0 introduced the velocity-to-q-current seam.
 - **Status:** Resolved and bench-confirmed on firmware 0.25.1. Mirrored ±0.1 rev/s, 25-count, two-second COM14 runs moved +0.108/-0.109 revolution in the requested raw-encoder coordinate, completed at deadline with no faults, and returned all references/duties to zero without changing calibration.
 - **Time to fix:** approximately 30 minutes.
+
+## 2026-08-22 — Matched cascade ceilings caused position following-error faults
+
+- **Observation:** Hardware could not be driven to a faster velocity through the position command without reaching the 0.25-revolution following-error fault, and the host rejected acceleration/current requests above the tightly reported 4 rev/s² and 100-count policy.
+- **Root cause:** `firmware/src/main.c` configured both the outer position profile and inner velocity reference at 4 rev/s², so the profile consumed the inner loop's entire rate budget. `firmware/src/control/position_controller.c` also clipped profile velocity plus position correction back to the requested profile maximum, leaving no velocity headroom at cruise. The 100-count motion current permission further prevented using the already available 495-count aligned actuator. These were commissioning policy choices, not hardware constraints.
+- **Fix:** Firmware 0.27.1 exposes commands through 16 rev/s and 495 counts, raises position-profile acceleration to 64 rev/s², gives the inner velocity reference 256 rev/s² slew, accepts observed/predicted motion through the existing 20 rev/s estimator boundary, and permits corrected position velocity through 17 rev/s. The following-error detector and all electrical/timing/fault shutdowns remain independent. A native regression proves a valid corrected target can exceed the profile ceiling.
+- **Class:** commissioning-envelope-overconstraint-and-cascade-headroom
+- **Recently-touched?** yes — firmware 0.26.0 introduced the matched position/velocity ceilings and same-ceiling correction clamp; firmware 0.27.0 changed phase generation but intentionally retained those motion values.
+- **Status:** Source correction passes native and Python host tests plus clean Debug/Release Arm post-link builds; firmware 0.27.1 hardware confirmation remains pending.

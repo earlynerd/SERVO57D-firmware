@@ -147,8 +147,10 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 Firmware 0.26.0 / protocol 1.9 is the current flashed product build. It retains
 the qualified velocity service, adds relative-position control through the same
 single-estimator runtime, and expands commandable velocity to 4 rev/s. Firmware
-0.26.1 / protocol 1.9 is the current source/build candidate; it adds an
-independent 3 ms encoder-production guard without changing the wire layout. It:
+0.27.1 / protocol 1.9 is the current source/build candidate; it includes the
+independent 3 ms encoder-production guard and adds bounded 20 kHz electrical-
+phase prediction, a 16 rev/s/495-count motion evaluation envelope, and explicit
+position-cascade headroom without changing the wire layout. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -177,20 +179,26 @@ independent 3 ms encoder-production guard without changing the wire layout. It:
     operation or startup ADC zero is persisted.
 19. Enters `RUN` motion authority only for a valid aligned q-current request,
     waits for a newly accepted encoder sample, starts the existing 20 kHz
-    backend at zero demand from that sample, and updates signed A/B
-    references from calibrated 1 kHz electrical phase under independent current,
-    slew, velocity, acceleration, feedback-age, duration, and fault contracts.
+    backend at zero demand from that sample, and publishes bounded q-current plus
+    calibrated phase/velocity/timestamp seeds at 1 kHz. Every 20 kHz current
+    event predicts phase to the next preload boundary and regenerates signed
+    A/B references under independent current, slew, velocity, acceleration,
+    prediction-age, feedback-age, duration, and fault contracts.
 20. Starts a valid velocity request at zero q-current from newly accepted
     feedback, runs an acceleration-limited PI at the 1 kHz rotor release, and
     updates only the bounded aligned-q-current actuator. Target speed, observed
     speed, per-command current, reference acceleration, feedback age, deadline,
     actuator health, and common STOP/fault paths remain independently enforced.
+    Command permission is 16 rev/s and 495 counts, inner slew is 256 rev/s²,
+    and observed speed remains independently bounded at 20 rev/s.
 21. Starts a valid relative-position request only near rest, advances a bounded
     trapezoidal profile, applies independent following-error and settling
     policy, and changes only the target of the existing velocity/current
     actuator. Travel, trajectory speed/acceleration, current, feedback age,
-    duration, STOP, Right-button, and fault limits remain separate.
-22. Publishes firmware `0.26.1`, authoritative drive state, reset cause,
+    duration, STOP, Right-button, and fault limits remain separate. The profile
+    permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
+    velocity may reach 17 rev/s above the 16 rev/s profile range.
+22. Publishes firmware `0.27.1`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -233,3 +241,22 @@ bytes SRAM1; Release uses 48,788 bytes and the same SRAM1. Neither image
 allocates a configuration slot or SRAM2, and the 240-byte debugger diagnostic
 ABI remains verified. The encoder-progress guard still needs ordinary flash
 identity/readiness and bounded-motion smoke checks.
+
+Firmware 0.27.0 passes the expanded native C suite, all 10 applicable Python
+host-tool tests (the same two optional reference-cache tests skip), and clean
+Debug/Release Arm post-link builds. Debug uses 55,808 bytes of the 124 KiB
+application region and 7,444 bytes SRAM1; Release uses 50,192 bytes and the same
+SRAM1. Neither image allocates a configuration slot or SRAM2, and the unchanged
+240-byte debugger diagnostic ABI verifies. Disassembly confirms the 20 kHz
+prediction path has no floating-point or software-division call; worst-case
+cycle instrumentation and the ordinary liveness/prediction hardware smoke gate
+remain required.
+
+Firmware 0.27.1 retains protocol 1.9, passes the native suite including the
+position-correction-headroom regression, and passes all 10 applicable Python
+host-tool tests (the same two optional reference-cache tests skip). Clean Debug
+and Release post-link builds pass: Debug uses 55,828 bytes Flash, Release uses
+50,248 bytes, and both use 7,444 bytes SRAM1 with no configuration-slot or SRAM2
+allocation. The 240-byte debugger diagnostic ABI remains verified. Hardware
+confirmation of the exposed motion range and corrected position cascade is
+pending.

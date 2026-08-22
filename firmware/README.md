@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.26.1 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.27.1 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
@@ -16,15 +16,17 @@ immutable position/velocity observation boundary. Firmware 0.25.1 closes the
 first bounded signed velocity loop on that observation and commands only the
 existing aligned-q-current actuator, mapping mechanical effort through the
 direction measured and persisted by alignment. Firmware 0.26.0 adds a focused
-relative-position trajectory through that exact controller/actuator stack and
-expands the velocity evaluation ceiling to 4 rev/s. The broader lease and
+relative-position trajectory through that exact controller/actuator stack. The broader lease and
 step/direction motion candidate remains separately compiled and unlinked.
 Firmware 0.26.0 is flashed and has passed mirrored ±0.25-revolution settling
 and generic-STOP checks with clean authority release. The earlier velocity
 deadline/polarity, physical Right-button stop, and hand-loaded
 saturation/recovery evidence remains accepted. Firmware 0.26.1 adds a 3 ms
 foreground encoder-progress guard; it is host-tested and Arm-build validated,
-but not yet flashed. Physical readiness-loss injection remains deferred on the
+and firmware 0.27.1 adds bounded 20 kHz electrical-phase prediction with a
+2 ms freshness limit and nominal 7 us output lead, plus a 16 rev/s evaluation
+command range with correction headroom. The source candidate is not yet flashed.
+Physical readiness-loss injection remains deferred on the
 current assembly while the common fault/ZERO behavior remains automated.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
@@ -64,7 +66,7 @@ expanded-current hardware gates remain pending.
   not active in this image.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
 - Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second run; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
-- DMA completion runs fixed-point A/B PI controllers and stages low-zero sign-magnitude TIM3 preloads. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2. Raw overcurrent, invalid references or outputs, DMA/PWM failures, and two consecutive carrier updates without a new control output latch the common all-low fault path.
+- DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, maps bounded q-current into fresh A/B references, runs the fixed-point A/B PI controllers, and stages low-zero sign-magnitude TIM3 preloads. Prediction is limited to 2 ms old and includes a nominal 7 us lead to the following PWM preload boundary; stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
 - Firmware 0.18.2 uses `Kp=2`, retains `Ki=1/64` per 20 kHz step, and records the first 256 successful loop outputs for post-run tuning analysis. At 12 V, a 303 mA startup step has 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. A 606 mA / 15 Hz run tracked -17.78 RPM versus -18 RPM commanded. A 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 revolutions versus 2.00 commanded with no fault or reset and 252-permille peak voltage effort against the 700-permille ceiling.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.
@@ -96,19 +98,24 @@ expanded-current hardware gates remain pending.
   safe-state production command service.
 - Aligned q-current enters `RUN` motion authority only from a healthy `READY`
   state with valid calibration. It starts the 20 kHz backend at zero, then each
-  accepted 1 kHz encoder sample slews signed q-current and maps phase plus 90
-  degrees into A/B references. Current, slew, velocity, acceleration, feedback
+  accepted 1 kHz encoder sample slews signed q-current and publishes measured
+  phase/velocity to the backend. Every 20 kHz current event extrapolates phase,
+  adds the q-axis 90 degrees, and regenerates A/B references. Current, slew,
+  velocity, acceleration, prediction age, feedback
   age, duration, STOP, backend, and reference limits are independently enforced
   and reported; violations converge on the existing fault/`ZERO` path.
 - Velocity enters that same `RUN` authority from `READY`, initializes at the
   measured speed and zero q-current, slews a signed reference, and applies PI
-  anti-windup at the caller's explicit current limit. The ±4 rev/s,
-  4 rev/s², and 100-count envelope is a bench-evaluation candidate above the
-  accepted 1 rev/s point. It adds no alternate
+  anti-windup at the caller's explicit current limit. The ±16 rev/s,
+  256 rev/s², and 495-count envelope deliberately exposes operation above the
+  accepted 1 rev/s point; acceptance is not a tracking, thermal, or mechanical
+  performance guarantee. It adds no alternate
   estimator, actuator, current loop, PWM, or bridge path.
 - Relative position begins only near rest, advances a caller-bounded
   trapezoidal reference, limits following error independently to 0.25
   revolution, and drives only dynamic targets into that velocity controller.
+  Its profile permits 16 rev/s and 64 rev/s², the inner slew is 256 rev/s²,
+  and the correction target has 1 rev/s of speed headroom above the profile.
   Travel, speed, acceleration, current, feedback age, settling, duration, STOP,
   and fault behavior remain separately enforced and reported.
 
@@ -133,5 +140,5 @@ the [ADC contract](../docs/ADC.md), the
 [watchdog policy](../docs/WATCHDOG.md), the [boot self-test](../docs/BOOT_SELF_TEST.md),
 and the [debugger diagnostic record](../docs/DIAGNOSTICS.md). The next control
 gate is the position-specific physical Right-button and loaded following-error
-check, followed by staged 2-4 rev/s velocity evaluation. Physical
+check, followed by staged 2, 4, 8, 12, and 16 rev/s velocity evaluation. Physical
 readiness-loss injection remains indefinitely deferred on this assembly.

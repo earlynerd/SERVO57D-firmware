@@ -76,6 +76,8 @@ bool position_controller_config_is_valid(
            finite_positive(config->maximum_relative_travel_revolutions) &&
            finite_positive(config->maximum_velocity_revolutions_per_second) &&
            finite_positive(
+               config->maximum_velocity_target_revolutions_per_second) &&
+           finite_positive(
                config->maximum_acceleration_revolutions_per_second_squared) &&
            finite_positive(
                config->maximum_feedback_velocity_revolutions_per_second) &&
@@ -84,6 +86,8 @@ bool position_controller_config_is_valid(
            (config->maximum_start_velocity_revolutions_per_second <=
             config->maximum_feedback_velocity_revolutions_per_second) &&
            (config->maximum_velocity_revolutions_per_second <
+            config->maximum_velocity_target_revolutions_per_second) &&
+           (config->maximum_velocity_target_revolutions_per_second <
             config->maximum_feedback_velocity_revolutions_per_second) &&
            finite_positive(config->maximum_following_error_revolutions) &&
            finite_positive(config->position_gain_per_second) &&
@@ -312,8 +316,7 @@ position_control_event_t position_controller_update(
         controller->config.position_gain_per_second * following_error;
     velocity_target = clamp_symmetric(
         velocity_target,
-        controller->active_profile_config.
-            maximum_velocity_revolutions_per_second);
+        controller->config.maximum_velocity_target_revolutions_per_second);
     if (!isfinite(velocity_target))
     {
         return fail_controller(

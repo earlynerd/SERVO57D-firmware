@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "mks57d/electrical_phase_predictor.h"
 #include "mks57d/phase_current_loop.h"
 
 enum
@@ -18,7 +19,8 @@ typedef enum
     CURRENT_LOOP_BACKEND_FAULT_ADC = 1u << 16,
     CURRENT_LOOP_BACKEND_FAULT_PWM = 1u << 17,
     CURRENT_LOOP_BACKEND_FAULT_DEADLINE = 1u << 18,
-    CURRENT_LOOP_BACKEND_FAULT_INTERNAL = 1u << 19
+    CURRENT_LOOP_BACKEND_FAULT_INTERNAL = 1u << 19,
+    CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION = 1u << 20
 } current_loop_backend_fault_t;
 
 typedef struct
@@ -28,8 +30,14 @@ typedef struct
     int16_t current_b_reference_counts;
     uint32_t sample_count;
     uint32_t fault_flags;
+    uint32_t predicted_electrical_phase_q32;
+    int32_t electrical_phase_rate_q32_per_us;
+    uint32_t phase_prediction_age_us;
+    uint32_t maximum_phase_prediction_age_us;
+    uint16_t phase_prediction_output_lead_us;
     bool initialized;
     bool active;
+    bool phase_prediction_active;
 } current_loop_backend_snapshot_t;
 
 typedef struct
@@ -44,10 +52,17 @@ typedef struct
 } current_loop_backend_trace_sample_t;
 
 bool current_loop_backend_init(
-    const phase_current_loop_config_t* config);
+    const phase_current_loop_config_t* config,
+    const electrical_phase_predictor_config_t* phase_predictor_config);
 bool current_loop_backend_set_reference_counts(
     int16_t current_a_reference_counts,
     int16_t current_b_reference_counts);
+bool current_loop_backend_set_aligned_q_reference(
+    int16_t q_current_reference_counts,
+    uint32_t electrical_phase_q32,
+    int32_t mechanical_velocity_revolutions_per_second_q16_16,
+    int8_t encoder_direction,
+    uint32_t encoder_timestamp_us);
 bool current_loop_backend_start(void);
 bool current_loop_backend_stop(void);
 void current_loop_backend_get_snapshot(

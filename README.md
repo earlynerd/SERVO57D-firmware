@@ -25,6 +25,19 @@ are temporary and must not displace current, voltage, speed, and loop-rate work
 behind unrelated feature development. Any architecture, estimator, timing,
 power-stage, sensing, thermal, or test-fixture work needed to reach them is in
 scope now.
+
+## Evaluation-firmware warning
+
+**This firmware deliberately exposes unqualified operating zones so the drive's
+real boundaries can be measured. Firmware acceptance of a command is not a
+claim that the attached motor, supply, load, mechanics, cooling, or control
+tuning will perform well there.** Current saturation, poor tracking, stalls,
+following-error or overspeed shutdown, heating, supply disturbance, vibration,
+and unexpectedly energetic motion are possible. Start below the point of
+interest, use an appropriate current-limited supply and mechanical fixture,
+capture telemetry, and keep the physical Right-button stop and supply cutoff
+immediately available.
+
 The rotating-current operation is retained as a production motor-diagnostic
 client of the same drive supervisor used by motion control. It is the measured
 foundation used by the 0.23 aligned torque candidate, not a parallel authority
@@ -54,7 +67,10 @@ closed-loop shaft-speed, signed-direction, or position command. Those controls
 remain separate from this diagnostic: firmware 0.25.1 established the qualified
 signed-velocity baseline, firmware 0.26.0 is the flashed relative-position
 baseline, and firmware 0.26.1 adds an independent encoder-production liveness
-guard through the same production actuator and fault path.
+guard through the same production actuator and fault path. Firmware 0.27.1 is
+the current source/build candidate; it advances timestamped electrical phase
+inside the 20 kHz backend instead of holding each 1 kHz observation and removes
+the commissioning-era velocity/position cascade bottleneck.
 
 The 0.23 candidate adds the first production motion command: a signed,
 calibrated q-current demand with firmware-reported current, slew, velocity,
@@ -71,14 +87,17 @@ it is torque-producing current, not a velocity request, so keep clear of the
 shaft and use the current-limited supply procedure in
 [the bring-up guide](docs/BRINGUP.md).
 
-Firmware 0.26.0 expands the signed closed-loop velocity evaluation service to
-±4 rev/s (±240 RPM), 4 rev/s² reference slew, and 100 current counts (about
-606 mA). The independent observed-speed shutdown remains 5 rev/s. Inspect the
-live policy after flashing before starting:
+Firmware 0.27.1 opens the signed closed-loop velocity evaluation service to
+±16 rev/s (±960 RPM), uses 256 rev/s² inner reference slew, and accepts the
+existing aligned-actuator envelope through 495 current counts (about 2.999 A
+nominal). The independent observed-speed shutdown remains 20 rev/s, the current
+estimator plausibility boundary. These are permissions for deliberate
+measurement, not qualified performance. Inspect the live policy after flashing
+before starting:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 60 --current-limit-ma 606 --duration-ms 3000
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 300 --current-limit-ma 750 --duration-ms 3000
 ```
 
 The command reports the acceleration-limited reference, measured speed,
@@ -150,7 +169,12 @@ feedback overrun. Firmware 0.26.1 additionally requires foreground evidence
 that accepted encoder production has advanced within 3 ms. Loss of that
 evidence removes idle readiness or forces every energized authority through
 the common fault/`ZERO` path; protocol 1.9's estimator-ready bit now includes
-this liveness condition without changing its wire layout. Firmware 0.22.0's
+this liveness condition without changing its wire layout. Firmware 0.27.1
+retains protocol 1.9 and feeds each accepted phase/velocity observation into a
+bounded fixed-point predictor in the 20 kHz DMA-completion path. The backend
+advances the q-current A/B vector for the next PWM preload, includes a nominal
+7 us output lead, and immediately faults to `ZERO` if prediction age exceeds
+2 ms. Firmware 0.22.0's
 power-loss-safe dual-slot motor-
 configuration storage remains accepted through first-save, unchanged-save,
 power-cycle restore, persistent-clear, and no-restored-authority gates. The
@@ -267,9 +291,11 @@ generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional gate is the physical Right-button and loaded
-following-error position checks, followed by expansion of the 240 RPM velocity
-evaluation envelope. Remaining characterization
+accepted. The next functional gates are an ordinary firmware 0.27.1 smoke run,
+the physical Right-button and loaded following-error position checks, and then
+staged measurement through the now-commandable 16 rev/s velocity envelope with
+predicted phase.
+Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

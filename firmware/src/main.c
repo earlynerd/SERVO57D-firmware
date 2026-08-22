@@ -107,6 +107,7 @@ typedef struct
     velocity_controller_t* velocity_controller;
     rotor_control_runtime_t* rotor_control_runtime;
     uint32_t* raw_input_levels;
+    int32_t maximum_command_velocity_revolutions_per_second_q16_16;
     int32_t requested_velocity_revolutions_per_second_q16_16;
     uint16_t requested_current_limit_counts;
     uint32_t requested_duration_millis;
@@ -791,9 +792,9 @@ static command_status_t aligned_torque_get_status(
     status->applied_q_current_counts =
         controller_status.applied_q_current_counts;
     status->current_a_reference_counts =
-        controller_status.current_a_reference_counts;
+        loop.current_a_reference_counts;
     status->current_b_reference_counts =
-        controller_status.current_b_reference_counts;
+        loop.current_b_reference_counts;
     status->electrical_phase_q32 =
         controller_status.electrical_phase_q32;
     status->velocity_revolutions_per_second_q16_16 =
@@ -890,9 +891,8 @@ static command_status_t velocity_start(
         target_magnitude = -target_magnitude;
     }
     if ((velocity_revolutions_per_second_q16_16 == 0) ||
-        (target_magnitude > float_to_q16_16(
-            velocity->velocity_controller->config.
-                maximum_target_velocity_revolutions_per_second)) ||
+        (target_magnitude > velocity->
+             maximum_command_velocity_revolutions_per_second_q16_16) ||
         (current_limit_counts == 0u) ||
         (current_limit_counts > velocity->velocity_controller->config.
              maximum_current_counts) ||
@@ -1037,8 +1037,7 @@ static command_status_t velocity_get_status(
         status->flags |= COMMAND_VELOCITY_FLAG_CURRENT_AT_LIMIT;
     }
     status->maximum_target_velocity_revolutions_per_second_q16_16 =
-        float_to_q16_16(velocity->velocity_controller->config.
-            maximum_target_velocity_revolutions_per_second);
+        velocity->maximum_command_velocity_revolutions_per_second_q16_16;
     status->maximum_target_acceleration_revolutions_per_second2_q16_16 =
         float_to_q16_16(velocity->velocity_controller->config.
             maximum_target_acceleration_revolutions_per_second_squared);
@@ -1826,9 +1825,16 @@ int main(void)
          */
         ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS = 495u,
         ALIGNED_TORQUE_MAXIMUM_CURRENT_SLEW_COUNTS_PER_SECOND = 10000u,
-        ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 5u << 16,
+        /* The estimator is now the observed-speed boundary for motion. */
+        ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 20u << 16,
         ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 1000u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
+        /*
+         * Nominal DMA-completion-to-next-preload-boundary interval at the
+         * retained 80%-carrier ADC trigger. Scope measurement remains the
+         * acceptance evidence for this compensation value.
+         */
+        CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US = 7u,
         /*
          * Three milliseconds allows one reference update before the deadline
          * even when the first accepted 1 kHz feedback sample arrives at the
@@ -1842,16 +1848,26 @@ int main(void)
          * unambiguous for every accepted start time.
          */
         ALIGNED_TORQUE_MAXIMUM_DURATION_MS = INT32_MAX,
-        VELOCITY_MAXIMUM_TARGET_Q16_16 = 4u << 16,
-        VELOCITY_MAXIMUM_ACCELERATION_Q16_16 = 4u << 16,
-        VELOCITY_MAXIMUM_CURRENT_COUNTS = 100u,
+        /*
+         * Evaluation permission is intentionally ahead of validated motion.
+         * Sixteen rev/s leaves 20 percent transient headroom below the
+         * estimator/observed-speed boundary. The inner target accepts one
+         * additional rev/s so the position correction can use its complete
+         * Kp * maximum-following-error budget without clipping at profile
+         * speed.
+         */
+        VELOCITY_MAXIMUM_COMMAND_Q16_16 = 16u << 16,
+        VELOCITY_MAXIMUM_TARGET_Q16_16 = 17u << 16,
+        VELOCITY_MAXIMUM_ACCELERATION_Q16_16 = 256u << 16,
+        VELOCITY_MAXIMUM_CURRENT_COUNTS = 495u,
         VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         VELOCITY_MINIMUM_DURATION_MS = 3u,
         VELOCITY_MAXIMUM_DURATION_MS = INT32_MAX,
         POSITION_MAXIMUM_RELATIVE_TRAVEL_Q16_16 = 100u << 16,
-        POSITION_MAXIMUM_VELOCITY_Q16_16 = 4u << 16,
-        POSITION_MAXIMUM_ACCELERATION_Q16_16 = 4u << 16,
-        POSITION_MAXIMUM_CURRENT_COUNTS = 100u,
+        POSITION_MAXIMUM_VELOCITY_Q16_16 = 16u << 16,
+        POSITION_MAXIMUM_VELOCITY_TARGET_Q16_16 = 17u << 16,
+        POSITION_MAXIMUM_ACCELERATION_Q16_16 = 64u << 16,
+        POSITION_MAXIMUM_CURRENT_COUNTS = 495u,
         POSITION_REQUIRED_SETTLE_SAMPLES = 50u,
         POSITION_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         POSITION_MINIMUM_DURATION_MS = 100u,
@@ -1875,6 +1891,9 @@ int main(void)
     _Static_assert((CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE + 100u) <=
                        TIM2_CURRENT_TRIGGER_PHASE_PERMILLE,
                    "phase voltage must leave a 5 us ADC quiet interval");
+    _Static_assert(CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US <
+                       (1000000u / TIM3_BRIDGE_PWM_FREQUENCY_HZ),
+                   "phase-prediction lead must stay within one carrier");
     _Static_assert(ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS <=
                        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
                     "torque policy exceeds the current backend contract");
@@ -1885,8 +1904,20 @@ int main(void)
                        VELOCITY_MAXIMUM_CURRENT_COUNTS,
                    "position current exceeds the velocity contract");
     _Static_assert(POSITION_MAXIMUM_VELOCITY_Q16_16 <=
+                       VELOCITY_MAXIMUM_COMMAND_Q16_16,
+                   "position profile exceeds the commandable velocity contract");
+    _Static_assert(VELOCITY_MAXIMUM_COMMAND_Q16_16 <
                        VELOCITY_MAXIMUM_TARGET_Q16_16,
-                   "position velocity exceeds the velocity contract");
+                   "velocity correction requires target headroom");
+    _Static_assert(POSITION_MAXIMUM_VELOCITY_TARGET_Q16_16 <=
+                       VELOCITY_MAXIMUM_TARGET_Q16_16,
+                   "position correction exceeds the inner velocity contract");
+    _Static_assert((POSITION_MAXIMUM_VELOCITY_TARGET_Q16_16 -
+                    POSITION_MAXIMUM_VELOCITY_Q16_16) == (1u << 16),
+                   "position correction requires the full Kp-error budget");
+    _Static_assert(POSITION_MAXIMUM_ACCELERATION_Q16_16 * 4u <=
+                       VELOCITY_MAXIMUM_ACCELERATION_Q16_16,
+                   "inner velocity slew requires fourfold profile headroom");
     _Static_assert(ENCODER_PROGRESS_TIMEOUT_US >
                        ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
                    "encoder progress guard must allow snapshot observation");
@@ -1965,7 +1996,7 @@ int main(void)
             (float)VELOCITY_MAXIMUM_TARGET_Q16_16 / 65536.0f,
         .maximum_target_acceleration_revolutions_per_second_squared =
             (float)VELOCITY_MAXIMUM_ACCELERATION_Q16_16 / 65536.0f,
-        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 20.0f,
         .maximum_current_counts = VELOCITY_MAXIMUM_CURRENT_COUNTS,
         .maximum_feedback_interval_us =
             VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US,
@@ -1977,9 +2008,11 @@ int main(void)
             (float)POSITION_MAXIMUM_RELATIVE_TRAVEL_Q16_16 / 65536.0f,
         .maximum_velocity_revolutions_per_second =
             (float)POSITION_MAXIMUM_VELOCITY_Q16_16 / 65536.0f,
+        .maximum_velocity_target_revolutions_per_second =
+            (float)POSITION_MAXIMUM_VELOCITY_TARGET_Q16_16 / 65536.0f,
         .maximum_acceleration_revolutions_per_second_squared =
             (float)POSITION_MAXIMUM_ACCELERATION_Q16_16 / 65536.0f,
-        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 20.0f,
         .maximum_start_velocity_revolutions_per_second = 0.1f,
         .maximum_following_error_revolutions = 0.25f,
         .position_gain_per_second = 4.0f,
@@ -2019,6 +2052,16 @@ int main(void)
         .duty_margin_permille = CURRENT_LOOP_DUTY_MARGIN_PERMILLE,
         .current_a_polarity = 1,
         .current_b_polarity = 1,
+    };
+    const electrical_phase_predictor_config_t phase_predictor_config = {
+        .electrical_cycles_per_mechanical_revolution =
+            MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION,
+        .output_lead_us =
+            CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US,
+        .maximum_prediction_age_us =
+            ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
+        .maximum_mechanical_velocity_q16_16 =
+            ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16,
     };
     current_loop_backend_snapshot_t current_loop_snapshot = {0};
     rotating_current_test_t current_test_generator = {0};
@@ -2067,6 +2110,8 @@ int main(void)
         .velocity_controller = &velocity_controller,
         .rotor_control_runtime = &rotor_control_runtime,
         .raw_input_levels = &raw_input_levels,
+        .maximum_command_velocity_revolutions_per_second_q16_16 =
+            VELOCITY_MAXIMUM_COMMAND_Q16_16,
     };
     position_command_context_t position_commands = {
         .supervisor = &drive_supervisor,
@@ -3028,7 +3073,9 @@ int main(void)
                         (uint16_t)(adc_calibration.current_a_zero_raw + 0.5f);
                     current_loop_config.current_b_zero_raw =
                         (uint16_t)(adc_calibration.current_b_zero_raw + 0.5f);
-                    if (!current_loop_backend_init(&current_loop_config))
+                    if (!current_loop_backend_init(
+                            &current_loop_config,
+                            &phase_predictor_config))
                     {
                         board_bridge_force_low_zero();
                         platform_panic(PANIC_DRIVE_CONTROL);

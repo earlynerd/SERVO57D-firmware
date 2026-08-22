@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.26.1 implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.27.1 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -17,6 +17,9 @@ routes its mechanical effort through the persisted alignment direction into
 the aligned-q-current actuator. Firmware 0.26.0 adds the focused relative-
 position layer and is bench-proven for mirrored settling and generic STOP.
 Firmware 0.26.1 adds an independent 3 ms foreground encoder-production guard.
+Firmware 0.27.1 moves aligned-q electrical-phase advance into the authoritative
+20 kHz backend with bounded fixed-point prediction and immediate stale-age
+fault convergence.
 
 ## Design priorities
 
@@ -78,6 +81,11 @@ The current image implements:
 - A fixed-point A/B PI current loop with conditional anti-windup,
   low-zero sign-magnitude H-bridge modulation, independent reference/raw-current/voltage/
   duty bounds, and DMA/PWM/deadline fault latching.
+- A fixed-point electrical-phase predictor owned by the current backend. Each
+  accepted 1 kHz observation supplies measured phase, filtered mechanical
+  velocity, direction, and timestamp; each 20 kHz current event extrapolates to
+  the following preload boundary, regenerates the q-axis A/B references, and
+  faults through the common `ZERO` path if observation age exceeds 2 ms.
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
   diagnostic and motion authority, and bridge deauthorization on faults.
@@ -91,7 +99,8 @@ The current image implements:
   explicit safe-state save and persistent-clear operations use the same
   production configuration service.
 - A portable fixed-point aligned-torque controller that slews signed q-current,
-  maps it from calibrated electrical phase into A/B references, reports its
+  validates calibrated electrical phase and publishes bounded predictor seeds,
+  reports its
   complete policy/evidence, and independently faults invalid phase, feedback
   timing, velocity, acceleration, backend state, or reference acceptance before
   the existing current backend can retain authority.

@@ -216,16 +216,21 @@ Goal: close the mechanical loop incrementally.
   current, velocity, acceleration, feedback-age, duration, STOP, and fault
   contracts plus machine-readable policy telemetry.
 - [ ] Bench-validate positive/negative aligned q-current through deadline,
-  explicit STOP, and Right-button stop before expanding the initial velocity
-  candidate beyond its low-speed gate. Physical encoder/readiness-loss injection
-  is covered by the indefinite deferral above.
+  explicit STOP, and Right-button stop. Motion evaluation permission remains
+  open while this evidence is collected. Physical encoder/readiness-loss
+  injection is covered by the indefinite deferral above.
 - [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
   2.999 A motor-rated evaluation point, including current error, voltage
   effort, supply state, winding/power-stage temperature, STOP, and fault health.
-- [ ] Evaluate toward the enabled 5 rev/s (300 RPM) boundary with the present
-  1 kHz phase refresh, record where tracking or torque quality fails, then move
-  electrical-phase prediction into the deterministic 20 kHz reference path and
-  repeat with 80 current updates per electrical cycle at the endpoint.
+- [x] Move aligned-q electrical-phase prediction into the deterministic 20 kHz
+  current path. Seed it from timestamped 1 kHz phase/filtered-velocity
+  observations, include a bounded output lead, and fault stale prediction
+  through the common `ZERO` path.
+- [ ] Bench-validate the phase predictor at the accepted low-speed point, scope
+  its output lead and worst-case ISR duration, then evaluate through 2, 4, 5, 8,
+  12, and 16 rev/s. The command space is already enabled; the endpoint has 25
+  current updates per electrical cycle and 1.25 encoder observations per
+  electrical cycle.
 - [x] Integrate a low-gain velocity loop on the authoritative 1 kHz rotor
   observation, commanding only the bounded aligned-q-current actuator, with an
   acceleration-limited reference, per-command current limit, finite deadline,
@@ -234,7 +239,7 @@ Goal: close the mechanical loop incrementally.
   explicit STOP, Right-button stop, and current saturation. Deadline, STOP,
   Right-button stop, and hand-loaded saturation/recovery pass. Physical
   encoder/readiness-loss injection is covered by the indefinite deferral above;
-  tune gains and expand the envelope only from captured measurements.
+  use captured measurements to tune gains and identify the next real boundary.
 - [x] Integrate a focused relative-position loop through the production
   velocity/aligned-current stack with explicit travel, trajectory velocity,
   acceleration, current, start-speed, feedback-age, following-error, settling,
@@ -243,10 +248,15 @@ Goal: close the mechanical loop incrementally.
   settled completion and generic STOP with bounded current, following error,
   encoder timing, and clean backend/authority release.
 - [ ] Bench-validate physical Right-button stop and loaded following-error
-  behavior before adding absolute position, homing, or step/direction.
-- [ ] Stage the expanded velocity evaluation ceiling through ±2, ±3, and ±4
-  rev/s, measuring current saturation, tracking, voltage effort, phase-refresh
-  quality, supply behavior, heating, and clean release at every point.
+  behavior while absolute position, homing, and step/direction work continues
+  through the same fault and authority contracts.
+- [x] Replace the 4 rev/s, 4 rev/s², and 100-count commissioning policy with a
+  16 rev/s/495-count evaluation range, a 64 rev/s² position profile, 256 rev/s²
+  inner slew, and an exact 17 rev/s corrected-target allowance. Retain 20 rev/s
+  observed-speed and 0.25-revolution following-error shutdown independently.
+- [ ] Stage the exposed velocity range through ±2, ±4, ±5, ±8, ±12, and ±16
+  rev/s, measuring current saturation, tracking, voltage effort, phase-prediction
+  quality, supply behavior, heating, mechanics, and release at every point.
 - [ ] Define mechanical stall, partial encoder degradation, protection-grade
   overcurrent, and runaway detection beyond the implemented total-production
   encoder guard and existing raw-current/overspeed checks.
@@ -258,9 +268,9 @@ Goal: close the mechanical loop incrementally.
   current, speed, acceleration, following error, and timing limits independent.
 - [x] Establish a live inventory for the active motor-drive limits with units,
   classification, basis, enforcement owner, reporting, and next evidence.
-- [ ] Configure or replace the remaining evaluation acceleration, slew, and
-  alignment-policy candidates that have no
-  defensible permanent product basis.
+- [ ] Configure or replace the remaining alignment-policy candidates that have
+  no defensible product basis; velocity/position acceleration and cascade slew
+  now provide explicit evaluation permission and fourfold inner rate headroom.
 - [x] Implement alignment persistence with versioned, CRC-protected,
   commit-last dual-slot records, safe-state writes, boot validation, automatic
   post-alignment save, and production status/save/clear commands.

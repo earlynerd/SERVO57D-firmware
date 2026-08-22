@@ -45,6 +45,7 @@ set(PROJECT_SOURCES
     src/control/aligned_torque_controller.c
     src/control/alignment_controller.c
     src/control/angle_tracker.c
+    src/control/electrical_phase_predictor.c
     src/control/motor_alignment.c
     src/control/motion_profile.c
     src/control/phase_current_loop.c
@@ -132,12 +133,15 @@ target_compile_options(${FIRMWARE_TARGET} PRIVATE
 # target-wide -Og and therefore governs these translation units.
 set_source_files_properties(
     src/app/rotor_control_runtime.c
+    src/control/electrical_phase_predictor.c
     src/control/phase_current_loop.c
+    src/control/phase_current_reference.c
     src/platform/adc1.c
     src/platform/current_loop_backend.c
     src/platform/spi1.c
     src/platform/tim2_current_trigger.c
     src/platform/tim3_bridge_pwm.c
+    src/platform/timebase.c
     PROPERTIES COMPILE_OPTIONS -O2
 )
 

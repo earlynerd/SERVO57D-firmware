@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.26.1 implements the fast current path, production alignment,
+Status: firmware 0.27.1 implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -14,7 +14,10 @@ mechanical effort through the persisted alignment direction before routing it
 through the existing aligned-q-current actuator. Firmware 0.26.0 adds focused
 relative position on the same 1 kHz accepted-sample release, and firmware
 0.26.1 adds an independent foreground encoder-production deadline. This
-document defines those boundaries and the route to faster outer loops.
+document defines those boundaries and the route to faster outer loops. Firmware
+0.27.1 turns each accepted encoder phase/velocity observation into a bounded
+predictor seed and regenerates aligned-q A/B references on every 20 kHz current
+event.
 
 ## Goals
 
@@ -178,7 +181,8 @@ initial targets.
 | PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
 | Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
-| Aligned q-current mapping | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited A/B references for the 20 kHz backend |
+| Aligned q-current demand/seed | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited q-current plus timestamped phase/velocity observation |
+| Electrical-phase advance and A/B mapping | 20 kHz | ADC DMA completion | Phase predicted to the next preload boundary and fresh A/B current references |
 | Velocity control | 1 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
 | Position control | 1 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
 | Trajectory generation | 1 kHz | Same accepted-sample position update | Bounded position and velocity references |
@@ -282,7 +286,7 @@ The hardware-independent portion is implemented under `firmware/src/control/`
 and `firmware/src/app/`. Product modules are linked into `mks57d`; the general
 application/servo shell, step-direction, and d/q voltage modules are instead
 compiled as the explicitly non-product `mks57d_motion_candidate` target and in
-host tests. Firmware 0.26.1 integrates the authoritative drive
+host tests. Firmware 0.27.1 integrates the authoritative drive
 supervisor, mechanical angle tracker, measured stepper-alignment geometry,
 signed q-current actuator, focused bounded velocity and relative-position
 controllers, and the independent encoder-liveness guard; the general motion
@@ -315,13 +319,17 @@ shell remains excluded while the proven phase-current backend is active:
   trajectory completion, saturation, fault recovery, and current regulation.
 
 The active stepper path does not send the portable d/q controller's voltage
-output to PWM. At each accepted 1 kHz encoder sample it validates phase age,
+output to PWM. At each accepted 1 kHz encoder sample it validates phase,
 velocity, acceleration, backend state, and deadline, slews signed q-current,
-maps electrical phase plus 90 degrees to A/B current references, and hands them
-to the already-qualified 20 kHz A/B PI backend. The 0.25 velocity loop commands
+and publishes a timestamped measured-phase/filtered-velocity seed. On each
+20 kHz DMA completion the backend extrapolates phase to the following PWM
+preload boundary, adds 90 degrees, and regenerates A/B current references before
+the already-qualified A/B PI step. The predictor is fixed-point, includes a
+nominal 7 us output lead, permits at most 2,000 us of observation age, and
+immediately forces `ZERO` on invalid or stale prediction. The 0.25 velocity loop commands
 that production actuator with its own target, acceleration, current, feedback-
 age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
-future work requiring its own modulation and timing evidence. The 0.26 position
+separate active work requiring its own modulation and timing evidence. The 0.26 position
 layer adds independent travel, start-speed, following-error, settling, and
 deadline checks above the same velocity/current contracts.
 

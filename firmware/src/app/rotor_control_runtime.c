@@ -57,6 +57,20 @@ static int32_t float_to_q16_16(float value)
     return (int32_t)(value * 65536.0f);
 }
 
+static bool publish_aligned_q_reference(
+    const rotor_control_runtime_t* runtime,
+    const aligned_torque_status_t* status,
+    uint32_t encoder_timestamp_us)
+{
+    return (runtime != NULL) && (status != NULL) &&
+           current_loop_backend_set_aligned_q_reference(
+               status->applied_q_current_counts,
+               status->electrical_phase_q32,
+               status->velocity_revolutions_per_second_q16_16,
+               runtime->motor_alignment.status.encoder_direction,
+               encoder_timestamp_us);
+}
+
 static bool runtime_active(const rotor_control_runtime_t* runtime)
 {
     return alignment_controller_is_active(&runtime->alignment_controller) ||
@@ -507,9 +521,8 @@ static void update_torque(rotor_control_runtime_t* runtime,
     {
         aligned_torque_controller_get_status(
             &runtime->torque_controller, &status);
-        if (!current_loop_backend_set_reference_counts(
-                status.current_a_reference_counts,
-                status.current_b_reference_counts))
+        if (!publish_aligned_q_reference(
+                runtime, &status, timestamp_us))
         {
             (void)aligned_torque_controller_reference_rejected(
                 &runtime->torque_controller, now_millis);
@@ -577,9 +590,8 @@ static void update_velocity(rotor_control_runtime_t* runtime,
             {
                 aligned_torque_controller_get_status(
                     &runtime->torque_controller, &torque_status);
-                if (!current_loop_backend_set_reference_counts(
-                        torque_status.current_a_reference_counts,
-                        torque_status.current_b_reference_counts))
+                if (!publish_aligned_q_reference(
+                        runtime, &torque_status, timestamp_us))
                 {
                     (void)aligned_torque_controller_reference_rejected(
                         &runtime->torque_controller, now_millis);
@@ -679,9 +691,8 @@ static void update_position(rotor_control_runtime_t* runtime,
                 {
                     aligned_torque_controller_get_status(
                         &runtime->torque_controller, &torque_status);
-                    if (!current_loop_backend_set_reference_counts(
-                            torque_status.current_a_reference_counts,
-                            torque_status.current_b_reference_counts))
+                    if (!publish_aligned_q_reference(
+                            runtime, &torque_status, timestamp_us))
                     {
                         (void)aligned_torque_controller_reference_rejected(
                             &runtime->torque_controller, now_millis);

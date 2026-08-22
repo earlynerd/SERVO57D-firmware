@@ -1,6 +1,6 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.26.1 releases encoder reads at 1 kHz from TIM6, performs
+Status: firmware 0.27.1 releases encoder reads at 1 kHz from TIM6, performs
 bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
 through DMA channels 2/3, and defers decode/runtime publication through PendSV.
 Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
@@ -15,7 +15,9 @@ the accepted geometry and zero exactly, and STOP preserved the valid calibration
 Aligned torque acquires authority only in the successful-sample path: that
 sample seeds phase, velocity, and timestamp, and the next accepted sample is the
 first active feedback update. Firmware 0.26.1 independently requires foreground
-evidence that accepted production has advanced within 3 ms.
+evidence that accepted production has advanced within 3 ms. Firmware 0.27.1
+uses each accepted electrical phase, filtered velocity, direction, and timestamp
+as a seed for bounded 20 kHz phase advance in the current backend.
 
 ## Evidence and confidence
 
@@ -92,6 +94,13 @@ wrap-safe microsecond arithmetic. No progress for more than 3 ms removes
 the common fault/`ZERO` path. Once stale, the monitor stays not-live until a
 genuinely advanced sample is observed.
 
+Aligned torque, velocity, and position still update their demands from accepted
+1 kHz observations. The current backend independently advances electrical phase
+at each 20 kHz current event, using the filtered mechanical velocity and measured
+alignment direction. It refuses observations older than 2 ms and routes invalid
+or stale prediction through the common fault/`ZERO` path; the configured 7 us
+preload lead remains a scope-measurement gate.
+
 The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
 estimator's 20 ms accepted-sample interval threshold
 is a scheduling/feedback validity check, not a motor speed command limit. Its
@@ -157,5 +166,6 @@ The bench-validated supervisor-owned automatic alignment procedure
 establishes the per-motor electrical zero transactionally before motion can use
 electrical phase; accepted calibration persists through the dual-slot production
 configuration service. Scheduler latency remains subject to revalidation as
-velocity, position, and phase prediction are accelerated beyond the present
-1 kHz outer-loop release.
+velocity and position scheduling advance toward the active loop-rate and speed
+requirements; the phase predictor now runs at 20 kHz while its observation
+source remains 1 kHz.

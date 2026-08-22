@@ -21,6 +21,7 @@
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
+#include "mks57d/electrical_phase_predictor.h"
 #include "mks57d/encoder_liveness.h"
 #include "mks57d/encoder_display.h"
 #include "mks57d/fault_latch.h"
@@ -192,8 +193,9 @@ static position_controller_config_t test_position_controller_config(void)
     const position_controller_config_t config = {
         .maximum_relative_travel_revolutions = 100.0f,
         .maximum_velocity_revolutions_per_second = 4.0f,
+        .maximum_velocity_target_revolutions_per_second = 5.0f,
         .maximum_acceleration_revolutions_per_second_squared = 4.0f,
-        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 6.0f,
         .maximum_start_velocity_revolutions_per_second = 0.1f,
         .maximum_following_error_revolutions = 0.25f,
         .position_gain_per_second = 4.0f,
@@ -3092,6 +3094,106 @@ static void test_encoder_liveness_handles_counter_and_timer_wrap(void)
         &monitor, true, 0u, 2000u, 2000u));
 }
 
+static electrical_phase_predictor_config_t
+test_electrical_phase_predictor_config(void)
+{
+    const electrical_phase_predictor_config_t config = {
+        .electrical_cycles_per_mechanical_revolution = 50u,
+        .output_lead_us = 7u,
+        .maximum_prediction_age_us = 2000u,
+        .maximum_mechanical_velocity_q16_16 = 5 << 16,
+    };
+
+    return config;
+}
+
+static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
+{
+    const electrical_phase_predictor_config_t config =
+        test_electrical_phase_predictor_config();
+    electrical_phase_predictor_t predictor;
+    uint32_t phase_at_sample = 0u;
+    uint32_t phase_after_one_fast_step = 0u;
+    uint32_t phase_after_one_encoder_period = 0u;
+    uint32_t age_us = 0u;
+    uint32_t fast_step_delta;
+    uint32_t encoder_period_delta;
+
+    EXPECT_TRUE(electrical_phase_predictor_config_is_valid(&config));
+    EXPECT_TRUE(electrical_phase_predictor_init(&predictor, &config));
+    EXPECT_TRUE(electrical_phase_predictor_set_observation(
+        &predictor, 0x10000000u, 4 << 16, 1, 1000u));
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 1000u, &phase_at_sample, &age_us));
+    EXPECT_TRUE(age_us == 0u);
+    EXPECT_TRUE((phase_at_sample - 0x10000000u) > 0x005BB000u);
+    EXPECT_TRUE((phase_at_sample - 0x10000000u) < 0x005BD000u);
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 1050u, &phase_after_one_fast_step, &age_us));
+    EXPECT_TRUE(age_us == 50u);
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 2000u, &phase_after_one_encoder_period, &age_us));
+    EXPECT_TRUE(age_us == 1000u);
+
+    fast_step_delta = phase_after_one_fast_step - phase_at_sample;
+    encoder_period_delta =
+        phase_after_one_encoder_period - phase_at_sample;
+    /* 4 mechanical rev/s * 50 cycles/rev advances 3.6 electrical degrees
+       per 50 us current-loop period and 72 degrees per 1 ms encoder period. */
+    EXPECT_TRUE(fast_step_delta > 0x028F5900u);
+    EXPECT_TRUE(fast_step_delta < 0x028F6000u);
+    EXPECT_TRUE(encoder_period_delta > 0x33333000u);
+    EXPECT_TRUE(encoder_period_delta < 0x33333600u);
+}
+
+static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
+{
+    electrical_phase_predictor_config_t config =
+        test_electrical_phase_predictor_config();
+    electrical_phase_predictor_t predictor;
+    uint32_t forward_phase = 0u;
+    uint32_t reverse_phase = 0u;
+    uint32_t boundary_phase = 0u;
+    uint32_t age_us = 0u;
+    const uint32_t timestamp_us = UINT32_MAX - 500u;
+
+    EXPECT_TRUE(electrical_phase_predictor_init(&predictor, &config));
+    EXPECT_TRUE(!electrical_phase_predictor_predict(
+        &predictor, 0u, &forward_phase, &age_us));
+    EXPECT_TRUE(!electrical_phase_predictor_set_observation(
+        &predictor, 0u, 4 << 16, 0, timestamp_us));
+    EXPECT_TRUE(!electrical_phase_predictor_set_observation(
+        &predictor, 0u, (5 << 16) + 1, 1, timestamp_us));
+
+    EXPECT_TRUE(electrical_phase_predictor_set_observation(
+        &predictor, 0u, 4 << 16, 1, timestamp_us));
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 499u, &forward_phase, &age_us));
+    EXPECT_TRUE(age_us == 1000u);
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 1499u, &boundary_phase, &age_us));
+    EXPECT_TRUE(age_us == 2000u);
+    EXPECT_TRUE(!electrical_phase_predictor_predict(
+        &predictor, 1500u, &forward_phase, &age_us));
+
+    EXPECT_TRUE(electrical_phase_predictor_set_observation(
+        &predictor, 0u, 4 << 16, -1, 1000u));
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 2000u, &reverse_phase, &age_us));
+    EXPECT_TRUE((forward_phase + reverse_phase) < 0x00001000u);
+
+    electrical_phase_predictor_reset(&predictor);
+    EXPECT_TRUE(!electrical_phase_predictor_predict(
+        &predictor, 2000u, &reverse_phase, &age_us));
+
+    config.output_lead_us = 2001u;
+    EXPECT_TRUE(!electrical_phase_predictor_config_is_valid(&config));
+    config = test_electrical_phase_predictor_config();
+    config.maximum_prediction_age_us = (uint32_t)INT32_MAX + 1u;
+    EXPECT_TRUE(!electrical_phase_predictor_config_is_valid(&config));
+    EXPECT_TRUE(!electrical_phase_predictor_init(NULL, &config));
+}
+
 static void test_motor_alignment_accepts_measured_stepper_geometry(void)
 {
     const motor_alignment_config_t config = {
@@ -4135,6 +4237,10 @@ static void test_position_controller_enforces_following_error_and_deadline(void)
     position_control_event_t event = POSITION_CONTROL_EVENT_NONE;
     uint32_t step;
 
+    config.maximum_velocity_target_revolutions_per_second =
+        config.maximum_velocity_revolutions_per_second;
+    EXPECT_TRUE(!position_controller_config_is_valid(&config));
+    config = test_position_controller_config();
     config.maximum_following_error_revolutions = 0.01f;
     EXPECT_TRUE(position_controller_init(&controller, &config));
     EXPECT_TRUE(position_controller_start_relative(
@@ -4183,6 +4289,42 @@ static void test_position_controller_enforces_following_error_and_deadline(void)
     position_controller_get_status(&controller, &status);
     EXPECT_TRUE(status.result == POSITION_CONTROL_RESULT_DEADLINE);
     EXPECT_TRUE(target_velocity == 0);
+}
+
+static void test_position_controller_preserves_velocity_correction_headroom(void)
+{
+    const position_controller_config_t config =
+        test_position_controller_config();
+    position_controller_t controller;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int32_t target_velocity = 0;
+
+    EXPECT_TRUE(position_controller_init(&controller, &config));
+    EXPECT_TRUE(position_controller_start_relative(
+        &controller,
+        10 << 16,
+        4 << 16,
+        4 << 16,
+        50u,
+        5000u,
+        0u,
+        &observation));
+
+    controller.profile.position_revolutions = 1.0f;
+    controller.profile.velocity_revolutions_per_second = 4.0f;
+    observation.position_revolutions = 0.8f;
+    observation.velocity_revolutions_per_second = 4.0f;
+    observation.timestamp_us = 1000u;
+    EXPECT_TRUE(position_controller_update(
+        &controller, 1u, &observation, &target_velocity) ==
+        POSITION_CONTROL_EVENT_VELOCITY_CHANGED);
+    EXPECT_TRUE(target_velocity > (4 << 16));
+    EXPECT_TRUE(target_velocity <= (5 << 16));
 }
 
 static current_controller_config_t test_current_controller_config(void)
@@ -5671,6 +5813,8 @@ int main(void)
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_encoder_liveness_requires_fresh_progress();
     test_encoder_liveness_handles_counter_and_timer_wrap();
+    test_electrical_phase_predictor_advances_at_current_loop_rate();
+    test_electrical_phase_predictor_handles_direction_age_and_wrap();
     test_motor_alignment_accepts_measured_stepper_geometry();
     test_configuration_store_persists_and_avoids_unchanged_writes();
     test_configuration_store_interrupted_update_keeps_old_slot();
@@ -5694,6 +5838,7 @@ int main(void)
     test_velocity_controller_accepts_dynamic_tracking_targets();
     test_position_controller_profiles_and_settles();
     test_position_controller_enforces_following_error_and_deadline();
+    test_position_controller_preserves_velocity_correction_headroom();
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();

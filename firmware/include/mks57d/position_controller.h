@@ -52,6 +52,8 @@ typedef struct
 {
     float maximum_relative_travel_revolutions;
     float maximum_velocity_revolutions_per_second;
+    /* Inner velocity target headroom above the trajectory limit. */
+    float maximum_velocity_target_revolutions_per_second;
     float maximum_acceleration_revolutions_per_second_squared;
     float maximum_feedback_velocity_revolutions_per_second;
     float maximum_start_velocity_revolutions_per_second;

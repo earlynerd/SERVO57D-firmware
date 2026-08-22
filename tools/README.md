@@ -119,15 +119,17 @@ or thermal rating. The current ceiling matches the attached motor's reported
 it is not yet a qualified continuous-current rating. The hardware gate starts at
 ±25 counts (±151.5 mA) for 250 ms and advances from measured results. This
 command produces torque and can accelerate the shaft; it does not request or
-regulate velocity. The evaluation shutdown policy permits 5 rev/s (300 RPM),
+regulate velocity. The evaluation shutdown policy permits 20 rev/s (1,200 RPM),
 1,000 rev/s² observed acceleration, and 10,000 counts/s current slew so poor
-tracking and phase-refresh boundaries can be measured instead of preflighted
+tracking and phase-prediction/estimator boundaries can be measured instead of preflighted
 away.
 
 Firmware 0.26.0 / protocol 1.9 retains the qualified velocity service and adds
 relative position. Firmware 0.26.1 keeps the same host protocol and makes the
 encoder `estimator_ready` field clear if accepted sample production has not
-advanced within 3 ms. `velocity` accepts either `--rps` or `--rpm`, while
+advanced within 3 ms. Firmware 0.27.1 also keeps protocol 1.9 and advances
+electrical phase/A-B references in the 20 kHz backend; existing torque, drive,
+velocity, position, and encoder captures require no decoder changes. `velocity` accepts either `--rps` or `--rpm`, while
 `velocity-status` is passive and reports target, acceleration, feedback-speed,
 current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
 signed mechanical target in revolutions per second plus an explicit positive
@@ -145,19 +147,24 @@ final summary. Use `--jsonl` to additionally retain complete nested snapshots,
 captures. Ctrl+C sends generic STOP and finalizes the directory. For a
 repeatable automated shutdown gate, `--stop-after-seconds SECONDS` sends the
 same STOP over the capture's active serial connection before the firmware
-deadline. The 0.26.0 evaluation envelope is ±4 rev/s (±240 RPM), 4 rev/s²
-reference slew, and at most 100 counts (about 606 mA). The independent
-observed-speed shutdown remains 5 rev/s. The velocity evidence remains
+deadline. The 0.27.1 evaluation envelope is ±16 rev/s (±960 RPM), 256 rev/s²
+reference slew, and at most 495 counts (about 2.999 A nominal). The independent
+observed-speed shutdown remains 20 rev/s. The velocity evidence remains
 qualified only through 1 rev/s; the expanded values are bench-evaluation
-permission, not a performance claim. Firmware 0.26.0 is the flashed baseline
-and its first relative-position gate passed; 0.26.1 still needs a normal flash
-and smoke check.
+permission, not a performance claim. Accepted high-end requests may saturate,
+stall, fault, heat the motor/drive, or produce unexpectedly energetic motion;
+use bounded runs, a suitable fixture, and immediate STOP/supply-cutoff access.
+Firmware 0.26.0 is the flashed baseline
+and its first relative-position gate passed; 0.27.1 still needs a normal flash
+and liveness/prediction smoke check.
 
 `position-status` passively reports target/reference/measured position,
 profile/corrected/measured velocity, requested/applied current, state, result,
 faults, and the firmware travel/velocity/acceleration/following-error policy.
 `position` accepts a signed relative displacement plus explicit positive
-trajectory velocity, acceleration, current limit, and deadline. It preflights
+trajectory velocity, acceleration, current limit, and deadline. Firmware 0.27.1
+permits up to 16 rev/s, 64 rev/s², and 495 counts while the inner velocity path
+retains 256 rev/s² slew and a 17 rev/s corrected-target allowance. It preflights
 the request against position and velocity policy and sends the 18-byte protocol
 1.9 request. Like `velocity`, each run creates a timestamped directory under
 `scratch/position-runs/`: static request/policy/identity/configuration and

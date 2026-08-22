@@ -69,10 +69,11 @@ tolerance limits.
 
 ### 3. Encoder SPI
 
-The boot path activates a polling, read-only MT6816-compatible transaction and
-continues it during current-loop operation. SPI1 runs at 500 kHz or lower in
-mode 3 and reads registers `0x03` through `0x05` in one four-byte CS window on a
-1 kHz foreground schedule after a 20 ms power-up delay. The driver rejects odd
+The boot path activates a timer-released, read-only MT6816-compatible transaction
+and continues it during current-loop operation. SPI1 runs at 500 kHz or lower in
+mode 3; TIM6 releases one registers-`0x03`-through-`0x05` four-byte CS window at
+1 kHz, TIM7 bounds CS timing, DMA channels 2/3 transfer the frame, and PendSV
+defers decode after a 20 ms power-up delay. The driver rejects odd
 parity and publishes no-magnet and over-speed flags with raw 14-bit angle and
 status counters. Accepted samples feed the timestamped mechanical estimator;
 native encoder schema 2 adds position, velocity, alignment validity, and
@@ -84,9 +85,9 @@ during bridge authority into `FAULT`.
 GPIOB activation for SPI is constrained to PB3-PB6 before TIM3 claims PB0/PB1;
 PB7 `nEN` remains an input. Bench testing has proven stable rest readings,
 consistent shaft response, repeatable wraparound, and continuous observation
-during a 5.97 RPM motor run. The new 1 kHz schedule, quantitative noise, and
-controlled zero alignment remain hardware work; timer-released SPI/DMA remains
-the fallback if measured foreground jitter is not fit for purpose.
+during a 5.97 RPM motor run. The deterministic 1 kHz schedule has passed idle
+and energized timing regressions; quantitative noise and higher-speed estimator/
+predictor behavior remain active measurement work.
 See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
