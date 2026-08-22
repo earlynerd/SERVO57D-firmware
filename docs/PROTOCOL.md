@@ -1,15 +1,15 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.7, discovery, boot and encoder telemetry, the
+Status: native protocol 1.8, discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
-power-loss-safe motor-configuration storage, and bounded aligned q-current are
-implemented and host-tested.
+power-loss-safe motor-configuration storage, bounded aligned q-current, and the
+first bounded velocity service are implemented and host-tested.
 Firmware 0.18.2
 configured, started, observed, traced, and stopped encoder-verified motor runs
 on the bench. Firmware 0.19.0 routes the retained diagnostic requests through
 the product drive supervisor and has passed both deadline-release and explicit-
 STOP motor regressions. Address
-provisioning, native-wire duplicate handling, velocity/position commands, Modbus
+provisioning, native-wire duplicate handling, position commands, Modbus
 RTU, and Makerbase compatibility remain future work.
 
 ## Decision
@@ -118,6 +118,8 @@ from causing reply storms.
 | `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
 | `0x0400` | `START_ALIGNED_TORQUE` | Signed q-current counts `i16`, duration milliseconds `u32` | Empty |
 | `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-1 aligned-torque state, evidence, and complete policy block described below |
+| `0x0500` | `START_VELOCITY` | Signed target mechanical velocity Q16.16 rev/s `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
+| `0x0501` | `GET_VELOCITY_STATUS` | Empty | Schema-1 velocity state, evidence, and policy block described below |
 
 The product ID is `0x4D4B5335` (`MKS5`). Firmware 0.19.0 / protocol 1.3 is the
 bench-proven converged supervisor image. Firmware 0.20.0 / protocol 1.4 appends
@@ -132,7 +134,10 @@ its host, target, reset, power-cycle, persistent-clear, and wear-avoidance gates
 pass. Firmware 0.23.2 / protocol 1.7 provides the first production motion
 interface: signed encoder-aligned q-current through the proven A/B current
 backend with independent current, slew, velocity, acceleration, feedback-age,
-and duration contracts. It is host- and Arm-build validated and awaits its
+and duration contracts. Firmware 0.25.0 / protocol 1.8 adds signed bounded
+velocity with an acceleration-limited reference, PI-generated q-current,
+per-command current limit, finite deadline, status, and generic STOP through
+that same actuator. It is host- and Arm-build validated and awaits its staged
 hardware gate. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
@@ -149,7 +154,7 @@ is already active, a fault is latched, or raw Menu is asserted. START requests
 diagnostic authority from the supervisor before the backend can switch.
 `STOP_CURRENT_TEST` remains a wire-compatible alias for generic stop behavior.
 `STOP_DRIVE` is the preferred name and is always accepted; either operation
-stops a current diagnostic, alignment, or aligned-torque operation before
+stops a current diagnostic, alignment, aligned-torque, or velocity operation before
 releasing its authority. A remote run also stops at its deadline, on raw Menu, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
@@ -238,6 +243,55 @@ are big-endian.
 | 50 | `u32` | Minimum duration milliseconds |
 | 54 | `u32` | Maximum duration milliseconds |
 | 58 | `u32` | Current-backend fault flags |
+
+`START_VELOCITY` is accepted only from supervisor `READY` under the same
+alignment, encoder, current-backend, Menu, and exclusivity gates as aligned
+q-current. It enters `RUN`, starts the aligned actuator at zero q-current, and
+then executes once for every newly accepted 1 kHz rotor observation. The
+controller slews its velocity reference independently, applies a PI controller
+with anti-windup at the caller's current limit, and updates the existing
+slew-limited aligned-q-current target. It has no direct bridge-register or PWM
+path. Deadline completes normally; invalid/timed-out feedback, observed
+overspeed, numeric failure, actuator failure, current-backend failure, or
+readiness loss converges on fault/ZERO. Generic STOP and raw Menu perform the
+ordinary stopped release path.
+
+The initial 0.25.0 evaluation policy accepts a nonzero target through ±1 rev/s,
+a positive per-command limit through 100 current counts (about 606 mA nominal),
+and a 3 through 2,147,483,647 ms finite duration. The reference is limited to
+1 rev/s². Observed velocity is independently bounded to 5 rev/s, feedback age
+to 2,000 us, and the downstream actuator still independently enforces its
+current slew, speed, acceleration, phase, backend, and deadline contracts. The
+initial PI gains are Kp 100 current counts/(rev/s) and Ki 200 current
+counts/rev. These are bench candidates and not final motor-independent defaults.
+
+`GET_VELOCITY_STATUS` returns this 62-byte schema-1 body after the common status
+byte. All signed values use two's complement and all multi-byte fields are
+big-endian.
+
+| Body offset | Type | Velocity schema-1 field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 1 |
+| 1 | `u8` | State: idle, ramping, tracking, complete, stopped, or failed |
+| 2 | `u8` | Result: none, deadline, stopped, invalid feedback, feedback timing, overspeed, internal numeric, or actuator fault |
+| 3 | `u8` | Active/authority/backend/alignment/actuator/reference-at-target/current-at-limit flags |
+| 4 | `u32` | Velocity-controller fault flags |
+| 8 | `i32` | Requested target velocity, Q16.16 rev/s |
+| 12 | `i32` | Acceleration-limited reference velocity, Q16.16 rev/s |
+| 16 | `i32` | Measured velocity, Q16.16 rev/s |
+| 20 | `i16` | Velocity PI q-current request, counts |
+| 22 | `i16` | Applied slew-limited q-current, counts |
+| 24 | `u16` | Per-command q-current limit, counts |
+| 26 | `u32` | Elapsed milliseconds |
+| 30 | `u32` | Remaining milliseconds while active |
+| 34 | `i32` | Maximum target velocity, Q16.16 rev/s |
+| 38 | `i32` | Maximum target-reference acceleration, Q16.16 rev/s² |
+| 42 | `i32` | Maximum observed feedback velocity, Q16.16 rev/s |
+| 46 | `u16` | Maximum per-command q-current limit, counts |
+| 48 | `u16` | Maximum accepted feedback interval, microseconds |
+| 50 | `i32` | PI proportional gain, Q16.16 current counts/(rev/s) |
+| 54 | `i32` | PI integral gain, Q16.16 current counts/rev |
+| 58 | `u32` | Maximum duration milliseconds; minimum is 3 ms in protocol 1.8 |
 
 `GET_BOOT_STATUS` exposes the complete captured RCC reset-flag mask rather
 than only the IWDG summary in commissioning status. This distinguishes RAM,
@@ -427,6 +481,7 @@ the complete successful response payload is 64 bytes.
 | 13 | Bounded production automatic alignment |
 | 14 | Versioned dual-slot persistent motor configuration |
 | 15 | Bounded encoder-aligned q-current operation |
+| 16 | Bounded mechanical-velocity control |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -532,10 +587,10 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.23.2 links the mechanical estimator, transactional alignment
-controller, persistent configuration, and the first supervisor-authorized
-aligned q-current motion operation. The general velocity/position motion shell
-remains excluded.
+target; firmware 0.25.0 links the mechanical estimator, transactional alignment
+controller, persistent configuration, aligned-q-current actuator, and the first
+supervisor-authorized velocity operation. The general position/step-direction
+motion shell remains excluded.
 
 ## Implementation sequence
 
@@ -544,9 +599,10 @@ remains excluded.
 2. **In progress:** the COBS/CRC native v1 framer, discovery commands, boot and
    encoder telemetry, current-loop console, and safe motor-configuration
    transaction are implemented. The motor diagnostics are bench-proven;
-   persistence passes its reset/power-cycle gate, and aligned q-current is the
-   current hardware candidate. General velocity/position status plus broader
-   fuzz coverage remain.
+   persistence passes its reset/power-cycle gate, and aligned q-current is
+   bench-proven. Bounded velocity commands/status are implemented; their
+   positive/negative deadline, STOP, Menu, saturation, and feedback-loss bench
+   gate plus broader fuzz coverage remain.
 3. Add the Modbus RTU adapter and project-owned register map to the same
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
@@ -556,8 +612,8 @@ remains excluded.
    behavior exist and have end-to-end simulated-plant tests. The hardware
    current-control state and automatic alignment are bench-proven, and
    alignment persistence passes its power-cycle gate, and the aligned torque
-   path is integrated. Add native velocity and position wire mappings after its
-   hardware gate.
+   and first native velocity paths are integrated. Add position wire mappings
+   only after the velocity hardware gate.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

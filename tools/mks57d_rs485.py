@@ -4,16 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 import struct
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
 PROTOCOL_VERSION = 1
 DEFAULT_ADDRESS = 1
+VELOCITY_MINIMUM_DURATION_MILLIS = 3
+VELOCITY_CONSOLE_INTERVAL_SECONDS = 0.2
 MESSAGE_REQUEST = 1
 MESSAGE_RESPONSE = 2
 
@@ -34,6 +40,8 @@ COMMAND_SAVE_CONFIGURATION = 0x0301
 COMMAND_CLEAR_CALIBRATION = 0x0302
 COMMAND_START_ALIGNED_TORQUE = 0x0400
 COMMAND_GET_ALIGNED_TORQUE_STATUS = 0x0401
+COMMAND_START_VELOCITY = 0x0500
+COMMAND_GET_VELOCITY_STATUS = 0x0501
 
 STATUS_NAMES = {
     0: "ok",
@@ -228,6 +236,44 @@ TORQUE_FAULT_NAMES = {
     5: "reference_rejected",
 }
 
+VELOCITY_STATE_NAMES = {
+    0: "idle",
+    1: "ramping",
+    2: "tracking",
+    3: "complete",
+    4: "stopped",
+    5: "failed",
+}
+
+VELOCITY_RESULT_NAMES = {
+    0: "none",
+    1: "deadline",
+    2: "stopped",
+    3: "invalid_feedback",
+    4: "feedback_timing",
+    5: "overspeed",
+    6: "internal_numeric",
+    7: "actuator_fault",
+}
+
+VELOCITY_FLAG_NAMES = {
+    0: "active",
+    1: "authority_active",
+    2: "backend_active",
+    3: "alignment_valid",
+    4: "actuator_active",
+    5: "reference_at_target",
+    6: "current_at_limit",
+}
+
+VELOCITY_FAULT_NAMES = {
+    0: "invalid_feedback",
+    1: "feedback_timing",
+    2: "overspeed",
+    3: "internal_numeric",
+    4: "actuator_fault",
+}
+
 STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
@@ -235,6 +281,45 @@ ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
 CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
 ALIGNED_TORQUE_STATUS_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
+VELOCITY_STATUS_BODY = struct.Struct(">BBBBIiiihhHIIiiiHHiiI")
+VELOCITY_TELEMETRY_FIELDS = (
+    "host_elapsed_seconds",
+    "controller_elapsed_millis",
+    "remaining_millis",
+    "state",
+    "result",
+    "target_velocity_rps",
+    "reference_velocity_rps",
+    "measured_velocity_rps",
+    "velocity_error_rps",
+    "requested_q_current_counts",
+    "applied_q_current_counts",
+    "current_limit_counts",
+    "velocity_flags_hex",
+    "velocity_flags",
+    "velocity_fault_flags_hex",
+    "velocity_faults",
+    "drive_flags_hex",
+    "drive_flags",
+    "loop_fault_flags_hex",
+    "loop_faults",
+    "loop_sample_count",
+    "encoder_status",
+    "encoder_transport_status",
+    "encoder_flags_hex",
+    "encoder_error_count",
+    "encoder_angle_raw",
+    "encoder_position_revolutions",
+    "encoder_velocity_rps",
+    "encoder_sample_interval_us",
+    "encoder_maximum_sample_interval_us",
+    "estimator_flags_hex",
+    "estimator_flags",
+    "estimator_fault_flags_hex",
+    "estimator_faults",
+    "retained_panic",
+    "watchdog_reset",
+)
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -373,6 +458,20 @@ class Client:
 
 def active_names(value: int, names: dict[int, str]) -> list[str]:
     return [name for bit, name in names.items() if value & (1 << bit)]
+
+
+def query_identity(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_IDENTITY)
+    if len(body) != 10:
+        raise ProtocolError("identity response has an unexpected length")
+    product, major, minor, patch, proto_major, proto_minor = struct.unpack(
+        ">IBBHBB", body
+    )
+    return {
+        "product_id_hex": f"0x{product:08X}",
+        "firmware": f"{major}.{minor}.{patch}",
+        "protocol": f"{proto_major}.{proto_minor}",
+    }
 
 
 def input_state(levels: int) -> dict[str, bool]:
@@ -833,6 +932,91 @@ def query_aligned_torque(client: Client) -> dict[str, Any]:
     }
 
 
+def query_velocity(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_VELOCITY_STATUS)
+    if len(body) != VELOCITY_STATUS_BODY.size:
+        raise ProtocolError("velocity-status response has an unexpected length")
+    (
+        schema,
+        state,
+        result,
+        flags,
+        fault_flags,
+        target_velocity_q16_16,
+        reference_velocity_q16_16,
+        measured_velocity_q16_16,
+        requested_q_current_counts,
+        applied_q_current_counts,
+        current_limit_counts,
+        elapsed_millis,
+        remaining_millis,
+        maximum_target_velocity_q16_16,
+        maximum_target_acceleration_q16_16,
+        maximum_feedback_velocity_q16_16,
+        maximum_current_counts,
+        maximum_feedback_interval_us,
+        proportional_gain_q16_16,
+        integral_gain_q16_16,
+        maximum_duration_millis,
+    ) = VELOCITY_STATUS_BODY.unpack(body)
+    return {
+        "schema": schema,
+        "state": VELOCITY_STATE_NAMES.get(state, f"state_{state}"),
+        "result": VELOCITY_RESULT_NAMES.get(result, f"result_{result}"),
+        "flags_hex": f"0x{flags:02X}",
+        "flags": active_names(flags, VELOCITY_FLAG_NAMES),
+        "fault_flags_hex": f"0x{fault_flags:08X}",
+        "faults": active_names(fault_flags, VELOCITY_FAULT_NAMES),
+        "target_velocity_revolutions_per_second": (
+            target_velocity_q16_16 / 65536.0
+        ),
+        "reference_velocity_revolutions_per_second": (
+            reference_velocity_q16_16 / 65536.0
+        ),
+        "measured_velocity_revolutions_per_second": (
+            measured_velocity_q16_16 / 65536.0
+        ),
+        "requested_q_current_counts": requested_q_current_counts,
+        "requested_q_current_nominal_milliamperes": round(
+            requested_q_current_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "applied_q_current_counts": applied_q_current_counts,
+        "applied_q_current_nominal_milliamperes": round(
+            applied_q_current_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "current_limit_counts": current_limit_counts,
+        "current_limit_nominal_milliamperes": round(
+            current_limit_counts * COUNTS_TO_MILLIAMPERES, 1
+        ),
+        "elapsed_millis": elapsed_millis,
+        "remaining_millis": remaining_millis,
+        "policy": {
+            "maximum_target_velocity_revolutions_per_second": (
+                maximum_target_velocity_q16_16 / 65536.0
+            ),
+            "maximum_target_acceleration_revolutions_per_second2": (
+                maximum_target_acceleration_q16_16 / 65536.0
+            ),
+            "maximum_feedback_velocity_revolutions_per_second": (
+                maximum_feedback_velocity_q16_16 / 65536.0
+            ),
+            "maximum_current_counts": maximum_current_counts,
+            "maximum_current_nominal_milliamperes": round(
+                maximum_current_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "maximum_feedback_interval_us": maximum_feedback_interval_us,
+            "proportional_gain_current_counts_per_velocity": (
+                proportional_gain_q16_16 / 65536.0
+            ),
+            "integral_gain_current_counts_per_position": (
+                integral_gain_q16_16 / 65536.0
+            ),
+            "minimum_duration_millis": VELOCITY_MINIMUM_DURATION_MILLIS,
+            "maximum_duration_millis": maximum_duration_millis,
+        },
+    }
+
+
 def stop_drive(client: Client) -> None:
     try:
         client.transact(COMMAND_STOP_DRIVE)
@@ -844,6 +1028,434 @@ def stop_drive(client: Client) -> None:
 
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True), flush=True)
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _joined_names(value: Any) -> str:
+    return "|".join(str(item) for item in (value or []))
+
+
+def _velocity_without_policy(status: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in status.items() if key != "policy"}
+
+
+def _make_velocity_run_directory(
+    root: Path,
+    target_velocity_rps: float,
+    current_limit_counts: int,
+    duration_millis: int,
+) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target_label = f"{target_velocity_rps:+.3f}".replace("+", "p")
+    target_label = target_label.replace("-", "m").replace(".", "p")
+    label = (
+        f"{timestamp}-{target_label}rps-"
+        f"{current_limit_counts:05d}cnt-{duration_millis}ms"
+    )
+    path = root / label
+    suffix = 2
+    while path.exists():
+        path = root / f"{label}-{suffix}"
+        suffix += 1
+    path.mkdir(parents=True)
+    return path
+
+
+def _query_velocity_capture_snapshot(
+    client: Client,
+    capture_start: float,
+) -> dict[str, Any]:
+    return {
+        "host_elapsed_seconds": round(time.monotonic() - capture_start, 6),
+        "velocity": query_velocity(client),
+        "drive": query_status(client),
+        "encoder": query_encoder(client),
+    }
+
+
+def _velocity_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
+    velocity = snapshot["velocity"]
+    drive = snapshot["drive"]
+    encoder = snapshot["encoder"]
+    loop = drive.get("loop", {})
+    reset = drive.get("reset", {})
+    estimator = encoder.get("estimator", {})
+    reference = velocity["reference_velocity_revolutions_per_second"]
+    measured = velocity["measured_velocity_revolutions_per_second"]
+
+    return {
+        "host_elapsed_seconds": snapshot["host_elapsed_seconds"],
+        "controller_elapsed_millis": velocity["elapsed_millis"],
+        "remaining_millis": velocity["remaining_millis"],
+        "state": velocity["state"],
+        "result": velocity["result"],
+        "target_velocity_rps": (
+            velocity["target_velocity_revolutions_per_second"]
+        ),
+        "reference_velocity_rps": reference,
+        "measured_velocity_rps": measured,
+        "velocity_error_rps": round(reference - measured, 6),
+        "requested_q_current_counts": velocity["requested_q_current_counts"],
+        "applied_q_current_counts": velocity["applied_q_current_counts"],
+        "current_limit_counts": velocity["current_limit_counts"],
+        "velocity_flags_hex": velocity["flags_hex"],
+        "velocity_flags": _joined_names(velocity["flags"]),
+        "velocity_fault_flags_hex": velocity["fault_flags_hex"],
+        "velocity_faults": _joined_names(velocity["faults"]),
+        "drive_flags_hex": drive.get("flags_hex", ""),
+        "drive_flags": _joined_names(drive.get("flags")),
+        "loop_fault_flags_hex": loop.get("fault_flags_hex", ""),
+        "loop_faults": _joined_names(loop.get("faults")),
+        "loop_sample_count": loop.get("sample_count", ""),
+        "encoder_status": encoder.get("status", ""),
+        "encoder_transport_status": encoder.get("transport_status", ""),
+        "encoder_flags_hex": encoder.get("flags_hex", ""),
+        "encoder_error_count": encoder.get("error_count", ""),
+        "encoder_angle_raw": encoder.get("angle_raw", ""),
+        "encoder_position_revolutions": estimator.get(
+            "position_revolutions", ""
+        ),
+        "encoder_velocity_rps": estimator.get(
+            "velocity_revolutions_per_second", ""
+        ),
+        "encoder_sample_interval_us": estimator.get("sample_interval_us", ""),
+        "encoder_maximum_sample_interval_us": estimator.get(
+            "maximum_sample_interval_us", ""
+        ),
+        "estimator_flags_hex": estimator.get("flags_hex", ""),
+        "estimator_flags": _joined_names(estimator.get("flags")),
+        "estimator_fault_flags_hex": estimator.get("fault_flags_hex", ""),
+        "estimator_faults": _joined_names(estimator.get("faults")),
+        "retained_panic": reset.get("retained_panic", ""),
+        "watchdog_reset": reset.get("watchdog_reset", ""),
+    }
+
+
+def _new_velocity_capture_analysis() -> dict[str, Any]:
+    return {
+        "sample_count": 0,
+        "sum_squared_velocity_error_rps2": 0.0,
+        "maximum_absolute_velocity_error_rps": 0.0,
+        "maximum_absolute_requested_q_current_counts": 0,
+        "maximum_absolute_applied_q_current_counts": 0,
+        "current_limit_sample_count": 0,
+        "maximum_encoder_sample_interval_us": 0,
+        "observed_states": set(),
+        "faults": set(),
+    }
+
+
+def _update_velocity_capture_analysis(
+    analysis: dict[str, Any],
+    row: dict[str, Any],
+) -> None:
+    error = float(row["velocity_error_rps"])
+    analysis["sample_count"] += 1
+    analysis["sum_squared_velocity_error_rps2"] += error * error
+    analysis["maximum_absolute_velocity_error_rps"] = max(
+        analysis["maximum_absolute_velocity_error_rps"], abs(error)
+    )
+    analysis["maximum_absolute_requested_q_current_counts"] = max(
+        analysis["maximum_absolute_requested_q_current_counts"],
+        abs(int(row["requested_q_current_counts"])),
+    )
+    analysis["maximum_absolute_applied_q_current_counts"] = max(
+        analysis["maximum_absolute_applied_q_current_counts"],
+        abs(int(row["applied_q_current_counts"])),
+    )
+    if "current_at_limit" in str(row["velocity_flags"]).split("|"):
+        analysis["current_limit_sample_count"] += 1
+    encoder_interval = row["encoder_sample_interval_us"]
+    if encoder_interval != "":
+        analysis["maximum_encoder_sample_interval_us"] = max(
+            analysis["maximum_encoder_sample_interval_us"],
+            int(encoder_interval),
+        )
+    analysis["observed_states"].add(str(row["state"]))
+    for prefix, field in (
+        ("velocity", "velocity_faults"),
+        ("current_loop", "loop_faults"),
+        ("estimator", "estimator_faults"),
+    ):
+        for fault in filter(None, str(row[field]).split("|")):
+            analysis["faults"].add(f"{prefix}_{fault}")
+    if "fault_present" in str(row["drive_flags"]).split("|"):
+        analysis["faults"].add("drive_supervisor_fault")
+    if row["retained_panic"] not in {"", 0, "0"}:
+        analysis["faults"].add("retained_panic")
+    if row["watchdog_reset"] not in {"", False, 0, "0"}:
+        analysis["faults"].add("watchdog_reset")
+
+
+def _finalize_velocity_capture_analysis(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    count = int(analysis["sample_count"])
+    return {
+        "sample_count": count,
+        "rms_velocity_error_rps": (
+            math.sqrt(analysis["sum_squared_velocity_error_rps2"] / count)
+            if count
+            else None
+        ),
+        "maximum_absolute_velocity_error_rps": analysis[
+            "maximum_absolute_velocity_error_rps"
+        ],
+        "maximum_absolute_requested_q_current_counts": analysis[
+            "maximum_absolute_requested_q_current_counts"
+        ],
+        "maximum_absolute_applied_q_current_counts": analysis[
+            "maximum_absolute_applied_q_current_counts"
+        ],
+        "current_limit_sample_count": analysis["current_limit_sample_count"],
+        "maximum_encoder_sample_interval_us": analysis[
+            "maximum_encoder_sample_interval_us"
+        ],
+        "observed_states": sorted(analysis["observed_states"]),
+        "faults": sorted(analysis["faults"]),
+    }
+
+
+def _velocity_live_line(
+    row: dict[str, Any],
+    duration_millis: int,
+) -> str:
+    faults = row["velocity_faults"] or row["loop_faults"] or "none"
+    return (
+        f"{float(row['host_elapsed_seconds']):6.2f}/"
+        f"{duration_millis / 1000.0:.2f} s  "
+        f"{str(row['state']):8s}  "
+        f"ref={float(row['reference_velocity_rps']):+7.3f}  "
+        f"meas={float(row['measured_velocity_rps']):+7.3f} rps  "
+        f"Iq={int(row['applied_q_current_counts']):+4d}/"
+        f"{int(row['current_limit_counts']):d}  "
+        f"enc={row['encoder_sample_interval_us']} us  "
+        f"faults={faults}"
+    )
+
+
+def _run_velocity_capture(
+    client: Client,
+    args: argparse.Namespace,
+    target_velocity_q16_16: int,
+    current_limit_counts: int,
+    initial_velocity_status: dict[str, Any],
+) -> int:
+    run_directory = _make_velocity_run_directory(
+        args.output_root,
+        args.rps,
+        current_limit_counts,
+        args.duration_ms,
+    )
+    metadata_path = run_directory / "metadata.json"
+    telemetry_path = run_directory / "telemetry.csv"
+    full_jsonl_path = run_directory / "telemetry.jsonl"
+    initial_drive = query_status(client)
+    initial_encoder = query_encoder(client)
+    metadata: dict[str, Any] = {
+        "schema": 1,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "request": {
+            "target_velocity_revolutions_per_second": args.rps,
+            "target_velocity_q16_16": target_velocity_q16_16,
+            "current_limit_counts": current_limit_counts,
+            "current_limit_nominal_milliamperes": round(
+                current_limit_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "duration_millis": args.duration_ms,
+            "capture_interval_seconds": args.interval,
+        },
+        "transport": {
+            "port": args.port,
+            "baud": args.baud,
+            "address": args.address,
+            "timeout_seconds": args.timeout,
+        },
+        "identity": query_identity(client),
+        "configuration": query_configuration(client),
+        "policy": initial_velocity_status["policy"],
+        "initial": {
+            "velocity": _velocity_without_policy(initial_velocity_status),
+            "drive": initial_drive,
+            "encoder": initial_encoder,
+        },
+        "capture": {
+            "telemetry_csv": telemetry_path.name,
+            "full_jsonl": full_jsonl_path.name if args.jsonl else None,
+            "terminal_update_interval_seconds": (
+                None if args.quiet else VELOCITY_CONSOLE_INTERVAL_SECONDS
+            ),
+            "status": "prepared",
+        },
+    }
+    _write_json(metadata_path, metadata)
+    print(f"Capture: {run_directory.resolve()}")
+    if not args.quiet:
+        print("Press Ctrl+C at any time to send STOP.")
+
+    analysis = _new_velocity_capture_analysis()
+    capture_start = time.monotonic()
+    host_deadline = capture_start + args.duration_ms / 1000.0 + 5.0
+    next_console_update = capture_start
+    start_attempted = False
+    terminal = False
+    interrupted = False
+    console_active = False
+    stop_error: str | None = None
+    capture_error: Exception | None = None
+    final_snapshot: dict[str, Any] | None = None
+    exit_code = 2
+
+    with telemetry_path.open("w", encoding="utf-8", newline="") as csv_stream:
+        writer = csv.DictWriter(csv_stream, fieldnames=VELOCITY_TELEMETRY_FIELDS)
+        writer.writeheader()
+        csv_stream.flush()
+        jsonl_stream = (
+            full_jsonl_path.open("w", encoding="utf-8") if args.jsonl else None
+        )
+        try:
+            try:
+                start_attempted = True
+                client.transact(
+                    COMMAND_START_VELOCITY,
+                    struct.pack(
+                        ">iHI",
+                        target_velocity_q16_16,
+                        current_limit_counts,
+                        args.duration_ms,
+                    ),
+                )
+                while True:
+                    snapshot = _query_velocity_capture_snapshot(
+                        client, capture_start
+                    )
+                    final_snapshot = snapshot
+                    row = _velocity_csv_row(snapshot)
+                    writer.writerow(row)
+                    csv_stream.flush()
+                    if jsonl_stream is not None:
+                        jsonl_stream.write(
+                            json.dumps(snapshot, sort_keys=True) + "\n"
+                        )
+                        jsonl_stream.flush()
+                    _update_velocity_capture_analysis(analysis, row)
+                    terminal = row["state"] in {"complete", "stopped", "failed"}
+                    now = time.monotonic()
+                    if not args.quiet and (
+                        terminal or now >= next_console_update
+                    ):
+                        print(
+                            "\r"
+                            + _velocity_live_line(
+                                row, args.duration_ms
+                            ).ljust(120),
+                            end="",
+                            flush=True,
+                        )
+                        console_active = True
+                        next_console_update = (
+                            now + VELOCITY_CONSOLE_INTERVAL_SECONDS
+                        )
+                    if terminal:
+                        exit_code = 0 if row["state"] == "complete" else 3
+                        break
+                    if time.monotonic() > host_deadline:
+                        raise ProtocolError(
+                            "velocity command did not release authority "
+                            "before the host deadline"
+                        )
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                interrupted = True
+                exit_code = 130
+            except (ProtocolError, OSError, ValueError) as error:
+                capture_error = error
+                exit_code = 2
+            finally:
+                if start_attempted and not terminal:
+                    try:
+                        stop_drive(client)
+                    except (ProtocolError, OSError) as error:
+                        stop_error = str(error)
+                    try:
+                        final_snapshot = _query_velocity_capture_snapshot(
+                            client, capture_start
+                        )
+                        row = _velocity_csv_row(final_snapshot)
+                        writer.writerow(row)
+                        csv_stream.flush()
+                        if jsonl_stream is not None:
+                            jsonl_stream.write(
+                                json.dumps(final_snapshot, sort_keys=True) + "\n"
+                            )
+                            jsonl_stream.flush()
+                        _update_velocity_capture_analysis(analysis, row)
+                    except (ProtocolError, OSError, ValueError) as error:
+                        if capture_error is None:
+                            capture_error = error
+                            exit_code = 2
+        finally:
+            if jsonl_stream is not None:
+                jsonl_stream.close()
+
+    if console_active:
+        print()
+    final_analysis = _finalize_velocity_capture_analysis(analysis)
+    metadata["completed_at"] = datetime.now().astimezone().isoformat(
+        timespec="seconds"
+    )
+    metadata["final"] = (
+        {
+            **final_snapshot,
+            "velocity": _velocity_without_policy(final_snapshot["velocity"]),
+        }
+        if final_snapshot is not None
+        else None
+    )
+    metadata["analysis"] = final_analysis
+    metadata["capture"].update(
+        {
+            "status": (
+                "interrupted"
+                if interrupted
+                else "error"
+                if capture_error is not None
+                else "complete"
+                if exit_code == 0
+                else "device_failed"
+            ),
+            "exit_code": exit_code,
+            "stop_error": stop_error,
+            "error": str(capture_error) if capture_error is not None else None,
+        }
+    )
+    _write_json(metadata_path, metadata)
+    rms_error = final_analysis["rms_velocity_error_rps"]
+    rms_text = "unavailable" if rms_error is None else f"{rms_error:.4f} rps"
+    final_state = (
+        final_snapshot["velocity"]["state"]
+        if final_snapshot is not None
+        else "unavailable"
+    )
+    print(
+        f"Result: state={final_state}, samples={final_analysis['sample_count']}, "
+        f"RMS error={rms_text}, faults={final_analysis['faults'] or 'none'}"
+    )
+    if stop_error is not None:
+        print(
+            "error: STOP was not acknowledged; rely on the firmware deadline "
+            f"or assert Menu: {stop_error}",
+            file=sys.stderr,
+        )
+    if capture_error is not None:
+        raise capture_error
+    return exit_code
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -870,6 +1482,9 @@ def make_parser() -> argparse.ArgumentParser:
     )
     commands.add_parser(
         "torque-status", help="read aligned q-current progress and policy"
+    )
+    commands.add_parser(
+        "velocity-status", help="read velocity-loop progress and policy"
     )
     trace = commands.add_parser(
         "trace", help="read the completed 20 kHz current-loop startup trace"
@@ -902,6 +1517,32 @@ def make_parser() -> argparse.ArgumentParser:
     torque_current.add_argument("--current-ma", type=float)
     torque.add_argument("--duration-ms", type=int, default=250)
     torque.add_argument("--interval", type=float, default=0.05)
+
+    velocity = commands.add_parser(
+        "velocity", help="run a bounded closed-loop velocity demand"
+    )
+    velocity.add_argument("--rps", type=float, required=True)
+    velocity_current = velocity.add_mutually_exclusive_group(required=True)
+    velocity_current.add_argument("--current-limit-counts", type=int)
+    velocity_current.add_argument("--current-limit-ma", type=float)
+    velocity.add_argument("--duration-ms", type=int, default=5000)
+    velocity.add_argument("--interval", type=float, default=0.05)
+    velocity.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("scratch/velocity-runs"),
+        help="parent directory for timestamped capture directories",
+    )
+    velocity.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="also retain full nested snapshots as JSON lines",
+    )
+    velocity.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress the live terminal status line",
+    )
 
     watch = commands.add_parser("watch", help="stream status as JSON lines")
     watch.add_argument("--interval", type=float, default=0.2)
@@ -963,19 +1604,7 @@ def main() -> int:
     with open_serial(args) as port:
         client = Client(port, args.address)
         if args.command == "identity":
-            body = client.transact(COMMAND_GET_IDENTITY)
-            if len(body) != 10:
-                raise ProtocolError("identity response has an unexpected length")
-            product, major, minor, patch, proto_major, proto_minor = struct.unpack(
-                ">IBBHBB", body
-            )
-            print_json(
-                {
-                    "product_id_hex": f"0x{product:08X}",
-                    "firmware": f"{major}.{minor}.{patch}",
-                    "protocol": f"{proto_major}.{proto_minor}",
-                }
-            )
+            print_json(query_identity(client))
         elif args.command == "status":
             print_json(query_status(client))
         elif args.command == "boot":
@@ -1008,6 +1637,8 @@ def main() -> int:
             print_json(query_configuration(client))
         elif args.command == "torque-status":
             print_json(query_aligned_torque(client))
+        elif args.command == "velocity-status":
+            print_json(query_velocity(client))
         elif args.command == "trace":
             samples = read_current_trace(client)
             if args.output:
@@ -1152,6 +1783,66 @@ def main() -> int:
                 print_json(query_aligned_torque(client))
                 print("stopped", file=sys.stderr)
                 return 130
+        elif args.command == "velocity":
+            if not math.isfinite(args.rps) or args.rps == 0.0:
+                raise ProtocolError("--rps must be finite and nonzero")
+            target_velocity_q16_16 = round(args.rps * 65536.0)
+            if not -0x80000000 <= target_velocity_q16_16 <= 0x7FFFFFFF:
+                raise ProtocolError("--rps does not encode as signed Q16.16")
+            if target_velocity_q16_16 == 0:
+                raise ProtocolError("--rps is too small to encode as Q16.16")
+            if args.current_limit_counts is not None:
+                current_limit_counts = args.current_limit_counts
+            else:
+                if (
+                    args.current_limit_ma is None
+                    or not math.isfinite(args.current_limit_ma)
+                    or args.current_limit_ma <= 0.0
+                ):
+                    raise ProtocolError("--current-limit-ma must be positive")
+                current_limit_counts = round(
+                    args.current_limit_ma / COUNTS_TO_MILLIAMPERES
+                )
+            if not 1 <= current_limit_counts <= 0xFFFF:
+                raise ProtocolError(
+                    "current limit must encode as 1..65535 counts"
+                )
+            if not 0.01 <= args.interval <= 2.0:
+                raise ProtocolError(
+                    "--interval must be in the range 0.01..2.0 seconds"
+                )
+            velocity_status = query_velocity(client)
+            policy = velocity_status["policy"]
+            if abs(args.rps) > policy[
+                "maximum_target_velocity_revolutions_per_second"
+            ]:
+                raise ProtocolError(
+                    "velocity is outside the firmware-reported range "
+                    f"±{policy['maximum_target_velocity_revolutions_per_second']} "
+                    "revolutions per second"
+                )
+            if current_limit_counts > policy["maximum_current_counts"]:
+                raise ProtocolError(
+                    "current limit exceeds the firmware-reported maximum "
+                    f"of {policy['maximum_current_counts']} counts"
+                )
+            if not (
+                policy["minimum_duration_millis"]
+                <= args.duration_ms
+                <= policy["maximum_duration_millis"]
+            ):
+                raise ProtocolError(
+                    "duration is outside the firmware-reported range "
+                    f"{policy['minimum_duration_millis']}.."
+                    f"{policy['maximum_duration_millis']} ms"
+                )
+            return _run_velocity_capture(
+                client,
+                args,
+                target_velocity_q16_16,
+                current_limit_counts,
+                velocity_status,
+            )
         elif args.command == "watch":
             while True:
                 status = query_status(client)

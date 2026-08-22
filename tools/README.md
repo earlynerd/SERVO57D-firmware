@@ -8,7 +8,8 @@ Manufacturer executables and archives belong under ignored `vendor/local/`, not 
 
 The motor tools below are product service and engineering-diagnostic tools, not
 an alternate commissioning firmware stack. `motor_test.py`, the identity/status/
-encoder/alignment/STOP portions of `mks57d_rs485.py`, the current trace, and both analyzers
+encoder/alignment/torque/velocity/STOP portions of `mks57d_rs485.py`, the
+current trace, and both analyzers
 are retained because they provide repeatable acceptance, tuning, and fault
 evidence. Current-test wire names from native protocol 1.3 remain compatibility
 labels; START is now a diagnostic request to the product drive supervisor and
@@ -43,9 +44,10 @@ py tools/motor_test.py --replot scratch/motor-runs/RUN_DIRECTORY
 
 The report plots A/B reference and measured current, encoder motion versus the
 expected movement, phase-voltage use versus its ceiling, and the first 12.8 ms
-at 20 kHz. The present `--rpm` input is a positive speed magnitude converted
-using the tested motor's 50 electrical cycles per mechanical revolution. It is
-not yet closed-loop speed, direction, or position control.
+at 20 kHz. The present `motor_test.py --rpm` input is a positive speed magnitude
+converted using the tested motor's 50 electrical cycles per mechanical
+revolution. It is not a closed-loop command; use the separate
+`mks57d_rs485.py velocity` product service for signed, regulated speed.
 
 `build.ps1` configures and builds the Arm firmware and/or the native unit tests. It does not flash hardware or execute anything from `vendor/local/`.
 
@@ -69,6 +71,8 @@ py tools/mks57d_rs485.py --port COM14 save-configuration
 py tools/mks57d_rs485.py --port COM14 clear-calibration
 py tools/mks57d_rs485.py --port COM14 torque-status
 py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
+py tools/mks57d_rs485.py --port COM14 velocity-status
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
@@ -117,6 +121,26 @@ regulate velocity. The evaluation shutdown policy permits 5 rev/s (300 RPM),
 1,000 rev/s² observed acceleration, and 10,000 counts/s current slew so poor
 tracking and phase-refresh boundaries can be measured instead of preflighted
 away.
+
+Firmware 0.25.0 / protocol 1.8 adds the first product velocity service.
+`velocity-status` is passive and reports target, acceleration, feedback-speed,
+current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
+signed mechanical target in revolutions per second plus an explicit positive
+q-current limit in counts or nominal milliamperes. It preflights the request
+against the live firmware policy, starts through `RUN` motion authority, and
+captures target, acceleration-limited reference, measured velocity, requested
+and applied current, saturation, faults, and selected drive/encoder evidence.
+By default each command creates a timestamped directory under
+`scratch/velocity-runs/` containing `metadata.json` and `telemetry.csv`. Static
+policy, identity, and configuration are stored once in metadata instead of
+being repeated in every row. The terminal overwrites one concise live line at
+about 5 Hz regardless of the capture interval, and prints the saved path plus a
+final summary. Use `--jsonl` to additionally retain complete nested snapshots,
+`--quiet` to suppress live refresh, or `--output-root PATH` to relocate the
+captures. Ctrl+C sends generic STOP and finalizes the directory. The initial
+evaluation envelope is ±1 rev/s, 1 rev/s² reference slew, and at most 100 counts
+(about 606 mA); it is a low-speed bench gate, not the intended final performance
+ceiling.
 
 Protocol 1.3 and later firmware also records the first 256 current-loop samples
 after each start. Run a nearly stationary reference for a clean startup step,

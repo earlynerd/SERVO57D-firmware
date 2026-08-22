@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.24.13 implements the fast current path, production alignment,
+Status: firmware 0.25.0 implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -8,8 +8,10 @@ current control, and the carrier deadline guardian remain the project-owned
 backend. Firmware 0.24.14 removes the local fixed-duty characterization path;
 all retained motor operations use the supervisor and current backend. Firmware
 0.24.15 makes the rotor runtime the sole estimator owner and defines the
-immutable observation boundary used by future slower loops. This document
-defines the next velocity and position layers.
+immutable observation boundary used by slower loops. Firmware 0.25.0 runs the
+first bounded velocity PI once per accepted rotor observation and routes it
+through the existing aligned-q-current actuator. This document defines that
+boundary and the next position layer.
 
 ## Goals
 
@@ -174,7 +176,8 @@ initial targets.
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
 | Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
 | Aligned q-current mapping | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited A/B references for the 20 kHz backend |
-| Position/velocity control | Approximately 1 kHz | Foreground or bounded scheduler release | Bounded torque-current request |
+| Velocity control | 1 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
+| Position control | Approximately 1 kHz | Not linked; future bounded scheduler release | Bounded velocity request |
 | Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
@@ -185,8 +188,10 @@ accepted sample in microseconds, and reports the latest and maximum observed
 interval. The deterministic hardware regression accepted this schedule: idle
 operation held the latest/worst interval to 1000/1001 us with zero errors, and
 a 606 mA five-second aligned-torque run completed 100,000 current-loop updates
-with zero encoder, estimator, DMA, backend, or control faults. This must be
-revalidated as velocity and position compute are added.
+with zero encoder, estimator, DMA, backend, or control faults. Firmware 0.25.0
+adds software-floating-point PI and reference-slew work to the same PendSV
+release; encoder interval and worst-case PendSV execution must be remeasured on
+hardware before increasing target speed or adding position compute.
 
 ## Processor and cycle budget
 
@@ -269,20 +274,24 @@ The intended common control domain is stationary `alpha/beta` current transforme
 ### Portable implementation status
 
 The hardware-independent portion is implemented under `firmware/src/control/`
-and `firmware/src/app/`. Product modules are linked into `mks57d`; the outer
-application, trajectory, velocity/position, and d/q voltage modules are instead
-compiled as the explicitly non-product `mks57d_motion_candidate` target and in
-host tests. Firmware 0.23.2 integrates the authoritative drive supervisor,
-mechanical angle tracker, measured stepper-alignment geometry, and a signed
-q-current actuator; the outer velocity/position shell remains excluded while
-the proven phase-current backend is active:
+and `firmware/src/app/`. Product modules are linked into `mks57d`; the general
+application/trajectory/position, step-direction, and d/q voltage modules are
+instead compiled as the explicitly non-product `mks57d_motion_candidate` target
+and in host tests. Firmware 0.25.0 integrates the authoritative drive
+supervisor, mechanical angle tracker, measured stepper-alignment geometry,
+signed q-current actuator, and a focused bounded velocity controller; the
+general position shell remains excluded while the proven phase-current backend
+is active:
 
 - `rotor_control_runtime` alone unwraps raw encoder angle in both directions
   with timestamp, sample-age, maximum-velocity, and filter contracts, then
   publishes an immutable valid/timestamp/position/velocity observation;
 - a trapezoidal position trajectory independently limits reference velocity
   and acceleration;
-- cascaded position and velocity control consumes only that observation, emits
+- the product velocity controller consumes only that observation, acceleration-
+  limits its reference, applies PI anti-windup at the per-command current limit,
+  and updates only the bounded aligned-q-current actuator;
+- the candidate cascaded position and velocity control consumes only that observation, emits
   a hard-clamped torque-current request, and latches invalid/stale feedback,
   deadline, following-error, and numeric faults;
 - one motion manager arbitrates all command sources, retains bounded retry and
@@ -297,12 +306,13 @@ the proven phase-current backend is active:
   candidate path through supplied rotor observations, command arbitration, lease expiry,
   trajectory completion, saturation, fault recovery, and current regulation.
 
-The active 0.23 stepper path does not send the portable d/q controller's voltage
+The active stepper path does not send the portable d/q controller's voltage
 output to PWM. At each accepted 1 kHz encoder sample it validates phase age,
 velocity, acceleration, backend state, and deadline, slews signed q-current,
 maps electrical phase plus 90 degrees to A/B current references, and hands them
-to the already-qualified 20 kHz A/B PI backend. This is the production actuator
-that the next velocity loop will command; direct d/q voltage integration remains
+to the already-qualified 20 kHz A/B PI backend. The 0.25 velocity loop commands
+that production actuator with its own target, acceleration, current, feedback-
+age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
 future work requiring its own modulation and timing evidence.
 
 These tests establish signs, units, bounds, state ownership, and fault
@@ -422,10 +432,10 @@ Above that immediate primitive, the product drive supervisor is the sole
 application authority owner. It distinguishes diagnostic from motion authority,
 permits bridge switching only in `ALIGN` or `RUN`, clears authority on every
 fault transition, and treats encoder/current-path readiness loss during an
-energized state as `FAULT`. Firmware 0.23 uses `RUN`/motion authority for aligned
-q-current; deadline and STOP release normally, while its independent feedback,
-motion, reference, and backend violations enter `FAULT` and the same all-low
-primitive.
+energized state as `FAULT`. Aligned q-current and velocity use the same
+`RUN`/motion authority; deadline and STOP release normally, while their
+independent feedback, motion, numeric, actuator, reference, and backend
+violations enter `FAULT` and the same all-low primitive.
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 

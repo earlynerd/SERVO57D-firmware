@@ -30,7 +30,9 @@ typedef enum
     COMMAND_OPERATION_SAVE_CONFIGURATION,
     COMMAND_OPERATION_CLEAR_CALIBRATION,
     COMMAND_OPERATION_START_ALIGNED_TORQUE,
-    COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS
+    COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS,
+    COMMAND_OPERATION_START_VELOCITY,
+    COMMAND_OPERATION_GET_VELOCITY_STATUS
 } command_operation_t;
 
 typedef enum
@@ -256,6 +258,42 @@ typedef struct
     uint32_t backend_fault_flags;
 } command_aligned_torque_status_t;
 
+enum
+{
+    COMMAND_VELOCITY_FLAG_ACTIVE = 1u << 0,
+    COMMAND_VELOCITY_FLAG_AUTHORITY_ACTIVE = 1u << 1,
+    COMMAND_VELOCITY_FLAG_BACKEND_ACTIVE = 1u << 2,
+    COMMAND_VELOCITY_FLAG_ALIGNMENT_VALID = 1u << 3,
+    COMMAND_VELOCITY_FLAG_ACTUATOR_ACTIVE = 1u << 4,
+    COMMAND_VELOCITY_FLAG_REFERENCE_AT_TARGET = 1u << 5,
+    COMMAND_VELOCITY_FLAG_CURRENT_AT_LIMIT = 1u << 6
+};
+
+typedef struct
+{
+    uint8_t schema_version;
+    uint8_t state;
+    uint8_t result;
+    uint8_t flags;
+    uint32_t fault_flags;
+    int32_t target_velocity_revolutions_per_second_q16_16;
+    int32_t reference_velocity_revolutions_per_second_q16_16;
+    int32_t measured_velocity_revolutions_per_second_q16_16;
+    int16_t requested_q_current_counts;
+    int16_t applied_q_current_counts;
+    uint16_t current_limit_counts;
+    uint32_t elapsed_millis;
+    uint32_t remaining_millis;
+    int32_t maximum_target_velocity_revolutions_per_second_q16_16;
+    int32_t maximum_target_acceleration_revolutions_per_second2_q16_16;
+    int32_t maximum_feedback_velocity_revolutions_per_second_q16_16;
+    uint16_t maximum_current_counts;
+    uint16_t maximum_feedback_interval_us;
+    int32_t proportional_gain_current_counts_per_velocity_q16_16;
+    int32_t integral_gain_current_counts_per_position_q16_16;
+    uint32_t maximum_duration_millis;
+} command_velocity_status_t;
+
 typedef command_status_t (*command_commissioning_get_status_fn)(
     void* context,
     command_commissioning_status_t* status);
@@ -296,6 +334,14 @@ typedef command_status_t (*command_aligned_torque_start_fn)(
 typedef command_status_t (*command_aligned_torque_get_status_fn)(
     void* context,
     command_aligned_torque_status_t* status);
+typedef command_status_t (*command_velocity_start_fn)(
+    void* context,
+    int32_t velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis);
+typedef command_status_t (*command_velocity_get_status_fn)(
+    void* context,
+    command_velocity_status_t* status);
 
 typedef struct
 {
@@ -339,6 +385,13 @@ typedef struct
 
 typedef struct
 {
+    void* context;
+    command_velocity_start_fn start;
+    command_velocity_get_status_fn get_status;
+} command_velocity_api_t;
+
+typedef struct
+{
     uint32_t product_id;
     uint8_t firmware_major;
     uint8_t firmware_minor;
@@ -351,6 +404,7 @@ typedef struct
     command_drive_api_t drive;
     command_configuration_api_t configuration;
     command_aligned_torque_api_t aligned_torque;
+    command_velocity_api_t velocity;
 } command_service_context_t;
 
 typedef struct
@@ -373,7 +427,8 @@ typedef enum
     COMMAND_RESPONSE_CURRENT_TRACE,
     COMMAND_RESPONSE_ALIGNMENT_STATUS,
     COMMAND_RESPONSE_CONFIGURATION_STATUS,
-    COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS
+    COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS,
+    COMMAND_RESPONSE_VELOCITY_STATUS
 } command_response_kind_t;
 
 typedef struct
@@ -409,6 +464,7 @@ typedef struct
         command_alignment_status_t alignment_status;
         command_configuration_status_t configuration_status;
         command_aligned_torque_status_t aligned_torque_status;
+        command_velocity_status_t velocity_status;
     } data;
 } command_response_t;
 

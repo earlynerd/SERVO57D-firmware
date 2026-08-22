@@ -311,6 +311,45 @@ void command_service_dispatch(const command_service_context_t* context,
             }
             return;
 
+        case COMMAND_OPERATION_START_VELOCITY:
+            if (request->payload_length != 10u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->velocity.start == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->velocity.start(
+                context->velocity.context,
+                (int32_t)read_u32_be(request->payload),
+                read_u16_be(&request->payload[4]),
+                read_u32_be(&request->payload[6]));
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
+        case COMMAND_OPERATION_GET_VELOCITY_STATUS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->velocity.get_status == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->velocity.get_status(
+                context->velocity.context,
+                &response->data.velocity_status);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_VELOCITY_STATUS;
+            }
+            return;
+
         case COMMAND_OPERATION_GET_BOOT_STATUS:
             if (request->payload_length != 0u)
             {

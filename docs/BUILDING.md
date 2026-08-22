@@ -144,10 +144,10 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.24.13 is the current bench-validated product build. Firmware 0.24.14
-is flashed for the bring-up-path-removal regression. Firmware 0.24.15 is the
-current host/Arm candidate and adds the single-estimator rotor-observation
-boundary without enabling the outer loop. It:
+Firmware 0.24.15 / protocol 1.7 is the current flashed product build and passed
+its ordinary hardware smoke check. Firmware 0.25.0 / protocol 1.8 is the current
+host/Arm candidate and adds the first bounded velocity product service on the
+single-estimator rotor-observation boundary. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -160,10 +160,10 @@ boundary without enabling the outer loop. It:
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.7 COBS/CRC frames in foreground and replies to valid
+12. Parses native v1.8 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
     automatic-alignment, generic-STOP, persistent-configuration, and aligned
-    q-current requests,
+    q-current and signed velocity requests,
     including live status while active.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
 14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
@@ -179,14 +179,19 @@ boundary without enabling the outer loop. It:
     backend at zero demand from that sample, and updates signed A/B
     references from calibrated 1 kHz electrical phase under independent current,
     slew, velocity, acceleration, feedback-age, duration, and fault contracts.
-20. Publishes firmware `0.24.15`, authoritative drive state, reset cause,
+20. Starts a valid velocity request at zero q-current from newly accepted
+    feedback, runs an acceleration-limited PI at the 1 kHz rotor release, and
+    updates only the bounded aligned-q-current actuator. Target speed, observed
+    speed, per-command current, reference acceleration, feedback age, deadline,
+    actuator health, and common STOP/fault paths remain independently enforced.
+21. Publishes firmware `0.25.0`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
     `g_diagnostics` RAM record; estimator, alignment, and configuration fields
     are presently on wire rather than appended to that debugger ABI.
-21. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
-22. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+22. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
+23. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Firmware 0.24.13 passed the deterministic rotor-service regression on COM14:
 more than 54,000 idle samples held 1000-1001 us intervals with zero transport
@@ -195,9 +200,11 @@ updates over five seconds with zero encoder, DMA, estimator, backend, control,
 reset, or panic faults. Earlier automatic-alignment and persistent-configuration
 power-cycle gates remain accepted.
 
-Firmware 0.24.15 passes native tests plus clean Debug and Release Arm builds.
-Debug uses 42,084 bytes of the 124 KiB application region and 6,420 bytes of
-SRAM1; Release uses 37,808 bytes and the same SRAM1, with no allocation in the
-configuration slots or SRAM2. Its hardware regression must confirm READY boot,
-that Next/Enter cannot energize the bridge, that the RS-485 diagnostic still
-starts/stops through the supervisor, and that raw Menu still stops it.
+Firmware 0.24.15 was flashed and passed its ordinary hardware smoke check.
+Firmware 0.25.0 passes native tests plus clean Debug and Release Arm builds.
+Debug uses 47,704 bytes of the 124 KiB application region and 6,796 bytes of
+SRAM1; Release uses 42,792 bytes and the same SRAM1, with no allocation in the
+configuration slots or SRAM2. Its hardware gate must confirm READY boot,
+passive velocity status, positive/negative low-speed deadline completion,
+explicit STOP, raw-Menu stop, current saturation recovery, and common fault/ZERO
+behavior on induced encoder/readiness loss.

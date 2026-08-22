@@ -200,7 +200,7 @@ Goal: close the mechanical loop incrementally.
   contracts plus machine-readable policy telemetry.
 - [ ] Bench-validate positive/negative aligned q-current through deadline,
   explicit STOP, Menu, and induced encoder/readiness-loss shutdown before
-  closing the velocity loop.
+  expanding the initial velocity candidate beyond its low-speed gate.
 - [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
   2.999 A motor-rated evaluation point, including current error, voltage
   effort, supply state, winding/power-stage temperature, STOP, and fault health.
@@ -208,7 +208,13 @@ Goal: close the mechanical loop incrementally.
   1 kHz phase refresh, record where tracking or torque quality fails, then move
   electrical-phase prediction into the deterministic 20 kHz reference path and
   repeat with 80 current updates per electrical cycle at the endpoint.
-- [ ] Close the velocity loop at low gains and limited current.
+- [x] Integrate a low-gain velocity loop on the authoritative 1 kHz rotor
+  observation, commanding only the bounded aligned-q-current actuator, with an
+  acceleration-limited reference, per-command current limit, finite deadline,
+  generic STOP, fault convergence, protocol status, and a host CLI.
+- [ ] Bench-validate positive and negative low-speed velocity through deadline,
+  explicit STOP, Menu, current saturation, and encoder/readiness-loss shutdown;
+  tune gains and expand its envelope only from captured measurements.
 - [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
 - [x] Establish a live inventory for the active motor-drive limits with units,

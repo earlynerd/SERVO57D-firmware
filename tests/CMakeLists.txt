@@ -16,6 +16,7 @@ add_executable(host_unit_tests
     ../firmware/src/control/phase_current_reference.c
     ../firmware/src/control/rotating_current_test.c
     ../firmware/src/control/servo_core.c
+    ../firmware/src/control/velocity_controller.c
     ../firmware/src/drivers/adc_calibration.c
     ../firmware/src/drivers/adc_display.c
     ../firmware/src/drivers/adc_sample.c

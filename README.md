@@ -40,8 +40,9 @@ without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
 This interface currently commands a positive-frequency rotating current vector;
 `--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
 closed-loop shaft-speed, signed-direction, or position command. Those controls
-remain separate from this diagnostic; closed-loop velocity is the next
-motor-control milestone after the aligned-torque hardware gate.
+remain separate from this diagnostic: firmware 0.25.0 provides signed closed-
+loop speed through the dedicated `velocity` service, while position remains the
+next motion milestone.
 
 The 0.23 candidate adds the first production motion command: a signed,
 calibrated q-current demand with firmware-reported current, slew, velocity,
@@ -58,16 +59,39 @@ it is torque-producing current, not a velocity request, so keep clear of the
 shaft and use the current-limited supply procedure in
 [the bring-up guide](docs/BRINGUP.md).
 
+Firmware 0.25.0 adds the first signed closed-loop velocity product service on
+top of that actuator. Inspect the live policy before starting; the initial
+candidate is intentionally bounded to ±1 rev/s, 1 rev/s² reference slew, and
+100 current counts (about 606 mA):
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 velocity-status
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
+```
+
+The command reports the acceleration-limited reference, measured speed,
+requested and actually applied q-current, saturation, deadline, authority, and
+fault state. Each run stores normalized metadata and CSV telemetry under
+`scratch/velocity-runs/`; the terminal shows only a compact live status line.
+It remains a bench candidate until positive/negative deadline, STOP, Menu,
+saturation, and induced-feedback-loss tests pass.
+
 ## Current operating envelope
 
-Firmware 0.24.13 / protocol 1.7 is the current bench-validated product build.
-Firmware 0.24.14 is flashed for its hardware regression: it retires
+Firmware 0.25.0 / protocol 1.8 is the current flashed product build and has run
+its first bounded velocity command; capture analysis and the complete velocity
+hardware gate remain pending. Firmware 0.24.15 passed its ordinary hardware
+smoke check. Firmware 0.24.14 retired
 the local Next/Enter phase selector and its direct fixed-duty PWM helper while
 retaining the RS-485 rotating-current diagnostic through the product supervisor
 and current backend. Firmware 0.24.15 makes the deterministic rotor runtime the
 sole estimator owner and gives the not-yet-linked motion candidate an immutable,
 timestamped position/velocity observation instead of raw encoder samples. The
-current product line provides bounded signed
+0.25.0 / protocol 1.8 candidate is host- and build-validated and closes the
+first bounded signed mechanical-velocity loop on that observation. It applies
+an acceleration-limited reference and PI current request, then commands only
+the existing aligned-q-current actuator; position and step/direction remain
+disconnected. The current product line provides bounded signed
 encoder-aligned q-current through the same supervisor,
 current backend, and ZERO-vector fault path, and accepts the full wrap-safe
 finite-deadline range. Torque activation is seeded only by newly accepted
@@ -127,13 +151,13 @@ faults converge on that vector. Reset/halt waveforms, thermal limits, and the
 wider voltage/current/speed envelope remain engineering
 work; they no longer block bounded motor operation on the tested board.
 
-A separate motion-candidate build exercises motion ownership,
-remote lease expiry, step/direction behavior, bounded trajectories, servo
-behavior, and fault recovery against host-side deterministic plants. The
-hardware image owns the only angle tracker and publishes validated mechanical
-position/velocity observations. The outer servo consumes that contract in
-tests but is not linked into the product image; no host-test motion limits have
-been promoted into the product.
+A separate general-motion candidate still exercises remote lease expiry,
+step/direction behavior, bounded position trajectories, and fault recovery
+against host-side deterministic plants. The hardware image owns the only angle
+tracker and publishes validated mechanical position/velocity observations.
+Firmware 0.25.0 links only the focused low-speed velocity controller described
+above; position, step/direction, and the candidate's broader motion limits have
+not been promoted into the product.
 
 ## Current project status
 
@@ -185,8 +209,8 @@ generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional milestone after the 0.23 hardware gate is
-low-gain velocity control followed by position control. Remaining characterization
+accepted. The next functional gate is low-speed velocity bench validation and
+tuning, followed by position control. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

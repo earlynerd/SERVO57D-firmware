@@ -368,6 +368,12 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_ALIGNED_TORQUE_STATUS:
             *operation = COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_START_VELOCITY:
+            *operation = COMMAND_OPERATION_START_VELOCITY;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_VELOCITY_STATUS:
+            *operation = COMMAND_OPERATION_GET_VELOCITY_STATUS;
+            return true;
         default:
             return false;
     }
@@ -773,6 +779,71 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              status->maximum_duration_millis);
                 write_u32_be(&response_frame->payload[59],
                              status->backend_fault_flags);
+                payload_length = 63u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_VELOCITY_STATUS:
+            {
+                const command_velocity_status_t* status =
+                    &command_response->data.velocity_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->state;
+                response_frame->payload[3] = status->result;
+                response_frame->payload[4] = status->flags;
+                write_u32_be(&response_frame->payload[5],
+                             status->fault_flags);
+                write_u32_be(
+                    &response_frame->payload[9],
+                    (uint32_t)status->
+                        target_velocity_revolutions_per_second_q16_16);
+                write_u32_be(
+                    &response_frame->payload[13],
+                    (uint32_t)status->
+                        reference_velocity_revolutions_per_second_q16_16);
+                write_u32_be(
+                    &response_frame->payload[17],
+                    (uint32_t)status->
+                        measured_velocity_revolutions_per_second_q16_16);
+                write_u16_be(
+                    &response_frame->payload[21],
+                    (uint16_t)status->requested_q_current_counts);
+                write_u16_be(
+                    &response_frame->payload[23],
+                    (uint16_t)status->applied_q_current_counts);
+                write_u16_be(&response_frame->payload[25],
+                             status->current_limit_counts);
+                write_u32_be(&response_frame->payload[27],
+                             status->elapsed_millis);
+                write_u32_be(&response_frame->payload[31],
+                             status->remaining_millis);
+                write_u32_be(
+                    &response_frame->payload[35],
+                    (uint32_t)status->
+                        maximum_target_velocity_revolutions_per_second_q16_16);
+                write_u32_be(
+                    &response_frame->payload[39],
+                    (uint32_t)status->
+                        maximum_target_acceleration_revolutions_per_second2_q16_16);
+                write_u32_be(
+                    &response_frame->payload[43],
+                    (uint32_t)status->
+                        maximum_feedback_velocity_revolutions_per_second_q16_16);
+                write_u16_be(&response_frame->payload[47],
+                             status->maximum_current_counts);
+                write_u16_be(&response_frame->payload[49],
+                             status->maximum_feedback_interval_us);
+                write_u32_be(
+                    &response_frame->payload[51],
+                    (uint32_t)status->
+                        proportional_gain_current_counts_per_velocity_q16_16);
+                write_u32_be(
+                    &response_frame->payload[55],
+                    (uint32_t)status->
+                        integral_gain_current_counts_per_position_q16_16);
+                write_u32_be(&response_frame->payload[59],
+                             status->maximum_duration_millis);
                 payload_length = 63u;
                 break;
             }

@@ -352,9 +352,61 @@ and alignment/configuration must remain unchanged. Repeat Menu and induced
 encoder/readiness-loss tests only after ordinary/deadline and STOP behavior pass;
 the latter must enter the common fault/ZERO path.
 
+### Low-speed velocity hardware gate
+
+Firmware 0.25.0 / protocol 1.8 closes the first product velocity loop on the
+authoritative 1 kHz rotor observation. It commands only the existing bounded
+aligned-q-current actuator; it does not add a PWM or bridge-authority path.
+The candidate permits targets through ±1 rev/s, slews the reference at
+1 rev/s², and requires each command to state a positive current limit no higher
+than 100 counts (about 606 mA). Use a free, observable shaft initially; keep
+clear of it and retain current-limited supply cutoff plus generic STOP.
+
+After flashing, confirm the exact identity, restored alignment, no faults, and
+the live velocity policy before energizing:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 identity
+py tools/mks57d_rs485.py --port COM14 configuration
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 velocity-status
+```
+
+The first run uses 0.1 rev/s (6 RPM), a 25-count limit (about 151.5 mA), and a
+two-second deadline:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-counts 25 --duration-ms 2000 --interval 0.02
+```
+
+Acceptance requires ramping then tracking telemetry, a reference slope no
+greater than 1 rev/s², measured velocity approaching the signed target without
+oscillation or runaway, requested/applied current staying within 25 counts,
+and terminal `complete` / `deadline`. Afterward supervisor state must be
+`READY`; authority, backend, actuator, and active flags must be clear; all
+current, velocity, torque, estimator, reset, and panic faults must remain clear.
+The CLI saves every run under `scratch/velocity-runs/` by default. Preserve the
+run directory: `metadata.json` contains the request, identity, configuration,
+policy, endpoints, and summary; `telemetry.csv` contains the compact time
+series used for the first rise, overshoot, steady-error, saturation, and current
+decision. The terminal refreshes one concise status line at about 5 Hz rather
+than printing each nested snapshot. Add `--jsonl` only when full protocol-level
+snapshots are needed, or `--output-root PATH` to relocate the run directories.
+
+If clean, repeat at `--rps -0.1` and verify direction reverses. Then run a
+five-second command and press Ctrl+C during tracking; status must retain
+`stopped`, with immediate authority/backend release and unchanged calibration.
+Repeat the STOP check with raw Menu. Only after those pass should current limit,
+target magnitude, reversal rate, or load increase. Current-limit saturation is
+an intentional test: confirm `current_at_limit`, bounded recovery, and no
+integrator-driven overshoot before raising the 100-count candidate ceiling.
+Induced encoder/readiness loss is last and must enter common fault/ZERO with an
+immediate supply cutoff available.
+
 After that gate, the next implementation sequence is:
 
-1. Close the velocity loop at low gains and explicit current/velocity/acceleration bounds.
+1. Tune and expand the velocity current/speed/acceleration envelope from the
+   captured signed responses.
 2. Add position trajectories, following-error detection, step/direction
    capture, and native motion commands.
 3. Characterize the useful current, speed, acceleration, bus-voltage, and

@@ -84,7 +84,7 @@ bool aligned_torque_controller_init(
     return true;
 }
 
-bool aligned_torque_controller_start(
+static bool start_controller(
     aligned_torque_controller_t* controller,
     int16_t requested_q_current_counts,
     uint32_t duration_millis,
@@ -94,7 +94,6 @@ bool aligned_torque_controller_start(
 {
     if ((controller == NULL) || !controller->initialized ||
         controller->status.active ||
-        (requested_q_current_counts == 0) ||
         (magnitude_i32(requested_q_current_counts) >
          controller->config.maximum_current_counts) ||
         (duration_millis < controller->config.minimum_duration_millis) ||
@@ -118,6 +117,56 @@ bool aligned_torque_controller_start(
     controller->last_encoder_timestamp_us = encoder_timestamp_us;
     controller->last_velocity_revolutions_per_second_q16_16 =
         velocity_revolutions_per_second_q16_16;
+    return true;
+}
+
+bool aligned_torque_controller_start(
+    aligned_torque_controller_t* controller,
+    int16_t requested_q_current_counts,
+    uint32_t duration_millis,
+    uint32_t now_millis,
+    uint32_t encoder_timestamp_us,
+    int32_t velocity_revolutions_per_second_q16_16)
+{
+    return (requested_q_current_counts != 0) &&
+           start_controller(
+               controller,
+               requested_q_current_counts,
+               duration_millis,
+               now_millis,
+               encoder_timestamp_us,
+               velocity_revolutions_per_second_q16_16);
+}
+
+bool aligned_torque_controller_start_tracking(
+    aligned_torque_controller_t* controller,
+    uint32_t duration_millis,
+    uint32_t now_millis,
+    uint32_t encoder_timestamp_us,
+    int32_t velocity_revolutions_per_second_q16_16)
+{
+    return start_controller(
+        controller,
+        0,
+        duration_millis,
+        now_millis,
+        encoder_timestamp_us,
+        velocity_revolutions_per_second_q16_16);
+}
+
+bool aligned_torque_controller_set_target(
+    aligned_torque_controller_t* controller,
+    int16_t requested_q_current_counts)
+{
+    if ((controller == NULL) || !controller->initialized ||
+        !controller->status.active ||
+        (magnitude_i32(requested_q_current_counts) >
+         controller->config.maximum_current_counts))
+    {
+        return false;
+    }
+    controller->status.requested_q_current_counts =
+        requested_q_current_counts;
     return true;
 }
 

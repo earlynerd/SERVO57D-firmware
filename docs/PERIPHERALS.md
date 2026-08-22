@@ -111,14 +111,14 @@ bounded number of bytes into the native v1 COBS/CRC parser. TX uses channel 5
 and keeps PC13 high until USART transmission-complete, not merely DMA
 completion.
 
-Native protocol 1.7 replies to complete, CRC-valid address-1 discovery, boot,
+Native protocol 1.8 replies to complete, CRC-valid address-1 discovery, boot,
 raw/estimated encoder, current-loop, alignment, configuration, aligned-q-current,
-and generic-STOP requests.
+velocity, and generic-STOP requests.
 Framing, address checks, command validation, and reply creation remain bounded
 foreground work; the product drive supervisor owns bridge authority. Complete
 configuration, START, live status, encoder, and STOP exchanges have been observed
 through `485_A2`/`485_B2`; alignment and persistent configuration pass their
-hardware gates, while aligned q-current remains pending. Reset-time and
+hardware gates, while the velocity hardware gate remains pending. Reset-time and
 turnaround waveforms remain to be scoped.
 
 Timer capture and step/direction/enable operating semantics remain deferred.

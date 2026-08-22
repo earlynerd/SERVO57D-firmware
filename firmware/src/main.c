@@ -34,6 +34,7 @@
 #include "mks57d/tim2_current_trigger.h"
 #include "mks57d/tim3_bridge_pwm.h"
 #include "mks57d/user_inputs.h"
+#include "mks57d/velocity_controller.h"
 #include "mks57d/watchdog.h"
 #include "n32l40x.h"
 
@@ -69,6 +70,7 @@ enum
     CURRENT_TRACE_SCHEMA_VERSION = 1u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 1u,
+    VELOCITY_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
@@ -85,7 +87,30 @@ enum
 /* Foreground command-adapter wiring and request mailboxes. This aggregate does
  * not own rotor estimation, bridge state, or a control loop; new motion state
  * belongs in a product motion service rather than growing this context. */
+typedef struct product_command_context product_command_context_t;
+
 typedef struct
+{
+    product_command_context_t* product;
+    app_supervisor_t* supervisor;
+    bool* bridge_ready;
+    diagnostics_encoder_t* encoder_diagnostics;
+    angle_tracker_t* angle_tracker;
+    uint32_t* estimator_fault_flags;
+    motor_alignment_t* motor_alignment;
+    alignment_controller_t* alignment_controller;
+    aligned_torque_controller_t* aligned_torque_controller;
+    velocity_controller_t* velocity_controller;
+    rotor_control_runtime_t* rotor_control_runtime;
+    uint32_t* raw_input_levels;
+    int32_t requested_velocity_revolutions_per_second_q16_16;
+    uint16_t requested_current_limit_counts;
+    uint32_t requested_duration_millis;
+    bool start_requested;
+    bool stop_requested;
+} velocity_command_context_t;
+
+struct product_command_context
 {
     app_supervisor_t* supervisor;
     bool* adc_ready;
@@ -104,6 +129,7 @@ typedef struct
     motor_alignment_t* motor_alignment;
     alignment_controller_t* alignment_controller;
     aligned_torque_controller_t* aligned_torque_controller;
+    velocity_controller_t* velocity_controller;
     rotor_control_runtime_t* rotor_control_runtime;
     configuration_store_t* configuration_store;
     uint32_t* raw_input_levels;
@@ -125,7 +151,8 @@ typedef struct
     uint32_t torque_duration_millis;
     bool torque_start_requested;
     bool torque_stop_requested;
-} product_command_context_t;
+    velocity_command_context_t* velocity_commands;
+};
 
 static bool encoder_control_ready(
     const diagnostics_encoder_t* encoder_diagnostics,
@@ -141,6 +168,15 @@ static bool encoder_control_ready(
            (encoder_diagnostics->sample_count != 0u) &&
            angle_tracker->initialized &&
            (estimator_fault_flags == 0u);
+}
+
+static bool velocity_request_or_control_active(
+    const product_command_context_t* commands)
+{
+    return (commands != NULL) && (commands->velocity_commands != NULL) &&
+           (commands->velocity_commands->start_requested ||
+            velocity_controller_is_active(
+                commands->velocity_commands->velocity_controller));
 }
 
 static int32_t float_to_q16_16(float value)
@@ -336,6 +372,7 @@ static command_status_t commissioning_configure(
         commissioning->remote_start_requested ||
         commissioning->alignment_start_requested ||
         commissioning->torque_start_requested ||
+        velocity_request_or_control_active(commissioning) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
@@ -376,8 +413,14 @@ static command_status_t commissioning_start(
         !*commissioning->bridge_ready ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->remote_start_requested ||
+        commissioning->remote_stop_requested ||
         commissioning->alignment_start_requested ||
+        commissioning->alignment_stop_requested ||
         commissioning->torque_start_requested ||
+        commissioning->torque_stop_requested ||
+        velocity_request_or_control_active(commissioning) ||
+        ((commissioning->velocity_commands != NULL) &&
+         commissioning->velocity_commands->stop_requested) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
@@ -410,6 +453,11 @@ static command_status_t commissioning_stop(void* context)
     commissioning->alignment_stop_requested = true;
     commissioning->torque_start_requested = false;
     commissioning->torque_stop_requested = true;
+    if (commissioning->velocity_commands != NULL)
+    {
+        commissioning->velocity_commands->start_requested = false;
+        commissioning->velocity_commands->stop_requested = true;
+    }
     return COMMAND_STATUS_OK;
 }
 
@@ -438,8 +486,14 @@ static command_status_t alignment_start(
         !*commissioning->bridge_ready ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->remote_start_requested ||
+        commissioning->remote_stop_requested ||
         commissioning->alignment_start_requested ||
+        commissioning->alignment_stop_requested ||
         commissioning->torque_start_requested ||
+        commissioning->torque_stop_requested ||
+        velocity_request_or_control_active(commissioning) ||
+        ((commissioning->velocity_commands != NULL) &&
+         commissioning->velocity_commands->stop_requested) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
@@ -622,8 +676,14 @@ static command_status_t aligned_torque_start(
             *commissioning->estimator_fault_flags) ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->remote_start_requested ||
+        commissioning->remote_stop_requested ||
         commissioning->alignment_start_requested ||
+        commissioning->alignment_stop_requested ||
         commissioning->torque_start_requested ||
+        commissioning->torque_stop_requested ||
+        velocity_request_or_control_active(commissioning) ||
+        ((commissioning->velocity_commands != NULL) &&
+         commissioning->velocity_commands->stop_requested) ||
         alignment_controller_is_active(
             commissioning->alignment_controller) ||
         aligned_torque_controller_is_active(
@@ -739,6 +799,206 @@ static command_status_t aligned_torque_get_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t velocity_start(
+    void* context,
+    int32_t velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis)
+{
+    velocity_command_context_t* velocity = context;
+    product_command_context_t* product;
+    motor_alignment_status_t alignment_status;
+    current_loop_backend_snapshot_t loop = {0};
+    int64_t target_magnitude =
+        velocity_revolutions_per_second_q16_16;
+
+    if ((velocity == NULL) || (velocity->product == NULL) ||
+        (velocity->supervisor == NULL) ||
+        (velocity->bridge_ready == NULL) ||
+        (velocity->encoder_diagnostics == NULL) ||
+        (velocity->angle_tracker == NULL) ||
+        (velocity->estimator_fault_flags == NULL) ||
+        (velocity->motor_alignment == NULL) ||
+        (velocity->alignment_controller == NULL) ||
+        (velocity->aligned_torque_controller == NULL) ||
+        (velocity->velocity_controller == NULL) ||
+        (velocity->rotor_control_runtime == NULL) ||
+        (velocity->raw_input_levels == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    product = velocity->product;
+    if (target_magnitude < 0)
+    {
+        target_magnitude = -target_magnitude;
+    }
+    if ((velocity_revolutions_per_second_q16_16 == 0) ||
+        (target_magnitude > float_to_q16_16(
+            velocity->velocity_controller->config.
+                maximum_target_velocity_revolutions_per_second)) ||
+        (current_limit_counts == 0u) ||
+        (current_limit_counts > velocity->velocity_controller->config.
+             maximum_current_counts) ||
+        (duration_millis < velocity->velocity_controller->config.
+             minimum_duration_millis) ||
+        (duration_millis > velocity->velocity_controller->config.
+             maximum_duration_millis))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+
+    motor_alignment_get_status(
+        velocity->motor_alignment, &alignment_status);
+    current_loop_backend_get_snapshot(&loop);
+    if ((velocity->supervisor->state != APP_STATE_READY) ||
+        (velocity->supervisor->authority != APP_AUTHORITY_NONE) ||
+        !*velocity->bridge_ready || !alignment_status.valid ||
+        !encoder_control_ready(
+            velocity->encoder_diagnostics,
+            velocity->angle_tracker,
+            *velocity->estimator_fault_flags) ||
+        app_supervisor_bridge_authorized(velocity->supervisor) ||
+        product->remote_start_requested ||
+        product->remote_stop_requested ||
+        product->alignment_start_requested ||
+        product->alignment_stop_requested ||
+        product->torque_start_requested ||
+        product->torque_stop_requested || velocity->start_requested ||
+        velocity->stop_requested ||
+        alignment_controller_is_active(velocity->alignment_controller) ||
+        aligned_torque_controller_is_active(
+            velocity->aligned_torque_controller) ||
+        velocity_controller_is_active(velocity->velocity_controller) ||
+        loop.active || (loop.fault_flags != 0u) ||
+        ((*velocity->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    velocity->requested_velocity_revolutions_per_second_q16_16 =
+        velocity_revolutions_per_second_q16_16;
+    velocity->requested_current_limit_counts = current_limit_counts;
+    velocity->requested_duration_millis = duration_millis;
+    velocity->stop_requested = false;
+    velocity->start_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t velocity_get_status(
+    void* context,
+    command_velocity_status_t* status)
+{
+    velocity_command_context_t* velocity = context;
+    velocity_controller_status_t controller_status;
+    aligned_torque_status_t torque_status;
+    motor_alignment_status_t alignment_status;
+    current_loop_backend_snapshot_t loop = {0};
+    int32_t current_magnitude;
+    uint32_t now;
+
+    if ((velocity == NULL) || (status == NULL) ||
+        (velocity->supervisor == NULL) ||
+        (velocity->velocity_controller == NULL) ||
+        (velocity->aligned_torque_controller == NULL) ||
+        (velocity->motor_alignment == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    now = timebase_millis();
+    velocity_controller_get_status(
+        velocity->velocity_controller, &controller_status);
+    aligned_torque_controller_get_status(
+        velocity->aligned_torque_controller, &torque_status);
+    motor_alignment_get_status(
+        velocity->motor_alignment, &alignment_status);
+    current_loop_backend_get_snapshot(&loop);
+    memset(status, 0, sizeof(*status));
+    status->schema_version = VELOCITY_STATUS_SCHEMA_VERSION;
+    status->state = (uint8_t)controller_status.state;
+    status->result = (uint8_t)controller_status.result;
+    status->fault_flags = controller_status.fault_flags;
+    status->target_velocity_revolutions_per_second_q16_16 =
+        controller_status.target_velocity_revolutions_per_second_q16_16;
+    status->reference_velocity_revolutions_per_second_q16_16 =
+        controller_status.reference_velocity_revolutions_per_second_q16_16;
+    status->measured_velocity_revolutions_per_second_q16_16 =
+        controller_status.measured_velocity_revolutions_per_second_q16_16;
+    status->requested_q_current_counts =
+        controller_status.requested_q_current_counts;
+    if (controller_status.active)
+    {
+        status->applied_q_current_counts =
+            torque_status.applied_q_current_counts;
+    }
+    status->current_limit_counts = controller_status.current_limit_counts;
+    status->elapsed_millis = controller_status.elapsed_millis;
+    if (controller_status.active &&
+        ((int32_t)(velocity->velocity_controller->deadline_millis - now) > 0))
+    {
+        status->remaining_millis =
+            velocity->velocity_controller->deadline_millis - now;
+    }
+    if (controller_status.active)
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_ACTIVE;
+    }
+    if (controller_status.active &&
+        (velocity->supervisor->state == APP_STATE_RUN) &&
+        (velocity->supervisor->authority == APP_AUTHORITY_MOTION))
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_AUTHORITY_ACTIVE;
+    }
+    if (controller_status.active && loop.active)
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_BACKEND_ACTIVE;
+    }
+    if (alignment_status.valid)
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_ALIGNMENT_VALID;
+    }
+    if (controller_status.active && torque_status.active)
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_ACTUATOR_ACTIVE;
+    }
+    if (controller_status.state == VELOCITY_CONTROL_STATE_TRACKING)
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_REFERENCE_AT_TARGET;
+    }
+    current_magnitude = controller_status.requested_q_current_counts;
+    if (current_magnitude < 0)
+    {
+        current_magnitude = -current_magnitude;
+    }
+    if ((controller_status.current_limit_counts != 0u) &&
+        (current_magnitude >= controller_status.current_limit_counts))
+    {
+        status->flags |= COMMAND_VELOCITY_FLAG_CURRENT_AT_LIMIT;
+    }
+    status->maximum_target_velocity_revolutions_per_second_q16_16 =
+        float_to_q16_16(velocity->velocity_controller->config.
+            maximum_target_velocity_revolutions_per_second);
+    status->maximum_target_acceleration_revolutions_per_second2_q16_16 =
+        float_to_q16_16(velocity->velocity_controller->config.
+            maximum_target_acceleration_revolutions_per_second_squared);
+    status->maximum_feedback_velocity_revolutions_per_second_q16_16 =
+        float_to_q16_16(velocity->velocity_controller->config.
+            maximum_feedback_velocity_revolutions_per_second);
+    status->maximum_current_counts =
+        velocity->velocity_controller->config.maximum_current_counts;
+    status->maximum_feedback_interval_us =
+        velocity->velocity_controller->config.maximum_feedback_interval_us;
+    status->proportional_gain_current_counts_per_velocity_q16_16 =
+        float_to_q16_16(velocity->velocity_controller->config.
+            current_controller.proportional_gain);
+    status->integral_gain_current_counts_per_position_q16_16 =
+        float_to_q16_16(velocity->velocity_controller->config.
+            current_controller.integral_gain_per_second);
+    status->maximum_duration_millis =
+        velocity->velocity_controller->config.maximum_duration_millis;
+    return COMMAND_STATUS_OK;
+}
+
 static bool build_product_configuration(
     const motor_alignment_t* motor_alignment,
     product_configuration_t* configuration)
@@ -789,7 +1049,10 @@ static bool configuration_write_allowed(
            !commissioning->alignment_start_requested &&
            !commissioning->alignment_stop_requested &&
            !commissioning->torque_start_requested &&
-           !commissioning->torque_stop_requested;
+           !commissioning->torque_stop_requested &&
+           !velocity_request_or_control_active(commissioning) &&
+           ((commissioning->velocity_commands == NULL) ||
+            !commissioning->velocity_commands->stop_requested);
 }
 
 static command_status_t configuration_get_status(
@@ -1276,6 +1539,11 @@ int main(void)
          * unambiguous for every accepted start time.
          */
         ALIGNED_TORQUE_MAXIMUM_DURATION_MS = INT32_MAX,
+        VELOCITY_MAXIMUM_TARGET_Q16_16 = 1u << 16,
+        VELOCITY_MAXIMUM_CURRENT_COUNTS = 100u,
+        VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
+        VELOCITY_MINIMUM_DURATION_MS = 3u,
+        VELOCITY_MAXIMUM_DURATION_MS = INT32_MAX,
         CURRENT_TEST_AMPLITUDE_COUNTS = 25u,
         CURRENT_TEST_FREQUENCY_MILLIHZ = 500u
     };
@@ -1297,7 +1565,10 @@ int main(void)
                    "phase voltage must leave a 5 us ADC quiet interval");
     _Static_assert(ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS <=
                        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
-                   "torque policy exceeds the current backend contract");
+                    "torque policy exceeds the current backend contract");
+    _Static_assert(VELOCITY_MAXIMUM_CURRENT_COUNTS <=
+                       ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS,
+                   "velocity current exceeds the aligned actuator contract");
     app_supervisor_t drive_supervisor;
     angle_tracker_t angle_tracker;
     const angle_tracker_config_t angle_tracker_config = {
@@ -1333,6 +1604,7 @@ int main(void)
             ALIGNMENT_MAXIMUM_CURRENT_ERROR_COUNTS,
     };
     aligned_torque_controller_t aligned_torque_controller;
+    velocity_controller_t velocity_controller;
     const uint8_t encoder_request[ENCODER_READ_BURST_BYTES] = {
         ENCODER_READ_ANGLE_COMMAND, 0u, 0u, 0u,
     };
@@ -1349,6 +1621,23 @@ int main(void)
             ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
         .minimum_duration_millis = ALIGNED_TORQUE_MINIMUM_DURATION_MS,
         .maximum_duration_millis = ALIGNED_TORQUE_MAXIMUM_DURATION_MS,
+    };
+    const velocity_controller_config_t velocity_controller_config = {
+        .current_controller = {
+            .proportional_gain = 100.0f,
+            .integral_gain_per_second = 200.0f,
+            .output_limit = (float)VELOCITY_MAXIMUM_CURRENT_COUNTS,
+            .integrator_limit = (float)VELOCITY_MAXIMUM_CURRENT_COUNTS,
+        },
+        .maximum_target_velocity_revolutions_per_second =
+            (float)VELOCITY_MAXIMUM_TARGET_Q16_16 / 65536.0f,
+        .maximum_target_acceleration_revolutions_per_second_squared = 1.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_current_counts = VELOCITY_MAXIMUM_CURRENT_COUNTS,
+        .maximum_feedback_interval_us =
+            VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US,
+        .minimum_duration_millis = VELOCITY_MINIMUM_DURATION_MS,
+        .maximum_duration_millis = VELOCITY_MAXIMUM_DURATION_MS,
     };
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
@@ -1412,6 +1701,19 @@ int main(void)
     uint32_t uptime_millis = 0u;
     watchdog_supervisor_t watchdog;
     watchdog_status_t watchdog_status = WATCHDOG_STATUS_NOT_STARTED;
+    velocity_command_context_t velocity_commands = {
+        .supervisor = &drive_supervisor,
+        .bridge_ready = &bridge_ready,
+        .encoder_diagnostics = &encoder_diagnostics,
+        .angle_tracker = &angle_tracker,
+        .estimator_fault_flags = &estimator_fault_flags,
+        .motor_alignment = &motor_alignment,
+        .alignment_controller = &alignment_controller,
+        .aligned_torque_controller = &aligned_torque_controller,
+        .velocity_controller = &velocity_controller,
+        .rotor_control_runtime = &rotor_control_runtime,
+        .raw_input_levels = &raw_input_levels,
+    };
     product_command_context_t commissioning_context = {
         .supervisor = &drive_supervisor,
         .adc_ready = &adc_ready,
@@ -1432,6 +1734,7 @@ int main(void)
         .motor_alignment = &motor_alignment,
         .alignment_controller = &alignment_controller,
         .aligned_torque_controller = &aligned_torque_controller,
+        .velocity_controller = &velocity_controller,
         .rotor_control_runtime = &rotor_control_runtime,
         .configuration_store = &configuration_store,
         .raw_input_levels = &raw_input_levels,
@@ -1441,7 +1744,9 @@ int main(void)
             CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
         .test_amplitude_counts = CURRENT_TEST_AMPLITUDE_COUNTS,
         .test_frequency_millihz = CURRENT_TEST_FREQUENCY_MILLIHZ,
+        .velocity_commands = &velocity_commands,
     };
+    velocity_commands.product = &commissioning_context;
     const command_service_context_t command_context = {
         .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
         .firmware_major = MKS57D_FIRMWARE_VERSION_MAJOR,
@@ -1480,6 +1785,11 @@ int main(void)
             .start = aligned_torque_start,
             .get_status = aligned_torque_get_status,
         },
+        .velocity = {
+            .context = &velocity_commands,
+            .start = velocity_start,
+            .get_status = velocity_get_status,
+        },
     };
 
     if (!platform_early_memory_ready())
@@ -1497,7 +1807,9 @@ int main(void)
         !alignment_controller_init(
             &alignment_controller, &alignment_controller_config) ||
         !aligned_torque_controller_init(
-            &aligned_torque_controller, &aligned_torque_config))
+            &aligned_torque_controller, &aligned_torque_config) ||
+        !velocity_controller_init(
+            &velocity_controller, &velocity_controller_config))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
@@ -1523,7 +1835,8 @@ int main(void)
             &angle_tracker,
             &motor_alignment,
             &alignment_controller,
-            &aligned_torque_controller) ||
+            &aligned_torque_controller,
+            &velocity_controller) ||
         !rotor_control_runtime_get_snapshot(
             &rotor_control_runtime, &rotor_control_snapshot))
     {
@@ -1771,6 +2084,8 @@ int main(void)
                 rotor_control_snapshot.alignment_controller;
             aligned_torque_controller =
                 rotor_control_snapshot.torque_controller;
+            velocity_controller =
+                rotor_control_snapshot.velocity_controller;
             estimator_fault_flags =
                 rotor_control_snapshot.estimator_fault_flags;
             estimator_sample_interval_us =
@@ -1802,6 +2117,8 @@ int main(void)
             commissioning_context.alignment_stop_requested = false;
             commissioning_context.torque_start_requested = false;
             commissioning_context.torque_stop_requested = false;
+            velocity_commands.start_requested = false;
+            velocity_commands.stop_requested = false;
             bridge_ready = false;
             (void)app_supervisor_handle_event(
                 &drive_supervisor,
@@ -1833,6 +2150,8 @@ int main(void)
             commissioning_context.alignment_stop_requested = false;
             commissioning_context.torque_start_requested = false;
             commissioning_context.torque_stop_requested = false;
+            velocity_commands.start_requested = false;
+            velocity_commands.stop_requested = false;
             if (app_supervisor_bridge_authorized(&drive_supervisor) &&
                 (drive_supervisor.authority == APP_AUTHORITY_MOTION) &&
                 !app_supervisor_handle_event(
@@ -1882,6 +2201,7 @@ int main(void)
                 commissioning_context.remote_stop_requested = true;
                 commissioning_context.alignment_stop_requested = true;
                 commissioning_context.torque_stop_requested = true;
+                velocity_commands.stop_requested = true;
                 diagnostics_due = true;
             }
         }
@@ -1893,10 +2213,16 @@ int main(void)
         }
         if ((commissioning_context.torque_start_requested ||
              aligned_torque_controller_is_active(
-                 &aligned_torque_controller)) &&
+                  &aligned_torque_controller)) &&
             ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
         {
             commissioning_context.torque_stop_requested = true;
+        }
+        if ((velocity_commands.start_requested ||
+             velocity_controller_is_active(&velocity_controller)) &&
+            ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        {
+            velocity_commands.stop_requested = true;
         }
 
         if (commissioning_context.alignment_stop_requested)
@@ -1937,10 +2263,13 @@ int main(void)
             diagnostics_due = true;
         }
 
-        if (commissioning_context.torque_stop_requested)
+        if (commissioning_context.torque_stop_requested ||
+            velocity_commands.stop_requested)
         {
             commissioning_context.torque_start_requested = false;
             commissioning_context.torque_stop_requested = false;
+            velocity_commands.start_requested = false;
+            velocity_commands.stop_requested = false;
             rotor_control_runtime_request_stop(
                 &rotor_control_runtime);
             diagnostics_due = true;
@@ -1966,6 +2295,39 @@ int main(void)
                     &rotor_control_runtime,
                     commissioning_context.torque_q_current_counts,
                     commissioning_context.torque_duration_millis))
+            {
+                bridge_ready = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+            }
+            diagnostics_due = true;
+        }
+
+        if (velocity_commands.start_requested)
+        {
+            const app_transition_context_t energize_context = {
+                .safe_to_energize =
+                    bridge_ready && adc_snapshot_valid &&
+                    encoder_control_ready(
+                        &encoder_diagnostics,
+                        &angle_tracker,
+                        estimator_fault_flags),
+            };
+
+            velocity_commands.start_requested = false;
+            if (!app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_MOTION_RUN_REQUESTED,
+                    energize_context) ||
+                !rotor_control_runtime_request_velocity(
+                    &rotor_control_runtime,
+                    velocity_commands.
+                        requested_velocity_revolutions_per_second_q16_16,
+                    velocity_commands.requested_current_limit_counts,
+                    velocity_commands.requested_duration_millis))
             {
                 bridge_ready = false;
                 (void)app_supervisor_handle_event(
@@ -2118,6 +2480,20 @@ int main(void)
             board_bridge_force_low_zero();
             platform_panic(PANIC_INTERNAL_INVARIANT);
         }
+        if (velocity_controller_is_active(&velocity_controller) &&
+            ((drive_supervisor.state != APP_STATE_RUN) ||
+             (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
+             !app_supervisor_bridge_authorized(&drive_supervisor)))
+        {
+            rotor_control_runtime_force_fault(
+                &rotor_control_runtime, timebase_micros());
+            (void)app_supervisor_handle_event(
+                &drive_supervisor,
+                APP_EVENT_FAULT_DETECTED,
+                (app_transition_context_t){0});
+            board_bridge_force_low_zero();
+            platform_panic(PANIC_INTERNAL_INVARIANT);
+        }
 
         if (app_supervisor_bridge_authorized(&drive_supervisor) &&
             (drive_supervisor.authority == APP_AUTHORITY_DIAGNOSTIC) &&
@@ -2232,6 +2608,8 @@ int main(void)
                 commissioning_context.alignment_stop_requested = false;
                 commissioning_context.torque_start_requested = false;
                 commissioning_context.torque_stop_requested = false;
+                velocity_commands.start_requested = false;
+                velocity_commands.stop_requested = false;
                 (void)app_supervisor_handle_event(
                     &drive_supervisor,
                     APP_EVENT_FAULT_DETECTED,
@@ -2258,6 +2636,8 @@ int main(void)
                     commissioning_context.alignment_stop_requested = false;
                     commissioning_context.torque_start_requested = false;
                     commissioning_context.torque_stop_requested = false;
+                    velocity_commands.start_requested = false;
+                    velocity_commands.stop_requested = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
                         &drive_supervisor,
@@ -2285,6 +2665,8 @@ int main(void)
                     commissioning_context.remote_authority_active = false;
                     commissioning_context.torque_start_requested = false;
                     commissioning_context.torque_stop_requested = false;
+                    velocity_commands.start_requested = false;
+                    velocity_commands.stop_requested = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
                         &drive_supervisor,
@@ -2325,9 +2707,10 @@ int main(void)
                       (drive_supervisor.state == APP_STATE_RUN)) &&
                      !drive_prerequisites_ready)
             {
-                const bool torque_was_active =
+                const bool motion_was_active =
                     aligned_torque_controller_is_active(
-                        &aligned_torque_controller);
+                        &aligned_torque_controller) ||
+                    velocity_controller_is_active(&velocity_controller);
 
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
@@ -2340,10 +2723,12 @@ int main(void)
                     commissioning_context.alignment_stop_requested = false;
                     commissioning_context.torque_start_requested = false;
                     commissioning_context.torque_stop_requested = false;
+                    velocity_commands.start_requested = false;
+                    velocity_commands.stop_requested = false;
                 }
                 if (!app_supervisor_handle_event(
                         &drive_supervisor,
-                        torque_was_active ?
+                        motion_was_active ?
                             APP_EVENT_FAULT_DETECTED :
                             APP_EVENT_READINESS_LOST,
                         (app_transition_context_t){0}))

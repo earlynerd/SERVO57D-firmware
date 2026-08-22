@@ -8,6 +8,7 @@ set(MOTION_CANDIDATE_SOURCES
     src/control/motion_profile.c
     src/control/pi_controller.c
     src/control/servo_core.c
+    src/control/velocity_controller.c
 )
 
 # Cross-compile only the motion modules that are not yet linked into the product
@@ -46,7 +47,9 @@ set(PROJECT_SOURCES
     src/control/motor_alignment.c
     src/control/phase_current_loop.c
     src/control/phase_current_reference.c
+    src/control/pi_controller.c
     src/control/rotating_current_test.c
+    src/control/velocity_controller.c
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c
     src/drivers/adc_sample.c

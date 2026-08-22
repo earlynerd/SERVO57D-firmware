@@ -301,3 +301,12 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** encoder-timer-dma-startup-order
 - **Recently-touched?** yes
 - **Status:** Resolved and bench-proven. Idle operation reported zero errors across more than 54,000 samples at 1000-1001 us intervals. A 606 mA aligned-torque run then completed 100,000 current-loop samples over five seconds with zero encoder, DMA, estimator, backend, control, reset, or panic faults and returned every duty/reference to zero at deadline.
+
+## 2026-08-21 — Velocity capture flooded the terminal with repeated snapshots
+
+- **Observation:** The first flashed 0.25.0 velocity test produced an unwieldy amount of JSON in the terminal during a two-second command.
+- **Root cause:** Pre-fix `tools/mks57d_rs485.py:1362-1365` queried velocity, drive, and encoder status every capture interval, attached the complete nested objects—including unchanged policy—and printed the whole result as a new line every 20 ms.
+- **Fix:** Store static context once in `metadata.json`, stream selected dynamic fields incrementally to `telemetry.csv`, overwrite a compact live line at about 5 Hz, and make full nested JSONL capture opt-in.
+- **Class:** telemetry-output-amplification
+- **Recently-touched?** yes — the initial velocity CLI was added in the same development session.
+- **Time to fix:** approximately 25 minutes.

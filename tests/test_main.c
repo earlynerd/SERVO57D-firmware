@@ -39,6 +39,7 @@
 #include "mks57d/ssd1306.h"
 #include "mks57d/step_direction.h"
 #include "mks57d/user_inputs.h"
+#include "mks57d/velocity_controller.h"
 #include "mks57d/watchdog_policy.h"
 
 static unsigned int s_failures;
@@ -97,6 +98,7 @@ typedef struct
     command_alignment_status_t alignment_status;
     command_configuration_status_t configuration_status;
     command_aligned_torque_status_t aligned_torque_status;
+    command_velocity_status_t velocity_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -115,10 +117,15 @@ typedef struct
     size_t calibration_clear_calls;
     size_t aligned_torque_start_calls;
     size_t aligned_torque_status_calls;
+    size_t velocity_start_calls;
+    size_t velocity_status_calls;
     uint16_t requested_trace_index;
     uint16_t requested_alignment_current_counts;
     int16_t requested_q_current_counts;
     uint32_t requested_torque_duration_millis;
+    int32_t requested_velocity_revolutions_per_second_q16_16;
+    uint16_t requested_velocity_current_limit_counts;
+    uint32_t requested_velocity_duration_millis;
 } mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
@@ -144,6 +151,27 @@ static servo_core_config_t test_servo_config(void)
         .position_gain_per_second = 8.0f,
         .maximum_following_error_revolutions = 0.5f,
         .maximum_current_amperes = 2.0f,
+    };
+
+    return config;
+}
+
+static velocity_controller_config_t test_velocity_controller_config(void)
+{
+    const velocity_controller_config_t config = {
+        .current_controller = {
+            .proportional_gain = 100.0f,
+            .integral_gain_per_second = 200.0f,
+            .output_limit = 100.0f,
+            .integrator_limit = 100.0f,
+        },
+        .maximum_target_velocity_revolutions_per_second = 1.0f,
+        .maximum_target_acceleration_revolutions_per_second_squared = 1.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_current_counts = 100u,
+        .maximum_feedback_interval_us = 2000u,
+        .minimum_duration_millis = 3u,
+        .maximum_duration_millis = INT32_MAX,
     };
 
     return config;
@@ -567,6 +595,33 @@ static command_status_t mock_aligned_torque_get_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_velocity_start(
+    void* context,
+    int32_t velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->velocity_start_calls;
+    mock->requested_velocity_revolutions_per_second_q16_16 =
+        velocity_revolutions_per_second_q16_16;
+    mock->requested_velocity_current_limit_counts = current_limit_counts;
+    mock->requested_velocity_duration_millis = duration_millis;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_velocity_get_status(
+    void* context,
+    command_velocity_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->velocity_status_calls;
+    *status = mock->velocity_status;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -625,6 +680,11 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .context = commissioning,
             .start = mock_aligned_torque_start,
             .get_status = mock_aligned_torque_get_status,
+        },
+        .velocity = {
+            .context = commissioning,
+            .start = mock_velocity_start,
+            .get_status = mock_velocity_get_status,
         },
     };
 
@@ -913,6 +973,8 @@ static void test_diagnostics_record_abi(void)
                  DIAGNOSTICS_CAPABILITY_PRODUCT_IMAGE) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_ALIGNMENT) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_VELOCITY_CONTROL) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -1967,6 +2029,34 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .maximum_duration_millis = INT32_MAX,
             .backend_fault_flags = 0xA1B2C3D4u,
         },
+        .velocity_status = {
+            .schema_version = 1u,
+            .state = 2u,
+            .result = 0u,
+            .flags = 0x7Fu,
+            .fault_flags = 0x01020304u,
+            .target_velocity_revolutions_per_second_q16_16 = 0x00008000,
+            .reference_velocity_revolutions_per_second_q16_16 = 0x00004000,
+            .measured_velocity_revolutions_per_second_q16_16 = -0x00002000,
+            .requested_q_current_counts = -25,
+            .applied_q_current_counts = -24,
+            .current_limit_counts = 100u,
+            .elapsed_millis = 0x01020304u,
+            .remaining_millis = 0x05060708u,
+            .maximum_target_velocity_revolutions_per_second_q16_16 =
+                1 * 65536,
+            .maximum_target_acceleration_revolutions_per_second2_q16_16 =
+                1 * 65536,
+            .maximum_feedback_velocity_revolutions_per_second_q16_16 =
+                5 * 65536,
+            .maximum_current_counts = 100u,
+            .maximum_feedback_interval_us = 2000u,
+            .proportional_gain_current_counts_per_velocity_q16_16 =
+                100 * 65536,
+            .integral_gain_current_counts_per_position_q16_16 =
+                200 * 65536,
+            .maximum_duration_millis = INT32_MAX,
+        },
     };
     native_protocol_frame_t response;
     size_t wire_length;
@@ -2431,6 +2521,84 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[58] == 0xFFu);
     EXPECT_TRUE(response.payload[59] == 0xA1u);
     EXPECT_TRUE(response.payload[62] == 0xD4u);
+
+    {
+        static const uint8_t velocity_payload[] = {
+            0xFFu, 0xFFu, 0x80u, 0x00u,
+            0x00u, 0x64u,
+            0x00u, 0x00u, 0x13u, 0x88u};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            35u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_START_VELOCITY,
+            velocity_payload,
+            sizeof(velocity_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.velocity_start_calls == 1u);
+        EXPECT_TRUE(
+            commissioning.
+                requested_velocity_revolutions_per_second_q16_16 ==
+            -32768);
+        EXPECT_TRUE(
+            commissioning.requested_velocity_current_limit_counts == 100u);
+        EXPECT_TRUE(
+            commissioning.requested_velocity_duration_millis == 5000u);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        36u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_VELOCITY_STATUS,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.velocity_status_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 63u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == 2u);
+    EXPECT_TRUE(response.payload[4] == 0x7Fu);
+    EXPECT_TRUE(response.payload[5] == 0x01u);
+    EXPECT_TRUE(response.payload[8] == 0x04u);
+    EXPECT_TRUE(response.payload[9] == 0u);
+    EXPECT_TRUE(response.payload[10] == 0u);
+    EXPECT_TRUE(response.payload[11] == 0x80u);
+    EXPECT_TRUE(response.payload[12] == 0u);
+    EXPECT_TRUE(response.payload[17] == 0xFFu);
+    EXPECT_TRUE(response.payload[20] == 0u);
+    EXPECT_TRUE(response.payload[21] == 0xFFu);
+    EXPECT_TRUE(response.payload[22] == 0xE7u);
+    EXPECT_TRUE(response.payload[25] == 0u);
+    EXPECT_TRUE(response.payload[26] == 100u);
+    EXPECT_TRUE(response.payload[27] == 0x01u);
+    EXPECT_TRUE(response.payload[34] == 0x08u);
+    EXPECT_TRUE(response.payload[36] == 0x01u);
+    EXPECT_TRUE(response.payload[44] == 0x05u);
+    EXPECT_TRUE(response.payload[47] == 0u);
+    EXPECT_TRUE(response.payload[48] == 100u);
+    EXPECT_TRUE(response.payload[49] == 0x07u);
+    EXPECT_TRUE(response.payload[50] == 0xD0u);
+    EXPECT_TRUE(response.payload[52] == 0x64u);
+    EXPECT_TRUE(response.payload[56] == 0xC8u);
+    EXPECT_TRUE(response.payload[59] == 0x7Fu);
+    EXPECT_TRUE(response.payload[62] == 0xFFu);
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
@@ -3393,6 +3561,205 @@ static void test_servo_core_closes_position_loop_against_simple_plant(void)
     EXPECT_TRUE(maximum_current <= config.maximum_current_amperes);
     EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
     EXPECT_TRUE(fabsf(plant_velocity) < 0.05f);
+}
+
+static void test_velocity_controller_tracks_bounded_simple_plant(void)
+{
+    const velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    float plant_position = 0.0f;
+    float plant_velocity = 0.0f;
+    int16_t requested_current = 0;
+    uint32_t step;
+
+    EXPECT_TRUE(velocity_controller_config_is_valid(&config));
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, 1 << 14, 50u, 5000u, 0u, &observation));
+
+    for (step = 1u; step <= 3000u; ++step)
+    {
+        float acceleration;
+
+        observation.position_revolutions = plant_position;
+        observation.velocity_revolutions_per_second = plant_velocity;
+        observation.timestamp_us = step * 1000u;
+        EXPECT_TRUE(velocity_controller_update(
+            &controller,
+            step,
+            &observation,
+            &requested_current) ==
+            VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+        EXPECT_TRUE((requested_current >= -50) &&
+                    (requested_current <= 50));
+        acceleration = (0.08f * (float)requested_current) -
+                       (1.5f * plant_velocity);
+        plant_velocity += acceleration * 0.001f;
+        plant_position += plant_velocity * 0.001f;
+    }
+
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.state == VELOCITY_CONTROL_STATE_TRACKING);
+    EXPECT_TRUE(status.current_limit_counts == 50u);
+    EXPECT_TRUE(fabsf(plant_velocity - 0.25f) < 0.02f);
+    EXPECT_TRUE(velocity_controller_stop(&controller, 3001u));
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == VELOCITY_CONTROL_RESULT_STOPPED);
+    EXPECT_TRUE(status.requested_q_current_counts == 0);
+}
+
+static void test_velocity_controller_rejects_bounds_and_faults_feedback(void)
+{
+    velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 1000u,
+        .valid = true,
+    };
+    int16_t requested_current = 123;
+
+    config.maximum_duration_millis = UINT32_C(0x80000000);
+    EXPECT_TRUE(!velocity_controller_config_is_valid(&config));
+    config = test_velocity_controller_config();
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, 0, 25u, 100u, 0u, &observation));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, (1 << 16) + 1, 25u, 100u, 0u, &observation));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, 1 << 15, 101u, 100u, 0u, &observation));
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, 1 << 15, 25u, 100u, 0u, &observation));
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 1u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_FAILED);
+    EXPECT_TRUE(requested_current == 0);
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == VELOCITY_CONTROL_RESULT_FEEDBACK_TIMING);
+    EXPECT_TRUE((status.fault_flags &
+                 VELOCITY_CONTROL_FAULT_FEEDBACK_TIMING) != 0u);
+
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, -(1 << 15), 25u, 100u, 10u, &observation));
+    observation.timestamp_us = 2000u;
+    observation.velocity_revolutions_per_second = 5.01f;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 11u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_FAILED);
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == VELOCITY_CONTROL_RESULT_OVERSPEED);
+}
+
+static void test_velocity_controller_deadline_clears_current(void)
+{
+    const velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int16_t requested_current = 0;
+
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, 1 << 14, 25u, 3u, 100u, &observation));
+    observation.timestamp_us = 1000u;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 101u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    observation.timestamp_us = 2000u;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 102u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    observation.timestamp_us = 3000u;
+    requested_current = 123;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 103u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_COMPLETED);
+    EXPECT_TRUE(requested_current == 0);
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == VELOCITY_CONTROL_RESULT_DEADLINE);
+    EXPECT_TRUE(!velocity_controller_is_active(&controller));
+}
+
+static void test_velocity_controller_limits_current_and_recovers(void)
+{
+    const velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 1000u,
+        .valid = true,
+    };
+    int16_t requested_current = 0;
+    uint32_t step;
+
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, 1 << 16, 10u, 1000u, 0u, &observation));
+    for (step = 1u; step <= 100u; ++step)
+    {
+        observation.timestamp_us = 1000u + step * 1000u;
+        EXPECT_TRUE(velocity_controller_update(
+            &controller,
+            step,
+            &observation,
+            &requested_current) ==
+            VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+        EXPECT_TRUE(requested_current <= 10);
+    }
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.requested_q_current_counts == 10);
+    EXPECT_TRUE(status.reference_velocity_revolutions_per_second_q16_16 >=
+                6553);
+    EXPECT_TRUE(status.reference_velocity_revolutions_per_second_q16_16 <=
+                6554);
+
+    observation.velocity_revolutions_per_second =
+        controller.reference_velocity_revolutions_per_second;
+    observation.timestamp_us += 1000u;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller,
+        101u,
+        &observation,
+        &requested_current) == VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    EXPECT_TRUE((requested_current >= -1) && (requested_current <= 1));
+    EXPECT_TRUE(velocity_controller_stop(&controller, 102u));
+
+    observation.velocity_revolutions_per_second = 0.0f;
+    observation.timestamp_us += 1000u;
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, -(1 << 15), 10u, 1000u, 200u, &observation));
+    for (step = 1u; step <= 10u; ++step)
+    {
+        observation.timestamp_us += 1000u;
+        EXPECT_TRUE(velocity_controller_update(
+            &controller,
+            200u + step,
+            &observation,
+            &requested_current) == VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    }
+    EXPECT_TRUE(requested_current < 0);
+    EXPECT_TRUE(requested_current >= -10);
 }
 
 static current_controller_config_t test_current_controller_config(void)
@@ -4796,6 +5163,34 @@ static void test_aligned_torque_accepts_motor_rated_evaluation_envelope(void)
         &controller, 495, 5000u, 3u, 3000u, (5 << 16) + 1));
 }
 
+static void test_aligned_torque_tracking_target_reuses_bounded_actuator(void)
+{
+    const aligned_torque_config_t config = test_aligned_torque_config();
+    aligned_torque_controller_t controller;
+    aligned_torque_status_t status;
+
+    EXPECT_TRUE(aligned_torque_controller_init(&controller, &config));
+    EXPECT_TRUE(aligned_torque_controller_start_tracking(
+        &controller, 200u, 0u, 1000u, 0));
+    EXPECT_TRUE(aligned_torque_controller_set_target(&controller, 50));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 1u, 2000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.requested_q_current_counts == 50);
+    EXPECT_TRUE(status.applied_q_current_counts == 1);
+    EXPECT_TRUE(aligned_torque_controller_set_target(&controller, -50));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 2u, 3000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.requested_q_current_counts == -50);
+    EXPECT_TRUE(status.applied_q_current_counts == 0);
+    EXPECT_TRUE(!aligned_torque_controller_set_target(&controller, 249));
+    EXPECT_TRUE(aligned_torque_controller_stop(&controller, 3u));
+    EXPECT_TRUE(!aligned_torque_controller_set_target(&controller, 1));
+}
+
 int main(void)
 {
     test_reset_only_enters_diagnostic_after_passive_init();
@@ -4866,6 +5261,10 @@ int main(void)
     test_servo_core_rejects_invalid_rotor_observations();
     test_servo_core_latches_following_error();
     test_servo_core_closes_position_loop_against_simple_plant();
+    test_velocity_controller_tracks_bounded_simple_plant();
+    test_velocity_controller_rejects_bounds_and_faults_feedback();
+    test_velocity_controller_deadline_clears_current();
+    test_velocity_controller_limits_current_and_recovers();
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();
@@ -4879,6 +5278,7 @@ int main(void)
     test_aligned_torque_rejects_unsafe_feedback_and_backend();
     test_aligned_torque_requires_feedback_after_seed_sample();
     test_aligned_torque_accepts_motor_rated_evaluation_envelope();
+    test_aligned_torque_tracking_target_reuses_bounded_actuator();
     test_motion_manager_enforces_authority_and_idempotency();
     test_motion_manager_lease_expiry_stops_then_disables();
     test_motion_manager_keepalive_is_explicit_and_retries_stay_safe();

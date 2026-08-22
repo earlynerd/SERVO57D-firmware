@@ -1,21 +1,23 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.24.13 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.25.0 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
 motion operation. The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
-configuration power-cycle gates remain accepted. Firmware 0.24.14 is flashed
-for its hardware regression: it removes the completed local
+configuration power-cycle gates remain accepted. Firmware 0.24.14 removed the completed local
 Next/Enter phase-selector and direct fixed-duty PWM bring-up path while retaining
 the RS-485 rotating-current diagnostic through the supervisor/current backend.
 Firmware 0.24.15 establishes a single product-owned rotor estimator and an
-immutable position/velocity observation boundary for the separately compiled,
-not-yet-linked motion candidate. Menu and induced readiness-loss shutdown remain
-hardware regression items.
+immutable position/velocity observation boundary. Firmware 0.25.0 closes the
+first bounded signed velocity loop on that observation and commands only the
+existing aligned-q-current actuator. The general position/step-direction motion
+candidate remains separately compiled and unlinked. Firmware 0.24.15 is flashed
+and passed its ordinary smoke check; 0.25.0 awaits its velocity gate. Menu and induced readiness-
+loss shutdown remain hardware regression items.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
@@ -37,7 +39,7 @@ expanded-current hardware gates remain pending.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
 - PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a 1 kHz foreground schedule, including while the motor runs. Accepted samples receive microsecond timestamps and feed the shared unwrap/velocity estimator. Native protocol 1.7 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, and aligned-torque state/policy. The foreground rate is a hardware-validation candidate; a future timer-released SPI/DMA path remains available if measured jitter requires it.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. Native protocol 1.8 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy, and velocity state/policy.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
@@ -90,6 +92,11 @@ expanded-current hardware gates remain pending.
   degrees into A/B references. Current, slew, velocity, acceleration, feedback
   age, duration, STOP, backend, and reference limits are independently enforced
   and reported; violations converge on the existing fault/`ZERO` path.
+- Velocity enters that same `RUN` authority from `READY`, initializes at the
+  measured speed and zero q-current, slews a signed reference, and applies PI
+  anti-windup at the caller's explicit current limit. The initial ±1 rev/s,
+  1 rev/s², and 100-count envelope is a bench candidate. It adds no alternate
+  estimator, actuator, current loop, PWM, or bridge path.
 
 ## Layout
 
@@ -111,7 +118,6 @@ the [command protocol](../docs/PROTOCOL.md),
 the [ADC contract](../docs/ADC.md), the
 [watchdog policy](../docs/WATCHDOG.md), the [boot self-test](../docs/BOOT_SELF_TEST.md),
 and the [debugger diagnostic record](../docs/DIAGNOSTICS.md). The next control
-integration step after the aligned-torque hardware gate is the existing motion
-candidate's velocity layer, fed only by the product rotor observation, followed
-by position control; Menu and readiness-loss fault injection remain parallel
+gate is signed low-speed velocity validation and tuning, followed by bounded
+position control; Menu and readiness-loss fault injection remain parallel
 hardware checks.

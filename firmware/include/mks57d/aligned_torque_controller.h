@@ -98,6 +98,15 @@ bool aligned_torque_controller_start(
     uint32_t now_millis,
     uint32_t encoder_timestamp_us,
     int32_t velocity_revolutions_per_second_q16_16);
+bool aligned_torque_controller_start_tracking(
+    aligned_torque_controller_t* controller,
+    uint32_t duration_millis,
+    uint32_t now_millis,
+    uint32_t encoder_timestamp_us,
+    int32_t velocity_revolutions_per_second_q16_16);
+bool aligned_torque_controller_set_target(
+    aligned_torque_controller_t* controller,
+    int16_t requested_q_current_counts);
 aligned_torque_event_t aligned_torque_controller_update(
     aligned_torque_controller_t* controller,
     uint32_t now_millis,
