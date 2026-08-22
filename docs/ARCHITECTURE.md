@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.25.1 implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.26.1 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -14,8 +14,9 @@ operation as a supervisor-authorized RS-485 production diagnostic. Firmware
 unwrapping; slower control receives only an immutable rotor observation.
 Firmware 0.25.1 closes the first bounded velocity loop on that observation and
 routes its mechanical effort through the persisted alignment direction into
-the aligned-q-current actuator. Position control
-remains the next product layer.
+the aligned-q-current actuator. Firmware 0.26.0 adds the focused relative-
+position layer and is bench-proven for mirrored settling and generic STOP.
+Firmware 0.26.1 adds an independent 3 ms foreground encoder-production guard.
 
 ## Design priorities
 
@@ -63,8 +64,8 @@ The current image implements:
 - A host-tested transport-independent command service and native v1 COBS/CRC
   adapter serving discovery, boot and encoder telemetry, and supervisor-gated
   current diagnostics, automatic alignment, bounded aligned q-current, and
-  bounded signed velocity from foreground, including status and generic STOP
-  while active.
+  bounded signed velocity and relative position from foreground, including
+  status and generic STOP while active.
 - A project-owned persistent-configuration service using the final two 2 KiB
   Flash pages as alternating records. Schema, length, generation, CRC-32,
   semantic validation, and a commit-last marker protect boot loading; a newer
@@ -99,6 +100,14 @@ The current image implements:
   anti-windup at a per-command current ceiling, and dynamically commands the
   aligned-q-current actuator. Invalid/timed-out feedback, overspeed, numeric
   failure, or actuator failure enters the common fault/ZERO path.
+- A focused relative-position controller that begins near rest, advances a
+  bounded trapezoidal reference, retains independent travel, acceleration,
+  following-error, settling, feedback-age, current, and deadline contracts,
+  and drives only dynamic targets into the product velocity controller.
+- An encoder-production liveness monitor independent of the callback-driven
+  controller updates. If accepted sample evidence does not advance within 3
+  ms, idle readiness is removed; any energized diagnostic or motion authority
+  is forced through the shared fault/`ZERO` path.
 - Portable angle unwrapping and plausibility checks, bounded trajectory
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
@@ -118,10 +127,11 @@ envelope expands.
 
 The product-owned portable modules live under `firmware/src/control/`,
 `firmware/src/app/`, and `firmware/src/services/` and are linked into `mks57d`.
-The general outer application, position trajectory/servo, step-direction, and
-d/q voltage-control modules form a separate `mks57d_motion_candidate` compile
+The general outer application/servo shell, step-direction path, and d/q
+voltage-control modules form a separate `mks57d_motion_candidate` compile
 target and are not linked into the product image. The focused product velocity
-controller and its PI dependency are linked. Both paths are compiled for the
+and relative-position controllers, their trajectory/PI dependencies, and the
+encoder-liveness guard are linked. Both paths are compiled for the
 exact Arm target, and the candidate is also covered by host tests. Their contracts use
 revolutions, seconds, amperes, volts, and radians explicitly.
 
@@ -137,7 +147,9 @@ core accepts stationary measured current plus d/q references and emits a
 bounded stationary voltage vector. Firmware 0.23 deliberately does not connect
 that unqualified voltage output to PWM: q-current is transformed into A/B
 current references and regulated by the proven board-specific backend. The
-0.25 velocity loop drives this torque interface; position remains disconnected.
+0.25 velocity loop drives this torque interface; the focused 0.26 position
+controller drives the velocity loop, while the broader candidate shell remains
+disconnected.
 
 `main.c` uses `product_command_context_t` as the foreground composition
 aggregate for diagnostics, alignment, torque, configuration, and telemetry.
@@ -145,8 +157,9 @@ It contains pointers and bounded request mailboxes, but owns no estimator,
 bridge state, or control loop. Velocity uses a dedicated
 `velocity_command_context_t` and command-service domain; it shares only the
 product readiness/exclusivity gates and hands a bounded request mailbox to the
-rotor runtime. This keeps outer-loop state out of the legacy aggregate without
-creating another bridge authority.
+rotor runtime. Relative position uses the same pattern through a dedicated
+`position_command_context_t`. This keeps outer-loop state out of the legacy
+aggregate without creating another bridge authority.
 
 The clock, memory, watchdog, boot-self-test, encoder, and debug-observability
 contracts are described in [Clock bring-up](CLOCKS.md), [Memory map](MEMORY.md),

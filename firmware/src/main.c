@@ -19,6 +19,7 @@
 #include "mks57d/configuration_store.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
+#include "mks57d/encoder_liveness.h"
 #include "mks57d/i2c1.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
@@ -150,6 +151,7 @@ struct product_command_context
     adc_calibration_t* adc_calibration;
     diagnostics_encoder_t* encoder_diagnostics;
     angle_tracker_t* angle_tracker;
+    bool* encoder_feedback_live;
     uint32_t* estimator_fault_flags;
     uint32_t* estimator_sample_interval_us;
     uint32_t* estimator_maximum_sample_interval_us;
@@ -185,6 +187,7 @@ struct product_command_context
 static bool encoder_control_ready(
     const diagnostics_encoder_t* encoder_diagnostics,
     const angle_tracker_t* angle_tracker,
+    bool encoder_feedback_live,
     uint32_t estimator_fault_flags)
 {
     return (encoder_diagnostics != NULL) &&
@@ -193,7 +196,7 @@ static bool encoder_control_ready(
            (encoder_diagnostics->transport_status ==
             (uint32_t)SPI_STATUS_OK) &&
            (encoder_diagnostics->flags == 0u) &&
-           (encoder_diagnostics->sample_count != 0u) &&
+           encoder_feedback_live &&
            angle_tracker->initialized &&
            (estimator_fault_flags == 0u);
 }
@@ -691,6 +694,7 @@ static command_status_t aligned_torque_start(
         (commissioning->bridge_ready == NULL) ||
         (commissioning->encoder_diagnostics == NULL) ||
         (commissioning->angle_tracker == NULL) ||
+        (commissioning->encoder_feedback_live == NULL) ||
         (commissioning->estimator_fault_flags == NULL) ||
         (commissioning->raw_input_levels == NULL))
     {
@@ -721,6 +725,7 @@ static command_status_t aligned_torque_start(
         !encoder_control_ready(
             commissioning->encoder_diagnostics,
             commissioning->angle_tracker,
+            *commissioning->encoder_feedback_live,
             *commissioning->estimator_fault_flags) ||
         app_supervisor_bridge_authorized(commissioning->supervisor) ||
         commissioning->remote_start_requested ||
@@ -864,6 +869,7 @@ static command_status_t velocity_start(
         velocity_revolutions_per_second_q16_16;
 
     if ((velocity == NULL) || (velocity->product == NULL) ||
+        (velocity->product->encoder_feedback_live == NULL) ||
         (velocity->supervisor == NULL) ||
         (velocity->bridge_ready == NULL) ||
         (velocity->encoder_diagnostics == NULL) ||
@@ -907,6 +913,7 @@ static command_status_t velocity_start(
         !encoder_control_ready(
             velocity->encoder_diagnostics,
             velocity->angle_tracker,
+            *product->encoder_feedback_live,
             *velocity->estimator_fault_flags) ||
         app_supervisor_bridge_authorized(velocity->supervisor) ||
         product->remote_start_requested ||
@@ -1068,6 +1075,7 @@ static command_status_t position_start_relative(
     int64_t displacement_magnitude = displacement_revolutions_q16_16;
 
     if ((position == NULL) || (position->product == NULL) ||
+        (position->product->encoder_feedback_live == NULL) ||
         (position->supervisor == NULL) ||
         (position->bridge_ready == NULL) ||
         (position->encoder_diagnostics == NULL) ||
@@ -1120,6 +1128,7 @@ static command_status_t position_start_relative(
         !encoder_control_ready(
             position->encoder_diagnostics,
             position->angle_tracker,
+            *product->encoder_feedback_live,
             *position->estimator_fault_flags) ||
         (fabsf(position->angle_tracker->velocity_revolutions_per_second) >
          position->position_controller->config.
@@ -1508,6 +1517,7 @@ static command_status_t commissioning_get_encoder_status(
     if ((commissioning == NULL) || (status == NULL) ||
         (commissioning->encoder_diagnostics == NULL) ||
         (commissioning->angle_tracker == NULL) ||
+        (commissioning->encoder_feedback_live == NULL) ||
         (commissioning->estimator_fault_flags == NULL) ||
         (commissioning->estimator_sample_interval_us == NULL) ||
         (commissioning->estimator_maximum_sample_interval_us == NULL) ||
@@ -1536,7 +1546,10 @@ static command_status_t commissioning_get_encoder_status(
     if (angle_tracker->initialized &&
         (status->estimator_fault_flags == 0u))
     {
-        status->estimator_flags |= COMMAND_ENCODER_ESTIMATOR_READY;
+        if (*commissioning->encoder_feedback_live)
+        {
+            status->estimator_flags |= COMMAND_ENCODER_ESTIMATOR_READY;
+        }
         status->position_revolutions_q16_16 =
             float_to_q16_16(angle_tracker->position_revolutions);
         status->velocity_revolutions_per_second_q16_16 =
@@ -1764,6 +1777,13 @@ int main(void)
         ENCODER_READ_BURST_BYTES = 4u,
         ENCODER_READ_ANGLE_COMMAND = 0x83u,
         ENCODER_MAXIMUM_SAMPLE_INTERVAL_US = 20000u,
+        /*
+         * Independent foreground evidence that accepted encoder production is
+         * still advancing. The active controllers reject feedback older than
+         * 2 ms; one additional 1 ms acquisition/snapshot period lets the
+         * foreground observe that deadline without weakening it.
+         */
+        ENCODER_PROGRESS_TIMEOUT_US = 3000u,
         ENCODER_COUNTS_PER_REVOLUTION = 16384u,
         MOTOR_ELECTRICAL_CYCLES_PER_REVOLUTION = 50u,
         /*
@@ -1867,8 +1887,21 @@ int main(void)
     _Static_assert(POSITION_MAXIMUM_VELOCITY_Q16_16 <=
                        VELOCITY_MAXIMUM_TARGET_Q16_16,
                    "position velocity exceeds the velocity contract");
+    _Static_assert(ENCODER_PROGRESS_TIMEOUT_US >
+                       ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
+                   "encoder progress guard must allow snapshot observation");
+    _Static_assert(ENCODER_PROGRESS_TIMEOUT_US >
+                       VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US,
+                   "encoder progress guard must allow velocity feedback");
+    _Static_assert(ENCODER_PROGRESS_TIMEOUT_US >
+                       POSITION_MAXIMUM_FEEDBACK_INTERVAL_US,
+                   "encoder progress guard must allow position feedback");
+    _Static_assert(ENCODER_PROGRESS_TIMEOUT_US <=
+                       ENCODER_MAXIMUM_SAMPLE_INTERVAL_US,
+                   "encoder progress guard exceeds estimator input contract");
     app_supervisor_t drive_supervisor;
     angle_tracker_t angle_tracker;
+    encoder_liveness_monitor_t encoder_liveness;
     const angle_tracker_config_t angle_tracker_config = {
         .counts_per_revolution = ENCODER_COUNTS_PER_REVOLUTION,
         .maximum_sample_interval_us =
@@ -2001,6 +2034,7 @@ int main(void)
     adc1_status_t adc_status = ADC1_STATUS_NOT_READY;
     bool bridge_ready = false;
     bool encoder_spi_ready = false;
+    bool encoder_feedback_live = false;
     uint32_t estimator_fault_flags = 0u;
     uint32_t estimator_sample_interval_us = 0u;
     uint32_t estimator_maximum_sample_interval_us = 0u;
@@ -2060,6 +2094,7 @@ int main(void)
         .adc_calibration = &adc_calibration,
         .encoder_diagnostics = &encoder_diagnostics,
         .angle_tracker = &angle_tracker,
+        .encoder_feedback_live = &encoder_feedback_live,
         .estimator_fault_flags = &estimator_fault_flags,
         .estimator_sample_interval_us =
             &estimator_sample_interval_us,
@@ -2143,6 +2178,8 @@ int main(void)
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
     if (!angle_tracker_init(&angle_tracker, &angle_tracker_config) ||
+        !encoder_liveness_monitor_init(
+            &encoder_liveness, ENCODER_PROGRESS_TIMEOUT_US) ||
         !motor_alignment_init(
             &motor_alignment, &motor_alignment_config) ||
         !alignment_controller_init(
@@ -2454,6 +2491,22 @@ int main(void)
             }
         }
 
+        {
+            const bool encoder_feedback_was_live = encoder_feedback_live;
+            const uint32_t encoder_liveness_now_us = timebase_micros();
+
+            encoder_feedback_live = encoder_liveness_monitor_update(
+                &encoder_liveness,
+                angle_tracker.initialized,
+                encoder_diagnostics.sample_count,
+                angle_tracker.last_timestamp_us,
+                encoder_liveness_now_us);
+            if (encoder_feedback_live != encoder_feedback_was_live)
+            {
+                diagnostics_due = true;
+            }
+        }
+
         if ((rotor_events & ROTOR_CONTROL_EVENT_FAULT) != 0u)
         {
             commissioning_context.remote_authority_active = false;
@@ -2600,6 +2653,7 @@ int main(void)
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
+                        encoder_feedback_live,
                         estimator_fault_flags),
             };
             commissioning_context.alignment_start_requested = false;
@@ -2644,6 +2698,7 @@ int main(void)
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
+                        encoder_feedback_live,
                         estimator_fault_flags),
             };
 
@@ -2675,6 +2730,7 @@ int main(void)
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
+                        encoder_feedback_live,
                         estimator_fault_flags),
             };
 
@@ -2708,6 +2764,7 @@ int main(void)
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
+                        encoder_feedback_live,
                         estimator_fault_flags),
             };
 
@@ -2787,6 +2844,7 @@ int main(void)
                     encoder_control_ready(
                         &encoder_diagnostics,
                         &angle_tracker,
+                        encoder_feedback_live,
                         estimator_fault_flags),
             };
 
@@ -3088,6 +3146,7 @@ int main(void)
                 encoder_control_ready(
                     &encoder_diagnostics,
                     &angle_tracker,
+                    encoder_feedback_live,
                     estimator_fault_flags);
 
             if ((drive_supervisor.state == APP_STATE_DIAGNOSTIC) &&

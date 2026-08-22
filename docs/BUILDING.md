@@ -144,12 +144,11 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.25.1 / protocol 1.8 remains the current flashed product build. It corrects
-the controller-to-actuator polarity omission exposed by the first 0.25.0 run
-and provides the first bounded velocity product service on the single-estimator
-rotor-observation boundary. Firmware 0.26.0 / protocol 1.9 is the current
-host/build-validated candidate; it adds relative-position control through that
-same runtime and expands commandable velocity to 4 rev/s. It:
+Firmware 0.26.0 / protocol 1.9 is the current flashed product build. It retains
+the qualified velocity service, adds relative-position control through the same
+single-estimator runtime, and expands commandable velocity to 4 rev/s. Firmware
+0.26.1 / protocol 1.9 is the current source/build candidate; it adds an
+independent 3 ms encoder-production guard without changing the wire layout. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -160,7 +159,7 @@ same runtime and expands commandable velocity to 4 rev/s. It:
 7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
-10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime.
+10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
 12. Parses native v1.9 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
@@ -191,7 +190,7 @@ same runtime and expands commandable velocity to 4 rev/s. It:
     policy, and changes only the target of the existing velocity/current
     actuator. Travel, trajectory speed/acceleration, current, feedback age,
     duration, STOP, Right-button, and fault limits remain separate.
-22. Publishes firmware `0.26.0`, authoritative drive state, reset cause,
+22. Publishes firmware `0.26.1`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -223,6 +222,14 @@ on this assembly; common fault/ZERO behavior remains host/native tested.
 Firmware 0.26.0 passes the native C suite, the Python host-tool suite, and clean
 Debug/Release Arm post-link builds. Debug uses 54,252 bytes of the 124 KiB
 application region and 7,404 bytes SRAM1; Release uses 48,568 bytes and the
-same SRAM1. Neither image allocates a configuration slot or SRAM2, and the
-240-byte debugger diagnostic ABI remains verified. Position and the expanded
-2-4 rev/s velocity envelope have not yet been flashed or bench-qualified.
+same SRAM1. It is flashed and passed mirrored ±0.25-revolution settling plus
+generic STOP with 1000 us captured encoder intervals and no faults. The
+expanded 2-4 rev/s velocity envelope remains unqualified.
+
+Firmware 0.26.1 passes the native C suite, all 10 applicable Python host-tool
+tests (two optional reference-cache tests skip), and clean Debug/Release Arm
+post-link builds. Debug uses 54,456 bytes of the 124 KiB application region and 7,404
+bytes SRAM1; Release uses 48,788 bytes and the same SRAM1. Neither image
+allocates a configuration slot or SRAM2, and the 240-byte debugger diagnostic
+ABI remains verified. The encoder-progress guard still needs ordinary flash
+identity/readiness and bounded-motion smoke checks.

@@ -11,6 +11,15 @@ envelopes, not product targets: expand useful voltage, current, speed, and motio
 while retaining independent bounds, explicit authority, deterministic timing,
 and immediate fault convergence.
 
+Makerbase's advertised 12-24 V, 0-5200 mA, three 20 kHz loop rates, 3000+ RPM,
+and 256-subdivision endpoints are active product requirements that directly
+set current engineering priorities. Their definitions and conditions still
+must be established, and they do not become safe operating limits without
+board-, motor-, supply-, thermal-, sensing-, and timing evidence. Current work
+must either advance these requirements or resolve a prerequisite that blocks
+them; unrelated feature expansion must not silently push them to the end of the
+plan.
+
 ## Phase 0 — Repository and evidence base
 
 Status: substantially complete.
@@ -198,6 +207,10 @@ Goal: close the mechanical loop incrementally.
   direction, and velocity during a bounded run; move acquisition to a
   timer-released SPI/DMA path if later outer-loop load makes the initially
   accepted foreground schedule unfit for purpose.
+- [x] Add an independent wrap-safe foreground encoder-production guard: more
+  than 3 ms without newly observed accepted progress removes idle readiness or
+  faults any energized diagnostic/motion authority through the common `ZERO`
+  path. Host-test stale latching, recovery, and counter/timer wrap.
 - [x] Connect signed, slew-limited, encoder-aligned q-current to the proven
   phase-current backend through product `RUN`/motion authority, with independent
   current, velocity, acceleration, feedback-age, duration, STOP, and fault
@@ -234,7 +247,15 @@ Goal: close the mechanical loop incrementally.
 - [ ] Stage the expanded velocity evaluation ceiling through ±2, ±3, and ±4
   rev/s, measuring current saturation, tracking, voltage effort, phase-refresh
   quality, supply behavior, heating, and clean release at every point.
-- [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
+- [ ] Define mechanical stall, partial encoder degradation, protection-grade
+  overcurrent, and runaway detection beyond the implemented total-production
+  encoder guard and existing raw-current/overspeed checks.
+- [ ] After the attached motor's 3 A gate, characterize the board-level 5.2 A
+  claim with an appropriate motor/load and thermal fixture; separately stage
+  24 V after bus-protection and switching evidence.
+- [ ] Extend estimator/phase prediction and outer-loop scheduling toward the
+  advertised 3000+ RPM and 20 kHz velocity/position claims, while keeping
+  current, speed, acceleration, following error, and timing limits independent.
 - [x] Establish a live inventory for the active motor-drive limits with units,
   classification, basis, enforcement owner, reporting, and next evidence.
 - [ ] Configure or replace the remaining evaluation acceleration, slew, and

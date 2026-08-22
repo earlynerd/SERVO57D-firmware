@@ -79,6 +79,7 @@ set(PROJECT_SOURCES
     src/platform/watchdog.c
     src/protocol/native_protocol.c
     src/safety/boot_self_test.c
+    src/safety/encoder_liveness.c
     src/safety/fault_latch.c
     src/safety/watchdog_policy.c
     src/services/configuration_store.c

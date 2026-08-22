@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.26.0 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.26.1 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
@@ -18,12 +18,14 @@ existing aligned-q-current actuator, mapping mechanical effort through the
 direction measured and persisted by alignment. Firmware 0.26.0 adds a focused
 relative-position trajectory through that exact controller/actuator stack and
 expands the velocity evaluation ceiling to 4 rev/s. The broader lease and
-step/direction motion candidate remains separately compiled and unlinked. Firmware 0.25.1 is
-flashed and has passed mirrored ±0.1 rev/s deadline/polarity checks with clean
-authority release. Explicit STOP, physical Right-button stop, and hand-loaded
-saturation/recovery also pass. Initial velocity qualification is accepted;
-physical readiness-loss injection is indefinitely deferred on the current
-assembly while the common fault/ZERO behavior remains host/native tested.
+step/direction motion candidate remains separately compiled and unlinked.
+Firmware 0.26.0 is flashed and has passed mirrored ±0.25-revolution settling
+and generic-STOP checks with clean authority release. The earlier velocity
+deadline/polarity, physical Right-button stop, and hand-loaded
+saturation/recovery evidence remains accepted. Firmware 0.26.1 adds a 3 ms
+foreground encoder-progress guard; it is host-tested and Arm-build validated,
+but not yet flashed. Physical readiness-loss injection remains deferred on the
+current assembly while the common fault/ZERO behavior remains automated.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
@@ -45,7 +47,7 @@ expanded-current hardware gates remain pending.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
 - PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. Native protocol 1.9 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy, velocity state/policy, and position state/policy.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.9 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy, velocity state/policy, and position state/policy; its existing estimator-ready flag is asserted only while this progress evidence is live.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
@@ -130,7 +132,6 @@ the [command protocol](../docs/PROTOCOL.md),
 the [ADC contract](../docs/ADC.md), the
 [watchdog policy](../docs/WATCHDOG.md), the [boot self-test](../docs/BOOT_SELF_TEST.md),
 and the [debugger diagnostic record](../docs/DIAGNOSTICS.md). The next control
-gate is bounded relative-position validation followed by staged 2-4 rev/s
-velocity evaluation. The alignment-specific Right-button stop remains a parallel
-hardware check; physical readiness-loss injection is indefinitely deferred on
-this assembly.
+gate is the position-specific physical Right-button and loaded following-error
+check, followed by staged 2-4 rev/s velocity evaluation. Physical
+readiness-loss injection remains indefinitely deferred on this assembly.

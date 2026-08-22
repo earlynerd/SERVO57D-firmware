@@ -21,6 +21,7 @@
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
+#include "mks57d/encoder_liveness.h"
 #include "mks57d/encoder_display.h"
 #include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
@@ -3043,6 +3044,54 @@ static void test_angle_tracker_rejects_implausible_motion_without_advancing(void
     EXPECT_TRUE(tracker.last_timestamp_us == 1000u);
 }
 
+static void test_encoder_liveness_requires_fresh_progress(void)
+{
+    encoder_liveness_monitor_t monitor;
+
+    EXPECT_TRUE(!encoder_liveness_monitor_init(NULL, 3000u));
+    EXPECT_TRUE(!encoder_liveness_monitor_init(&monitor, 0u));
+    EXPECT_TRUE(!encoder_liveness_monitor_init(
+        &monitor, (uint32_t)INT32_MAX + 1u));
+    EXPECT_TRUE(encoder_liveness_monitor_init(&monitor, 3000u));
+    EXPECT_TRUE(!encoder_liveness_monitor_is_live(&monitor));
+    EXPECT_TRUE(!encoder_liveness_monitor_update(
+        &monitor, false, 0u, 0u, 0u));
+
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor, true, 1u, 1000u, 1000u));
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor, true, 1u, 1000u, 4000u));
+    EXPECT_TRUE(!encoder_liveness_monitor_update(
+        &monitor, true, 1u, 1000u, 4001u));
+
+    /* A stale monitor cannot appear healthy after a full timer wrap. */
+    EXPECT_TRUE(!encoder_liveness_monitor_update(
+        &monitor, true, 1u, 1000u, 1000u));
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor, true, 2u, 1000u, 1000u));
+}
+
+static void test_encoder_liveness_handles_counter_and_timer_wrap(void)
+{
+    encoder_liveness_monitor_t monitor;
+    const uint32_t sample_timestamp = UINT32_MAX - 1000u;
+
+    EXPECT_TRUE(encoder_liveness_monitor_init(&monitor, 3000u));
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor,
+        true,
+        UINT32_MAX,
+        sample_timestamp,
+        sample_timestamp));
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor, true, UINT32_MAX, sample_timestamp, 1000u));
+    EXPECT_TRUE(!encoder_liveness_monitor_update(
+        &monitor, true, UINT32_MAX, sample_timestamp, 2000u));
+
+    EXPECT_TRUE(encoder_liveness_monitor_update(
+        &monitor, true, 0u, 2000u, 2000u));
+}
+
 static void test_motor_alignment_accepts_measured_stepper_geometry(void)
 {
     const motor_alignment_config_t config = {
@@ -5620,6 +5669,8 @@ int main(void)
     test_native_protocol_counts_transport_rejection();
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
+    test_encoder_liveness_requires_fresh_progress();
+    test_encoder_liveness_handles_counter_and_timer_wrap();
     test_motor_alignment_accepts_measured_stepper_geometry();
     test_configuration_store_persists_and_avoids_unchanged_writes();
     test_configuration_store_interrupted_update_keeps_old_slot();

@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.25.1 implements the fast current path, production alignment,
+Status: firmware 0.26.1 implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -11,8 +11,10 @@ all retained motor operations use the supervisor and current backend. Firmware
 immutable observation boundary used by slower loops. Firmware 0.25.1 runs the
 first bounded velocity PI once per accepted rotor observation and maps its
 mechanical effort through the persisted alignment direction before routing it
-through the existing aligned-q-current actuator. This document defines that
-boundary and the next position layer.
+through the existing aligned-q-current actuator. Firmware 0.26.0 adds focused
+relative position on the same 1 kHz accepted-sample release, and firmware
+0.26.1 adds an independent foreground encoder-production deadline. This
+document defines those boundaries and the route to faster outer loops.
 
 ## Goals
 
@@ -178,8 +180,8 @@ initial targets.
 | Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
 | Aligned q-current mapping | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited A/B references for the 20 kHz backend |
 | Velocity control | 1 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
-| Position control | Approximately 1 kHz | Not linked; future bounded scheduler release | Bounded velocity request |
-| Trajectory generation | 100 Hz–1 kHz | Foreground | Bounded position and velocity references |
+| Position control | 1 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
+| Trajectory generation | 1 kHz | Same accepted-sample position update | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
 | Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
 
@@ -191,8 +193,10 @@ operation held the latest/worst interval to 1000/1001 us with zero errors, and
 a 606 mA five-second aligned-torque run completed 100,000 current-loop updates
 with zero encoder, estimator, DMA, backend, or control faults. Firmware 0.25.1
 adds software-floating-point PI and reference-slew work to the same PendSV
-release; encoder interval and worst-case PendSV execution must be remeasured on
-hardware before increasing target speed or adding position compute.
+release. Firmware 0.26.0 adds the position/profile work and passed mirrored
+±0.25-revolution moves with captured 1000 us encoder intervals. Worst-case
+PendSV execution still must be instrumented before substantially increasing
+target speed or outer-loop rate.
 
 ## Processor and cycle budget
 
@@ -276,13 +280,13 @@ The intended common control domain is stationary `alpha/beta` current transforme
 
 The hardware-independent portion is implemented under `firmware/src/control/`
 and `firmware/src/app/`. Product modules are linked into `mks57d`; the general
-application/trajectory/position, step-direction, and d/q voltage modules are
-instead compiled as the explicitly non-product `mks57d_motion_candidate` target
-and in host tests. Firmware 0.25.1 integrates the authoritative drive
+application/servo shell, step-direction, and d/q voltage modules are instead
+compiled as the explicitly non-product `mks57d_motion_candidate` target and in
+host tests. Firmware 0.26.1 integrates the authoritative drive
 supervisor, mechanical angle tracker, measured stepper-alignment geometry,
-signed q-current actuator, and a focused bounded velocity controller; the
-general position shell remains excluded while the proven phase-current backend
-is active:
+signed q-current actuator, focused bounded velocity and relative-position
+controllers, and the independent encoder-liveness guard; the general motion
+shell remains excluded while the proven phase-current backend is active:
 
 - `rotor_control_runtime` alone unwraps raw encoder angle in both directions
   with timestamp, sample-age, maximum-velocity, and filter contracts, then
@@ -292,6 +296,9 @@ is active:
 - the product velocity controller consumes only that observation, acceleration-
   limits its reference, applies PI anti-windup at the per-command current limit,
   and updates only the bounded aligned-q-current actuator;
+- the focused product position controller advances a trapezoidal trajectory on
+  the same accepted observation and supplies only a bounded dynamic target to
+  the velocity controller;
 - the candidate cascaded position and velocity control consumes only that observation, emits
   a hard-clamped torque-current request, and latches invalid/stale feedback,
   deadline, following-error, and numeric faults;
@@ -314,7 +321,9 @@ maps electrical phase plus 90 degrees to A/B current references, and hands them
 to the already-qualified 20 kHz A/B PI backend. The 0.25 velocity loop commands
 that production actuator with its own target, acceleration, current, feedback-
 age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
-future work requiring its own modulation and timing evidence.
+future work requiring its own modulation and timing evidence. The 0.26 position
+layer adds independent travel, start-speed, following-error, settling, and
+deadline checks above the same velocity/current contracts.
 
 These tests establish signs, units, bounds, state ownership, and fault
 behavior. They do not establish loop gains, numerical representation,
@@ -408,9 +417,13 @@ service and enters the panic path. A stopped timebase also prevents scheduled
 service; see [Independent watchdog policy](WATCHDOG.md).
 
 During `RUN`, the control deadline guardian and accepted sample epochs provide
-fast-domain progress evidence. Watchdog reset remains the slower recovery path;
-the current backend handles an active bridge fault, missed sample, or invalid
-duty immediately.
+fast-domain progress evidence. Firmware 0.26.1 also compares the foreground
+snapshot's accepted encoder count/timestamp with a 3 ms wrap-safe deadline. It
+stays not-live after a stall until genuine sample progress occurs, removes idle
+readiness, and forces any energized authority through the shared fault path.
+Watchdog reset remains the slower recovery path for a stalled foreground; the
+current backend handles an active bridge fault, missed current sample, or
+invalid duty immediately.
 
 IWDG is not paused when the debugger halts the core. A sustained halt therefore
 causes a reset after approximately one second. The reset-time tied-EG3013
@@ -433,8 +446,9 @@ Above that immediate primitive, the product drive supervisor is the sole
 application authority owner. It distinguishes diagnostic from motion authority,
 permits bridge switching only in `ALIGN` or `RUN`, clears authority on every
 fault transition, and treats encoder/current-path readiness loss during an
-energized state as `FAULT`. Aligned q-current and velocity use the same
-`RUN`/motion authority; deadline and STOP release normally, while their
+energized state as `FAULT`. Diagnostic current, alignment, aligned q-current,
+velocity, and position all use the same readiness prerequisite and terminal
+primitive. Motion deadline and STOP release normally, while the controllers'
 independent feedback, motion, numeric, actuator, reference, and backend
 violations enter `FAULT` and the same all-low primitive.
 
@@ -462,7 +476,9 @@ Verification for the active backend and next control layers includes:
 
 - Host tests for transforms, angle wrapping, PI anti-windup, modulation bounds, trajectory limits, stale-data handling, and configuration validation.
 - A deterministic software plant/replay harness for stepper and three-phase current-loop test vectors.
-- Tests that inject missing samples, duplicate sequences, stale encoder snapshots, nonfinite values, saturation, and deadline overruns.
+- Tests that inject missing samples, a total production stall, duplicate
+  sequences, stale encoder snapshots, counter/timer wrap, nonfinite values,
+  saturation, and deadline overruns.
 - Compile-time checks for the NVIC grouping and assigned priority range.
 - On-target cycle instrumentation and stack high-water measurements.
 - Oscilloscope validation of ADC trigger position, PWM preload timing, emergency shutdown latency, reset, watchdog, and debugger halt.

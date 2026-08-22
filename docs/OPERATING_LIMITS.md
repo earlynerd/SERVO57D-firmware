@@ -1,8 +1,9 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.25.1 is the flashed, bench-qualified velocity baseline.
-Firmware 0.26.0 is the host/build-validated position candidate and expands the
-commandable velocity evaluation envelope to 4 rev/s (240 RPM). The velocity loop has
+Status: firmware 0.26.0 is the flashed, bench-qualified relative-position
+baseline. Firmware 0.26.1 is the host/build-validated encoder-liveness candidate
+and retains the commandable velocity evaluation envelope of 4 rev/s (240 RPM).
+The velocity loop has
 passed mirrored low-speed deadline/polarity, STOP, physical Right-button, and
 hand-loaded saturation/recovery checks. Initial velocity qualification is
 accepted; physical feedback-loss injection is indefinitely deferred on this
@@ -24,7 +25,7 @@ point is evidence, not automatically a request ceiling.
 
 ## Current firmware inventory
 
-| Quantity | Firmware 0.26.0 value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.26.1 value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Aligned q-current request | ±495 counts, ±2.999 A nominal | Evaluation envelope matching the attached motor's reported 3 A rating | `aligned_torque_controller` | 757.4 mA is validated; evaluate 1.503 A and 2.25 A before 2.999 A |
@@ -36,6 +37,9 @@ point is evidence, not automatically a request ceiling.
 | Mechanical velocity during open torque | 5 rev/s, 300 RPM | Evaluation envelope, deliberately beyond the present 1 kHz measured-phase refresh quality boundary | `aligned_torque_controller` | At the endpoint, measured phase updates only four times per electrical cycle. Measure the resulting torque ripple/tracking failure, then justify fast phase prediction from that evidence |
 | Mechanical acceleration during open torque | 1,000 rev/s² observed | Evaluation ceiling chosen above expected filtered-estimator transients, not a motor command or performance rating | `aligned_torque_controller` | Prevents the initial 20 rev/s² candidate from masking current/speed boundaries; must become motor/application configuration with the closed velocity loop |
 | Accepted feedback interval | 2,000 us maximum | Timing policy for the nominal 1 kHz encoder schedule, permitting one late interval | `aligned_torque_controller` | Active hardware observations were about 981-1,001 us; remeasure under outer-loop load |
+| Encoder production progress | 3,000 us maximum without a newly observed accepted sample | Independent total-silence guard: the 2 ms controller limit plus one nominal 1 ms foreground snapshot opportunity | `encoder_liveness` and the foreground supervisor prerequisite | Host-tested across stale state, recovery, sample-counter wrap, and microsecond-timer wrap; ordinary flash/smoke validation remains |
+| Estimator velocity filter | `alpha = 0.125` per accepted 1 kHz sample | Implementation configuration; approximately eight samples of smoothing, not a hardware limit | `angle_tracker` | Load-bearing outer-loop behavior that must be measured/tuned as velocity increases |
+| Estimator motion plausibility | 20 rev/s, 1,200 RPM maximum | Implementation threshold for rejecting implausible sample-to-sample motion | `angle_tracker` | Below Makerbase's advertised 3,000+ RPM; redesign and validate before that speed can become commandable |
 | Torque duration | 3 through 2,147,483,647 ms | Timing-derived: 3 ms allows a pre-deadline update at the 2 ms feedback limit; the maximum is the signed modulo-32-bit half-range | Command service and `aligned_torque_controller` | Caller always supplies a finite deadline; duration is not a thermal/current proxy or communications lease |
 | Velocity target | ±4 rev/s, ±240 RPM | Evaluation envelope below the independent 5 rev/s observed-speed shutdown threshold; the validated point remains 1 rev/s | `velocity_controller` before command acceptance and on every update | Stage both signs through 2, 3, and 4 rev/s while measuring current tracking, phase-refresh quality, voltage effort, and faults |
 | Velocity-reference acceleration | 4 rev/s² | Evaluation trajectory limit, independent of the actuator's observed-acceleration trip | `velocity_controller` | Verify reference progression, reversal, saturation recovery, and loaded behavior at each expanded speed point |
@@ -55,6 +59,29 @@ point is evidence, not automatically a request ceiling.
 | Position duration | 100 through 2,147,483,647 ms | Finite wrap-safe deadline; expiration releases normally but reports `deadline`, not `settled` | Command service and `position_controller` | Caller must choose a duration long enough for the requested profile and settling time |
 | Rotating-current diagnostic frequency | 0.001 through 250 electrical Hz | Evaluation envelope matching 5 rev/s on the 50-cycle/rev motor | Product diagnostic command path | The 1 kHz reference schedule provides only four points/cycle at 250 Hz; this is useful boundary evidence, not a quality guarantee |
 | Rotating-current diagnostic duration | 3 through 2,147,483,647 ms | Same wrap-safe finite-deadline basis as aligned torque | Product diagnostic command path | Replaces the inherited 100-60,000 ms commissioning window |
+
+## Active vendor-stated performance requirements
+
+Makerbase advertises 12-24 V operation, a 0-5200 mA current setting, 20 kHz
+current/velocity/position loops, 3000+ RPM, and up to 256 "subdivision" with 16
+as default. The precise meanings and test conditions are not yet established:
+the current may be peak, RMS, per-phase, or a configuration scale;
+"subdivision" may describe step-input interpolation rather than encoder or
+closed-loop position resolution; and the three 20 kHz claims may not mean three
+independent full controller calculations.
+
+Matching these capabilities—or producing concrete evidence of the board/control
+change required for each one—is active project work. They are not yet accepted
+operating limits, and safe expansion remains measurement-gated, but they must
+not be treated as optional or deferred until unrelated work is exhausted. The
+present product runs the winding-current loop at 20 kHz but accepts encoder
+observations and updates aligned torque, velocity, and position at 1 kHz. The
+current tested motor is reported as 3 A, so board-level investigation toward
+5.2 A requires a suitable motor or load fixture and separate electrical and
+thermal qualification. Moving toward 24 V and 3000+ RPM likewise requires
+bus-protection/switching evidence plus a faster phase-estimation and outer-loop
+architecture; the current 5 rev/s controller ceiling and 20 rev/s estimator
+plausibility threshold are intentionally temporary.
 
 ## Performance progression
 
@@ -77,10 +104,15 @@ The next envelopes are product-development gates, not permanent ceilings:
    clipping/bandwidth, switching waveforms, supply behavior, shunt and MOSFET
    temperature, and current-loop transients pass staged measurements. Firmware
    permission to evaluate the point is not qualification.
-5. Bench-qualify relative position in both signs through settle, deadline,
-   generic STOP, Right-button stop, and following-error behavior. Travel,
-   velocity, acceleration, current, start speed, feedback age, and following
-   error remain separate limits.
+5. Complete the remaining relative-position gates: physical Right-button stop
+   and loaded following-error behavior. Mirrored settling, deadline, and generic
+   STOP already pass on firmware 0.26.0.
+6. After the attached motor's 3 A point is qualified, characterize the board's
+   advertised 5.2 A setting with an appropriate motor/load and thermal fixture;
+   do not apply 5.2 A to the present 3 A motor. Stage 24 V separately after bus
+   protection and switching waveforms are measured, then extend estimator,
+   phase prediction, velocity, and position scheduling toward the advertised
+   speed and loop-rate targets without merging their independent limits.
 
 The board uses eight discrete MOSFETs and a heatsink/gap-pad assembly, which is
 consistent with substantial power-stage ambition. A MOSFET headline current

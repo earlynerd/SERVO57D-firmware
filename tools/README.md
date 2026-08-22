@@ -125,7 +125,9 @@ tracking and phase-refresh boundaries can be measured instead of preflighted
 away.
 
 Firmware 0.26.0 / protocol 1.9 retains the qualified velocity service and adds
-relative position. `velocity` accepts either `--rps` or `--rpm`, while
+relative position. Firmware 0.26.1 keeps the same host protocol and makes the
+encoder `estimator_ready` field clear if accepted sample production has not
+advanced within 3 ms. `velocity` accepts either `--rps` or `--rpm`, while
 `velocity-status` is passive and reports target, acceleration, feedback-speed,
 current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
 signed mechanical target in revolutions per second plus an explicit positive
@@ -145,9 +147,11 @@ repeatable automated shutdown gate, `--stop-after-seconds SECONDS` sends the
 same STOP over the capture's active serial connection before the firmware
 deadline. The 0.26.0 evaluation envelope is ±4 rev/s (±240 RPM), 4 rev/s²
 reference slew, and at most 100 counts (about 606 mA). The independent
-observed-speed shutdown remains 5 rev/s. The flashed 0.25.1 evidence remains
+observed-speed shutdown remains 5 rev/s. The velocity evidence remains
 qualified only through 1 rev/s; the expanded values are bench-evaluation
-permission, not a performance claim.
+permission, not a performance claim. Firmware 0.26.0 is the flashed baseline
+and its first relative-position gate passed; 0.26.1 still needs a normal flash
+and smoke check.
 
 `position-status` passively reports target/reference/measured position,
 profile/corrected/measured velocity, requested/applied current, state, result,

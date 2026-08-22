@@ -1,5 +1,15 @@
 # Debug Log
 
+## 2026-08-22 — Total encoder-production silence could retain active current demand
+
+- **Observation:** Code review found that invalid SPI/DMA frames and late accepted samples already fail safely, but a complete stop in TIM6 release, an indefinitely incomplete transfer, or lost PendSV delivery produces no rotor callback. In that case the callback-owned controller checks do not run, while the foreground's prior readiness test considered an encoder healthy once it had sampled at least once.
+- **Root cause:** Continuing encoder production had no independent observer outside the production callback chain. The 20 kHz guardian proves current-loop progress, and the IWDG proves foreground progress, but neither proves that new rotor observations are reaching the controllers.
+- **Fix:** Firmware 0.26.1 adds a wrap-safe foreground `encoder_liveness` monitor with a 3 ms progress deadline. Idle loss removes readiness; energized diagnostic or motion authority is force-faulted through the shared all-low `ZERO` path. Encoder estimator-ready status now includes the same liveness evidence without changing protocol 1.9 or schema 2.
+- **Class:** encoder-production-liveness-gap
+- **Recently-touched?** no — the gap crossed the established timer/DMA rotor service and foreground readiness boundary
+- **Status:** Resolved in source. Native tests cover the boundary, stale latch, recovery, and counter/timer wrap; Debug and Release Arm builds and post-link checks pass. Flash/readiness and bounded-motion smoke validation remain pending.
+- **Time to fix:** one implementation and documentation pass
+
 ## 2026-08-22 — Relative-position settle, polarity, and generic STOP gates passed
 
 - **Observation:** Firmware 0.26.0 / protocol 1.9 ran mirrored ±0.25-revolution commands at 0.5 rev/s maximum, 1 rev/s², and a 100-count current limit. The positive move settled in 1.29 s at -0.000427 revolution endpoint error; the negative move settled in 1.35 s at +0.001465 revolution error. Both stayed at or below 32 requested/applied current counts, below 0.05 revolution maximum profile following error, and at 1000 us captured encoder intervals. A separate +0.5-revolution command accepted scheduled generic STOP at 0.5 s and returned zero current references and duties with no faults.

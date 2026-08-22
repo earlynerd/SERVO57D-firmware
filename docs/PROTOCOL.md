@@ -144,8 +144,10 @@ that same actuator. Positive velocity uses the same mechanical coordinate as
 encoder telemetry; the persisted alignment direction maps controller effort to
 q-current without changing the protocol. Firmware 0.26.0 / protocol 1.9 adds
 bounded relative-position trajectories above that same velocity/current
-actuator and raises the velocity evaluation ceiling to 4 rev/s. It is host-
-and Arm-build validated and awaits its staged hardware gate. Protocol 1.3 added the bounded current trace validated
+actuator and raises the velocity evaluation ceiling to 4 rev/s. Mirrored
+relative-position settling and generic STOP are bench-proven. Firmware 0.26.1
+retains protocol 1.9 and its payload layouts while adding the independent
+encoder-production liveness prerequisite. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
@@ -359,6 +361,11 @@ sampling evidence. Position and velocity use signed Q16.16 revolutions and
 revolutions/second. Electrical phase uses unsigned Q0.32 turns. Until the
 controlled alignment procedure accepts calibration, alignment/electrical-phase
 flags remain clear and their numeric fields must not be used for control.
+In firmware 0.26.1 and later, estimator-ready also means the foreground has
+observed accepted encoder production advance within the 3 ms liveness deadline.
+The raw sample count, last-attempt time, estimator timestamp, and interval
+fields retain their existing encodings; no schema or protocol-version bump is
+needed for the tightened readiness semantics.
 
 | Body offset | Type | Encoder schema-2 field |
 | ---: | --- | --- |

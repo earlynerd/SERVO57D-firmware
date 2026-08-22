@@ -15,6 +15,16 @@ current, voltage, speed, or motion ceilings.
 
 Operating limits are expanded deliberately from bench evidence, and every
 accepted point remains motor-, supply-, board-, cooling-, and enclosure-specific.
+Makerbase advertises 12-24 V operation, 0-5200 mA current, 20 kHz current,
+velocity, and position loops, 3000+ RPM, and up to 256 "subdivision" (16 by
+default). Matching those capabilities—or identifying and fixing the concrete
+board or control limitation that prevents each one—is an active product
+requirement. The vendor figures are not yet verified safe operating limits, so
+expansion remains measurement-gated, but the present low commissioning ceilings
+are temporary and must not displace current, voltage, speed, and loop-rate work
+behind unrelated feature development. Any architecture, estimator, timing,
+power-stage, sensing, thermal, or test-fixture work needed to reach them is in
+scope now.
 The rotating-current operation is retained as a production motor-diagnostic
 client of the same drive supervisor used by motion control. It is the measured
 foundation used by the 0.23 aligned torque candidate, not a parallel authority
@@ -30,9 +40,10 @@ analyzes the result, and opens a self-contained plot report:
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
-The firmware supervisor still owns readiness and bridge authority, while the
-current backend independently owns current, voltage, duty, duration, deadline,
-and fault limits. Press Ctrl+C to send STOP. Each run is saved under ignored
+The firmware supervisor still owns readiness and bridge authority; the active
+operation owns its duration/deadline, while the current backend independently
+owns current, voltage, duty, fast-loop deadline, and fault limits. Press Ctrl+C
+to send STOP. Each run is saved under ignored
 `scratch/motor-runs/`, and the tool restores the preceding inactive test
 configuration unless `--keep-config` is requested. Use `--no-open` to capture
 without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
@@ -40,9 +51,10 @@ without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
 This interface currently commands a positive-frequency rotating current vector;
 `--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
 closed-loop shaft-speed, signed-direction, or position command. Those controls
-remain separate from this diagnostic: firmware 0.25.1 provides the flashed,
-qualified signed-velocity baseline, while the 0.26.0 build candidate adds
-bounded relative-position control through the same production actuator.
+remain separate from this diagnostic: firmware 0.25.1 established the qualified
+signed-velocity baseline, firmware 0.26.0 is the flashed relative-position
+baseline, and firmware 0.26.1 adds an independent encoder-production liveness
+guard through the same production actuator and fault path.
 
 The 0.23 candidate adds the first production motion command: a signed,
 calibrated q-current demand with firmware-reported current, slew, velocity,
@@ -78,7 +90,7 @@ hand-loaded saturation/recovery gates pass. Initial velocity qualification is
 accepted; physical feedback-loss injection is deferred indefinitely on the
 current board/motor assembly because the encoder is inaccessible.
 
-The 0.26.0 / protocol 1.9 candidate adds a relative-position command with
+The 0.26.0 / protocol 1.9 product image adds a relative-position command with
 separate travel, trajectory-velocity, acceleration, current, start-speed,
 following-error, feedback-age, settling, and deadline bounds. A conservative
 first bench move after flashing is:
@@ -105,12 +117,14 @@ following-error checks remain pending.
 
 ## Current operating envelope
 
-Firmware 0.25.1 / protocol 1.8 remains the current flashed product build. Mirrored
-±0.1 rev/s, 25-count, two-second commands moved in the requested encoder
-coordinate, completed at their deadlines, and returned to `ZERO` with no
-control, encoder, current-loop, reset, or watchdog faults. The correction maps
-velocity effort through the already persisted alignment direction without
-changing the configuration schema or wire protocol. A 303 mA run accepted
+Firmware 0.26.0 / protocol 1.9 is the current flashed product build. Its
+mirrored relative-position and generic-STOP evidence is summarized above. The
+earlier 0.25.1 velocity qualification remains accepted: mirrored ±0.1 rev/s,
+25-count, two-second commands moved in the requested encoder coordinate,
+completed at their deadlines, and returned to `ZERO` with no control, encoder,
+current-loop, reset, or watchdog faults. The correction maps velocity effort
+through the already persisted alignment direction without changing the
+configuration schema or wire protocol. A 303 mA run accepted
 generic STOP, a 606 mA / 1 rev/s run accepted the physical Right button, and
 hand-loaded runs demonstrated bounded saturation/recovery without faults or
 material overshoot. The physical feedback-loss gate is indefinitely deferred;
@@ -125,14 +139,19 @@ timestamped position/velocity observation instead of raw encoder samples. The
 0.25.1 / protocol 1.8 image closes the
 first bounded signed mechanical-velocity loop on that observation. It applies
 an acceleration-limited reference and PI current request, then commands only
-the existing aligned-q-current actuator. The 0.26.0 / protocol 1.9 build
-candidate reuses that controller and actuator beneath a tested trapezoidal
+the existing aligned-q-current actuator. The 0.26.0 / protocol 1.9 product
+image reuses that controller and actuator beneath a bench-tested trapezoidal
 relative-position profile; step/direction remains disconnected. The current product line provides bounded signed
 encoder-aligned q-current through the same supervisor,
 current backend, and ZERO-vector fault path, and accepts the full wrap-safe
 finite-deadline range. Torque activation is seeded only by newly accepted
 encoder feedback so command-processing latency is not mistaken for an active
-feedback overrun. Firmware 0.22.0's power-loss-safe dual-slot motor-
+feedback overrun. Firmware 0.26.1 additionally requires foreground evidence
+that accepted encoder production has advanced within 3 ms. Loss of that
+evidence removes idle readiness or forces every energized authority through
+the common fault/`ZERO` path; protocol 1.9's estimator-ready bit now includes
+this liveness condition without changing its wire layout. Firmware 0.22.0's
+power-loss-safe dual-slot motor-
 configuration storage remains accepted through first-save, unchanged-save,
 power-cycle restore, persistent-clear, and no-restored-authority gates. The
 firmware runs from the fitted
@@ -248,8 +267,9 @@ generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional gate is staged relative-position bench validation
-and expansion of the new 240 RPM velocity evaluation envelope. Remaining characterization
+accepted. The next functional gate is the physical Right-button and loaded
+following-error position checks, followed by expansion of the 240 RPM velocity
+evaluation envelope. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

@@ -1,11 +1,12 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.24.13 releases encoder reads at 1 kHz from TIM6, performs
+Status: firmware 0.26.1 releases encoder reads at 1 kHz from TIM6, performs
 bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
 through DMA channels 2/3, and defers decode/runtime publication through PendSV.
 Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
-automatic-alignment and aligned-torque controllers, and firmware 0.25.1's
-bounded velocity controller. Native protocol 1.8 exposes raw health,
+automatic-alignment and aligned-torque controllers, firmware 0.25.1's bounded
+velocity controller, and firmware 0.26.0's relative-position controller. Native
+protocol 1.9 exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy
 evidence. The 1 kHz schedule passed its
@@ -13,7 +14,8 @@ initial idle and active hardware regression; two automatic alignments reproduced
 the accepted geometry and zero exactly, and STOP preserved the valid calibration.
 Aligned torque acquires authority only in the successful-sample path: that
 sample seeds phase, velocity, and timestamp, and the next accepted sample is the
-first active feedback update.
+first active feedback update. Firmware 0.26.1 independently requires foreground
+evidence that accepted production has advanced within 3 ms.
 
 ## Evidence and confidence
 
@@ -81,6 +83,15 @@ records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
 
+The callback-driven controllers already reject individual bad or older-than-2
+ms observations. The separate foreground `encoder_liveness` monitor closes the
+total-silence case in which no callback arrives to perform that check. It tracks
+the sequence-protected snapshot's accepted count and estimator timestamp using
+wrap-safe microsecond arithmetic. No progress for more than 3 ms removes
+`READY`; if diagnostic or motion authority is energized, the supervisor forces
+the common fault/`ZERO` path. Once stale, the monitor stays not-live until a
+genuinely advanced sample is observed.
+
 The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
 estimator's 20 ms accepted-sample interval threshold
 is a scheduling/feedback validity check, not a motor speed command limit. Its
@@ -146,4 +157,5 @@ The bench-validated supervisor-owned automatic alignment procedure
 establishes the per-motor electrical zero transactionally before motion can use
 electrical phase; accepted calibration persists through the dual-slot production
 configuration service. Scheduler latency remains subject to revalidation as
-velocity and position compute are added.
+velocity, position, and phase prediction are accelerated beyond the present
+1 kHz outer-loop release.

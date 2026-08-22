@@ -502,6 +502,18 @@ capture, cleared current references and bridge duties, and coasted to zero
 measured speed without changing generation-3 calibration. Physical Right-button
 stop and loaded following-error behavior remain pending.
 
+### Firmware 0.26.1 encoder-liveness smoke gate
+
+After flashing 0.26.1, confirm identity still reports protocol 1.9 and encoder
+schema 2. Before any motor command, sample `encoder` repeatedly: accepted count
+must advance, `estimator_ready` must remain true, and the latest interval should
+remain near 1000 us. Then repeat one already-qualified low-speed velocity or
+±0.25-revolution position command and require normal completion, zero terminal
+references/duties, and no new encoder, estimator, backend, reset, or panic
+fault. The new 3 ms total-production deadline is host-tested; do not disturb the
+inaccessible sensor on this assembly solely to inject the fault. Reopen physical
+injection only with a non-destructive scheduler/test-point fixture.
+
 ### Expanded velocity evaluation gate
 
 Firmware 0.26.0 raises the commandable target and reference-acceleration
@@ -513,8 +525,9 @@ motor, the 1 kHz measured-phase path provides only five phase updates per
 electrical cycle, so current tracking, voltage effort, audible/torque quality,
 and faults decide whether phase prediction must move into the 20 kHz path.
 
-After the position gate, run both signs at 2, then 3, then 4 rev/s and retain
-each automatic capture directory:
+After the remaining position Right-button and loaded-following-error gates, run
+both signs at 2, then 3, then 4 rev/s and retain each automatic capture
+directory:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity --rpm 120 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
