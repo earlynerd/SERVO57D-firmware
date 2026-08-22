@@ -321,30 +321,49 @@ def write_report(
                 ),
             ],
         )
-        voltage_limit_percent = (
-            float(active[0]["loop"]["phase_voltage_limit_permille"]) / 10.0
+        physical_voltage_available = all(
+            sample["loop"].get("phase_voltage_command_volts", {}).get(axis)
+            is not None
+            and sample["loop"].get("phase_voltage_limit_volts") is not None
+            for sample in active
+            for axis in ("a", "b")
         )
-        voltage_plot = _polyline_plot(
-            "Phase-voltage effort",
-            "Run time (s)",
-            "Absolute bus voltage used (%)",
-            times,
-            [
-                (
-                    "Phase A",
-                    [abs(sample["loop"]["phase_voltage_permille"]["a"]) / 10.0 for sample in active],
-                    1,
-                    False,
-                ),
-                (
-                    "Phase B",
-                    [abs(sample["loop"]["phase_voltage_permille"]["b"]) / 10.0 for sample in active],
-                    2,
-                    False,
-                ),
-                ("Configured ceiling", [voltage_limit_percent] * len(active), 5, True),
-            ],
-        )
+        if physical_voltage_available:
+            voltage_plot = _polyline_plot(
+                "Commanded average phase voltage",
+                "Run time (s)",
+                "Absolute phase voltage (V)",
+                times,
+                [
+                    (
+                        "Phase A",
+                        [
+                            abs(sample["loop"]["phase_voltage_command_volts"]["a"])
+                            for sample in active
+                        ],
+                        1,
+                        False,
+                    ),
+                    (
+                        "Phase B",
+                        [
+                            abs(sample["loop"]["phase_voltage_command_volts"]["b"])
+                            for sample in active
+                        ],
+                        2,
+                        False,
+                    ),
+                    (
+                        "Configured ceiling",
+                        [
+                            sample["loop"]["phase_voltage_limit_volts"]
+                            for sample in active
+                        ],
+                        5,
+                        True,
+                    ),
+                ],
+            )
     trace_plot = ""
     if trace:
         trace_times = [float(sample["time_seconds"]) * 1000.0 for sample in trace]
@@ -383,7 +402,8 @@ def write_report(
     encoder = analysis.get("encoder", {})
     measured_rpm = encoder.get("rpm")
     rms_error = analysis.get("combined_rms_error_milliamperes")
-    max_voltage = analysis.get("maximum_absolute_voltage_permille")
+    max_voltage = analysis.get("maximum_absolute_phase_voltage_volts")
+    voltage_limit = analysis.get("phase_voltage_limit_volts")
     faults = bundle.get("faults", analysis.get("faults", []))
     estimator = bundle.get("estimator")
 
@@ -409,8 +429,14 @@ def write_report(
             "unavailable" if rms_error is None else f"{rms_error:.1f} mA",
         ),
         stat(
-            "Peak voltage effort",
-            "unavailable" if max_voltage is None else f"{max_voltage / 10.0:.1f}%",
+            "Peak commanded phase voltage",
+            "unavailable"
+            if max_voltage is None
+            else (
+                f"{max_voltage:.2f} V"
+                if voltage_limit is None
+                else f"{max_voltage:.2f} V / {float(voltage_limit):.2f} V limit"
+            ),
         ),
         stat(
             "Estimator max interval",
@@ -513,11 +539,21 @@ def _run_capture(
             remaining = int(status["test"]["remote_run_remaining_millis"])
             elapsed = max(0.0, (duration_ms - remaining) / 1000.0)
             measured = status["loop"]["measured_nominal_milliamperes"]
-            voltage = status["loop"]["phase_voltage_permille"]
+            voltage = status["loop"].get("phase_voltage_command_volts", {})
+            voltage_limit = status["loop"].get("phase_voltage_limit_volts")
+            voltage_values = [voltage.get(axis) for axis in ("a", "b")]
+            voltage_text = "Vph=unavailable"
+            if voltage_limit is not None and all(
+                value is not None for value in voltage_values
+            ):
+                voltage_text = (
+                    f"|Vph|={max(abs(float(value)) for value in voltage_values):5.2f}/"
+                    f"{float(voltage_limit):5.2f} V"
+                )
             print(
                 f"\r{elapsed:6.2f}/{duration_ms / 1000.0:.2f} s  "
                 f"I=({measured['a']:+7.1f},{measured['b']:+7.1f}) mA  "
-                f"Vmax={max(abs(voltage['a']), abs(voltage['b'])) / 10.0:5.1f}%  "
+                f"{voltage_text}  "
                 f"angle={status['encoder']['angle_degrees']:7.2f} deg",
                 end="",
                 flush=True,
@@ -751,10 +787,17 @@ def main() -> int:
         encoder_result = analysis.get("encoder", {})
         rpm = encoder_result.get("rpm")
         rpm_text = "unavailable" if rpm is None else f"{abs(rpm):.2f} RPM"
+        peak_phase_voltage = analysis.get(
+            "maximum_absolute_phase_voltage_volts"
+        )
+        voltage_text = (
+            "peak phase voltage unavailable"
+            if peak_phase_voltage is None
+            else f"{float(peak_phase_voltage):.2f} V peak phase voltage"
+        )
         print(
             f"Result: {rpm_text}, {analysis['combined_rms_error_milliamperes']:.1f} mA RMS error, "
-            f"{analysis['maximum_absolute_voltage_permille'] / 10.0:.1f}% peak voltage, "
-            f"faults={analysis['faults'] or 'none'}"
+            f"{voltage_text}, faults={analysis['faults'] or 'none'}"
         )
     elif analysis_error:
         print(f"Analysis note: {analysis_error}")

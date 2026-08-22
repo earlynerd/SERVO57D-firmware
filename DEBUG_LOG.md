@@ -375,3 +375,28 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** commissioning-envelope-overconstraint-and-cascade-headroom
 - **Recently-touched?** yes — firmware 0.26.0 introduced the matched position/velocity ceilings and same-ceiling correction clamp; firmware 0.27.0 changed phase generation but intentionally retained those motion values.
 - **Status:** Source correction passes native and Python host tests plus clean Debug/Release Arm post-link builds; firmware 0.27.1 hardware confirmation remains pending.
+
+## 2026-08-22 — Twelve-volt speed boundary was phase-voltage/current-tracking saturation
+
+- **Observation:** Positive velocity appeared smooth and reached lower targets, but a +6 rev/s request at the 12 V supply setting could not improve with a larger current command. At 24 V, the matched +6 rev/s run improved RMS velocity error from 1.197 to 0.638 rev/s, +8 rev/s reached target, and a +12 rev/s request plateaued near 9.1-9.9 rev/s.
+- **Root cause:** Full telemetry showed that the 12 V run repeatedly reached the 70%-of-bus phase-voltage ceiling while actual A/B current remained below the requested vector. At 24 V, +6 rev/s no longer clipped voltage or q-demand. The +12 rev/s request then reached both the 2.999 A nominal demand limit and the 16.8 V nominal phase ceiling in most samples. The remaining boundary is high-electrical-frequency current tracking/bandwidth and phase timing, not a hidden host velocity ceiling or supply-current/thermal event.
+- **Fix/evidence:** Preserve the matched 12 V/24 V captures as the tuning baseline, stop the speed sweep at the dual-saturation point, and use measured current/phase tracking plus predictor timing as the next control input. Every run ended with no predictor, encoder, backend, current-loop, supervisor, reset, or panic fault.
+- **Class:** voltage-headroom-and-rotating-current-tracking-boundary
+- **Recently-touched?** yes — the 0.27.0 phase predictor and 0.27.1 evaluation envelope were under direct hardware test.
+
+## 2026-08-22 — Normal STOP is dynamic braking; this bridge has no software coast state
+
+- **Observation:** The motor stopped sharply at command completion, and no command produced a passive coast.
+- **Root cause:** `rotor_control_runtime` releases the current backend through the common all-low `ZERO` vector. On the tied EG3013 HIN/LIN topology, low selects each low-side FET, shorting each winding's terminals together and dynamically braking the rotor. The proven software path has no defined all-FET-off bridge command; PB7 is an isolated external input, not a proven gate-driver enable.
+- **Fix/evidence:** Document normal completion/STOP as dynamic braking and explicitly state that true coast is unavailable on the proven board path. A future controlled deceleration may soften ordinary stopping but cannot create passive coast and must not replace immediate all-low fault convergence.
+- **Class:** bridge-zero-vector-mistaken-for-coast
+- **Recently-touched?** no — the behavior follows the established hardware topology and common shutdown path.
+
+## 2026-08-22 — Raw electrical units obscured physical current and voltage
+
+- **Observation:** Current counts appeared possibly input-voltage dependent, while status and captures described phase effort only in permille even though the board senses VBUS.
+- **Root cause:** The shunt/amplifier/ADC current transfer was already known and independent of VBUS, but the host presented controller-native counts/ratios prominently. Production PA3 sampling had also remained disabled after the regular current DMA path was introduced, so active status lacked the bus measurement needed to scale phase commands.
+- **Fix:** Firmware 0.28.0 uses a post-regular automatic-injected PA3 conversion and protocol-1.10 schema-3 status. The host makes milliamperes/amperes, measured bus volts, and commanded carrier-average phase volts primary while retaining raw counts/ratios for diagnosis. Regular DMA still releases the current loop before VBUS conversion.
+- **Class:** engineering-units-hidden-by-controller-native-telemetry
+- **Recently-touched?** yes — motion capture/status presentation and ADC scheduling were the active code paths.
+- **Status:** Bench accepted. The flashed image identifies as 0.28.0/protocol 1.10. Inactive schema-3 status reported 23.829 V at the 24 V supply setting. All 22 captured samples from a one-second 1 rev/s / 606 mA run held 23.776-23.815 V, 20,001 current-loop updates completed while the VBUS sample count advanced, current references and bridge duties returned to zero, authority released, and ADC, deadline, predictor, encoder, backend, supervisor, reset, and panic state remained clear.

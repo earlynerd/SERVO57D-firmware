@@ -6,6 +6,7 @@
 
 #include "mks57d/dma_channels.h"
 #include "mks57d/interrupt_priority.h"
+#include "mks57d/tim2_current_trigger.h"
 #include "n32l40x.h"
 
 enum
@@ -29,6 +30,21 @@ enum
     ADC_CURRENT_SEQUENCE_LENGTH = 2u,
     ADC_CURRENT_SEQUENCE_LENGTH_ENCODING =
         ADC_CURRENT_SEQUENCE_LENGTH - 1u,
+    ADC_INJECTED_VBUS_RANK_SHIFT = 15u,
+    ADC_INJECTED_STATUS_FLAGS = ADC_STS_JENDC |
+                                ADC_STS_JSTR |
+                                ADC_STS_JENDCA,
+    ADC_CONVERSION_CYCLES_X2 = 25u,
+    ADC_CURRENT_SAMPLE_CYCLES_X2 = 15u,
+    ADC_VBUS_SAMPLE_CYCLES_X2 = 111u,
+    ADC_CURRENT_AND_VBUS_CYCLES_X2 =
+        (2u * (ADC_CURRENT_SAMPLE_CYCLES_X2 +
+               ADC_CONVERSION_CYCLES_X2)) +
+        ADC_VBUS_SAMPLE_CYCLES_X2 + ADC_CONVERSION_CYCLES_X2,
+    ADC_POST_TRIGGER_BUDGET_CYCLES_X2 =
+        2u * (ADC1_MAX_CLOCK_HZ /
+              ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ) *
+        (1000u - TIM2_CURRENT_TRIGGER_PHASE_PERMILLE) / 1000u,
     DMA_REQUEST_ADC = 0u,
     DMA_CURRENT_CONFIGURATION = DMA_CHCFG1_TXCIE |
                                 DMA_CHCFG1_ERRIE |
@@ -48,6 +64,12 @@ _Static_assert(DMA_CHANNEL_ADC_CURRENT == 1u,
 _Static_assert((ADC_CURRENT_DMA_BUFFER_LENGTH %
                 ADC_CURRENT_SEQUENCE_LENGTH) == 0u,
                "DMA buffer must contain complete ADC sequences");
+_Static_assert((ADC1_MAX_CLOCK_HZ %
+                ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ) == 0u,
+               "ADC timing budget requires an integral carrier period");
+_Static_assert(ADC_CURRENT_AND_VBUS_CYCLES_X2 <
+                   ADC_POST_TRIGGER_BUDGET_CYCLES_X2,
+               "regular current plus injected VBUS exceeds carrier budget");
 typedef struct
 {
     uint8_t divisor;
@@ -68,9 +90,11 @@ static const adc_clock_divider_t ADC_CLOCK_DIVIDERS[] = {
 
 static bool s_adc1_initialized;
 static bool s_synchronous_current_started;
+static uint32_t s_adc_sampling_clock_hz;
 static uint32_t s_capture_index;
 static volatile uint32_t s_current_snapshot_sequence;
 static uint32_t s_last_read_snapshot_sequence;
+static uint32_t s_vbus_sample_count;
 static volatile adc1_status_t s_synchronous_status =
     ADC1_STATUS_NOT_READY;
 static volatile adc1_current_snapshot_t s_latest_current_snapshot;
@@ -79,11 +103,14 @@ static void* s_current_event_context;
 static volatile uint16_t
     s_current_dma_buffer[ADC_CURRENT_DMA_BUFFER_LENGTH];
 
-static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
+static bool select_adc_clock(uint32_t hclk_hz,
+                             uint32_t* register_value,
+                             uint32_t* adc_clock_hz)
 {
     size_t index;
 
     if ((register_value == NULL) ||
+        (adc_clock_hz == NULL) ||
         (hclk_hz < 1000000u) ||
         (hclk_hz > (ADC1_MAX_CLOCK_HZ * 32u)))
     {
@@ -99,6 +126,7 @@ static bool select_adc_clock(uint32_t hclk_hz, uint32_t* register_value)
                         ADC_CLOCK_DIVIDERS[index].divisor))
         {
             *register_value = ADC_CLOCK_DIVIDERS[index].register_value;
+            *adc_clock_hz = hclk_hz / ADC_CLOCK_DIVIDERS[index].divisor;
             return true;
         }
     }
@@ -192,22 +220,27 @@ static adc1_status_t convert_channel(uint8_t channel, uint16_t* output)
 adc1_status_t adc1_init_passive(uint32_t hclk_hz)
 {
     uint32_t adc_clock_setting;
+    uint32_t adc_sampling_clock_hz;
     uint32_t clock_configuration;
     volatile uint32_t* const adc_ldo_control =
         (volatile uint32_t*)(uintptr_t)(ADC_BASE + ADC_LDO_CONTROL_OFFSET);
     const bool hsi_was_enabled =
         (RCC->CTRL & RCC_CTRL_HSIEN) != 0u;
 
-    if (!select_adc_clock(hclk_hz, &adc_clock_setting))
+    if (!select_adc_clock(hclk_hz,
+                          &adc_clock_setting,
+                          &adc_sampling_clock_hz))
     {
         return ADC1_STATUS_UNSUPPORTED_CLOCK;
     }
 
     s_adc1_initialized = false;
     s_synchronous_current_started = false;
+    s_adc_sampling_clock_hz = 0u;
     s_capture_index = 0u;
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
+    s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NOT_READY;
     s_current_event_handler = NULL;
     s_current_event_context = NULL;
@@ -276,6 +309,7 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     }
 
     s_adc1_initialized = true;
+    s_adc_sampling_clock_hz = adc_sampling_clock_hz;
     return ADC1_STATUS_OK;
 }
 
@@ -344,6 +378,13 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     {
         return ADC1_STATUS_BUSY;
     }
+    if (((uint64_t)ADC_CURRENT_AND_VBUS_CYCLES_X2 *
+         ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ * 1000u) >=
+        ((uint64_t)2u * s_adc_sampling_clock_hz *
+         (1000u - TIM2_CURRENT_TRIGGER_PHASE_PERMILLE)))
+    {
+        return ADC1_STATUS_UNSUPPORTED_CLOCK;
+    }
 
     RCC->AHBPCLKEN |= RCC_AHBPCLKEN_DMAEN;
     __DSB();
@@ -366,6 +407,7 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
+    s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
     DMA_CH1->PADDR = (uint32_t)(uintptr_t)&ADC->DAT;
     DMA_CH1->MADDR =
@@ -381,17 +423,26 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     NVIC_EnableIRQ(DMA_Channel1_IRQn);
     DMA_CH1->CHCFG |= DMA_CHCFG1_CHEN;
 
-    ADC->CTRL1 = ADC_CTRL1_SCANMD;
+    /* One slow PA3 injected conversion follows each regular current pair.
+       A one-rank injected sequence occupies JSEQ4 on this ADC. Automatic
+       injection leaves regular DMA completion as the current-loop event. */
+    ADC->CTRL1 = ADC_CTRL1_SCANMD | ADC_CTRL1_AUTOJC;
     ADC->CTRL2 = ADC_SOFTWARE_TRIGGER_SELECT;
     ADC->RSEQ1 = (ADC->RSEQ1 & ~ADC_RSEQ1_LEN) |
                  ((uint32_t)ADC_CURRENT_SEQUENCE_LENGTH_ENCODING << 20u);
     ADC->RSEQ3 =
         ((uint32_t)ADC1_CURRENT_B_CHANNEL & ADC_RSEQ3_SEQ1) |
         (((uint32_t)ADC1_CURRENT_A_CHANNEL << 5u) & ADC_RSEQ3_SEQ2);
+    ADC->JSEQ =
+        ((uint32_t)ADC1_VBUS_CHANNEL << ADC_INJECTED_VBUS_RANK_SHIFT) &
+        ADC_JSEQ_JSEQ4;
     ADC->SAMPT2 = (ADC->SAMPT2 &
-                   ~(ADC_SAMPT2_SAMP2 | ADC_SAMPT2_SAMP3)) |
+                   ~(ADC_SAMPT2_SAMP2 |
+                     ADC_SAMPT2_SAMP3 |
+                     ADC_SAMPT2_SAMP4)) |
                   ((uint32_t)ADC_SAMPLE_TIME_7CYCLES5 << (2u * 3u)) |
-                  ((uint32_t)ADC_SAMPLE_TIME_7CYCLES5 << (3u * 3u));
+                  ((uint32_t)ADC_SAMPLE_TIME_7CYCLES5 << (3u * 3u)) |
+                  ((uint32_t)ADC_SAMPLE_TIME_55CYCLES5 << (4u * 3u));
     ADC->STS = 0u;
 
     ADC->CTRL2 |= ADC_CTRL2_ON;
@@ -477,6 +528,38 @@ adc1_status_t adc1_read_synchronized_current(
     }
 
     return ADC1_STATUS_BUSY;
+}
+
+adc1_status_t adc1_read_synchronized_vbus(
+    adc1_vbus_snapshot_t* output)
+{
+    uint32_t raw;
+
+    if (output == NULL)
+    {
+        return ADC1_STATUS_INVALID_ARGUMENT;
+    }
+    if (!s_synchronous_current_started)
+    {
+        return ADC1_STATUS_NOT_READY;
+    }
+    if ((ADC->STS & ADC_STS_JENDC) == 0u)
+    {
+        return ADC1_STATUS_NO_SAMPLE;
+    }
+
+    raw = ADC->JDAT1 & ADC_JDAT1_JDAT;
+    ADC->STS = (~((uint32_t)ADC_INJECTED_STATUS_FLAGS)) &
+               ADC_STATUS_WRITABLE_MASK;
+    if (raw > ADC_SAMPLE_RAW_MAX)
+    {
+        return ADC1_STATUS_DATA_OUT_OF_RANGE;
+    }
+
+    ++s_vbus_sample_count;
+    output->vbus_raw = (uint16_t)raw;
+    output->sample_count = s_vbus_sample_count;
+    return ADC1_STATUS_OK;
 }
 
 bool adc1_set_current_event_handler(

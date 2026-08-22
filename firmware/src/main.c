@@ -68,7 +68,7 @@ static rotor_control_snapshot_t rotor_control_snapshot;
 
 enum
 {
-    COMMISSIONING_STATUS_SCHEMA_VERSION = 2u,
+    COMMISSIONING_STATUS_SCHEMA_VERSION = 3u,
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 1u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
@@ -149,6 +149,8 @@ struct product_command_context
     bool* bridge_ready;
     adc1_status_t* adc_status;
     adc1_current_snapshot_t* adc_snapshot;
+    bool* vbus_snapshot_valid;
+    adc1_vbus_snapshot_t* vbus_snapshot;
     adc_calibration_t* adc_calibration;
     diagnostics_encoder_t* encoder_diagnostics;
     angle_tracker_t* angle_tracker;
@@ -323,6 +325,11 @@ static command_status_t commissioning_get_status(
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT;
     }
+    if (*commissioning->vbus_snapshot_valid)
+    {
+        status->flags |=
+            COMMAND_COMMISSIONING_FLAG_VBUS_SNAPSHOT_VALID;
+    }
 
     status->raw_input_levels =
         (uint8_t)*commissioning->raw_input_levels;
@@ -384,6 +391,12 @@ static command_status_t commissioning_get_status(
     status->watchdog_reset =
         (g_platform_boot_diagnostics.reset_flags &
          RCC_CTRLSTS_IWDGRSTF) != 0u ? 1u : 0u;
+    if (*commissioning->vbus_snapshot_valid)
+    {
+        status->vbus_raw = commissioning->vbus_snapshot->vbus_raw;
+        status->vbus_sample_count =
+            commissioning->vbus_snapshot->sample_count;
+    }
     return COMMAND_STATUS_OK;
 }
 
@@ -2038,6 +2051,7 @@ int main(void)
     native_protocol_server_t protocol_server;
     uint8_t rs485_receive_buffer[RS485_FOREGROUND_DRAIN_BYTES];
     adc1_current_snapshot_t adc_snapshot = {0};
+    adc1_vbus_snapshot_t vbus_snapshot = {0};
     adc_zero_calibrator_t adc_zero_calibrator;
     adc_calibration_t adc_calibration = {0};
     phase_current_loop_config_t current_loop_config = {
@@ -2069,6 +2083,7 @@ int main(void)
     bool display_ready = false;
     bool adc_ready = false;
     bool adc_snapshot_valid = false;
+    bool vbus_snapshot_valid = false;
     bool adc_calibration_ready = false;
     bool current_loop_initialized = false;
     uint16_t current_loop_fault_code = 0u;
@@ -2136,6 +2151,8 @@ int main(void)
         .bridge_ready = &bridge_ready,
         .adc_status = &adc_status,
         .adc_snapshot = &adc_snapshot,
+        .vbus_snapshot_valid = &vbus_snapshot_valid,
+        .vbus_snapshot = &vbus_snapshot,
         .adc_calibration = &adc_calibration,
         .encoder_diagnostics = &encoder_diagnostics,
         .angle_tracker = &angle_tracker,
@@ -3049,6 +3066,18 @@ int main(void)
         if (adc_ready &&
             ((int32_t)(now - next_adc_sample) >= 0))
         {
+            const adc1_status_t vbus_status =
+                adc1_read_synchronized_vbus(&vbus_snapshot);
+
+            if (vbus_status == ADC1_STATUS_OK)
+            {
+                vbus_snapshot_valid = true;
+            }
+            else if ((vbus_status != ADC1_STATUS_NO_SAMPLE) &&
+                     (vbus_status != ADC1_STATUS_BUSY))
+            {
+                vbus_snapshot_valid = false;
+            }
             adc_status = adc1_read_synchronized_current(&adc_snapshot);
 
             if (adc_status == ADC1_STATUS_OK)
@@ -3099,6 +3128,7 @@ int main(void)
             {
                 adc_ready = false;
                 adc_snapshot_valid = false;
+                vbus_snapshot_valid = false;
                 rotor_control_runtime_force_fault(
                     &rotor_control_runtime, timebase_micros());
                 commissioning_context.remote_authority_active = false;

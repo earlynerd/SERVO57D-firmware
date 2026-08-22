@@ -42,9 +42,11 @@ saved report without accessing the board:
 py tools/motor_test.py --replot scratch/motor-runs/RUN_DIRECTORY
 ```
 
-The report plots A/B reference and measured current, encoder motion versus the
-expected movement, phase-voltage use versus its ceiling, and the first 12.8 ms
-at 20 kHz. The present `motor_test.py --rpm` input is a positive speed magnitude
+On protocol 1.10 the report plots A/B reference and measured current, encoder
+motion versus the expected movement, commanded carrier-average phase voltage
+in volts versus its voltage ceiling, and the first 12.8 ms at 20 kHz. Raw
+controller ratios remain in the saved JSON for diagnostic use. The present
+`motor_test.py --rpm` input is a positive speed magnitude
 converted using the tested motor's 50 electrical cycles per mechanical
 revolution. It is not a closed-loop command; use the separate
 `mks57d_rs485.py velocity` product service for signed, regulated speed.
@@ -74,9 +76,9 @@ py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 25
 py tools/mks57d_rs485.py --port COM14 velocity-status
 py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
 py tools/mks57d_rs485.py --port COM14 position-status
-py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 py tools/mks57d_rs485.py --port COM14 status
-py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
+py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace.jsonl
 py tools/mks57d_rs485.py --port COM14 stop
@@ -149,14 +151,29 @@ repeatable automated shutdown gate, `--stop-after-seconds SECONDS` sends the
 same STOP over the capture's active serial connection before the firmware
 deadline. The 0.27.1 evaluation envelope is ±16 rev/s (±960 RPM), 256 rev/s²
 reference slew, and at most 495 counts (about 2.999 A nominal). The independent
-observed-speed shutdown remains 20 rev/s. The velocity evidence remains
-qualified only through 1 rev/s; the expanded values are bench-evaluation
-permission, not a performance claim. Accepted high-end requests may saturate,
+observed-speed shutdown remains 20 rev/s. Positive-direction 0.27.1 captures
+now exercise the predictor through a 12 rev/s request. At 24 V, +8 rev/s reaches
+target without q-current clipping; +12 rev/s saturates q-demand and phase
+voltage in most samples and plateaus near 10 rev/s. Full 12 V/24 V snapshots
+show that current tracking of the high-frequency rotating reference, rather
+than a host command ceiling, is the next control boundary. The expanded values remain bench-
+evaluation permission, not a
+performance claim. Accepted high-end requests may saturate,
 stall, fault, heat the motor/drive, or produce unexpectedly energetic motion;
 use bounded runs, a suitable fixture, and immediate STOP/supply-cutoff access.
-Firmware 0.26.0 is the flashed baseline
-and its first relative-position gate passed; 0.27.1 still needs a normal flash
-and liveness/prediction smoke check.
+Firmware 0.27.1 is flashed and passes identity, readiness, live-policy,
+calibration restore, and bounded positive-velocity smoke confirmation. Firmware
+0.26.0 remains the bench-qualified relative-position baseline; corrected-
+position-cascade confirmation on 0.27.1 remains open.
+
+Firmware 0.28.0 / protocol 1.10 appends validity-tagged PA3 VBUS telemetry to
+commissioning status schema 3. `status`, velocity/position live lines, compact
+CSV, metadata, and trace downloads report measured bus volts and commanded
+carrier-average phase volts. Current commands and live output use
+milliamperes/amperes first. Raw ADC counts, phase-command ratios, and duties
+remain in machine-readable diagnostics for calibration and saturation analysis.
+Current counts do not vary with input voltage; higher VBUS changes available
+phase-voltage headroom and current tracking.
 
 `position-status` passively reports target/reference/measured position,
 profile/corrected/measured velocity, requested/applied current, state, result,
@@ -182,16 +199,17 @@ after each start. Run a nearly stationary reference for a clean startup step,
 then read and analyze it after authority ends:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 0.001
+py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 0.001
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 100 --interval 0.02
 py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace-a.jsonl
 py tools/analyze_current_trace.py scratch/current-trace-a.jsonl
 ```
 
 `analyze_current_loop.py` summarizes the slower diagnostic stream's RMS
-tracking error, gain, lag, voltage use, fault state, and encoder RPM.
-`analyze_current_trace.py` reports 10-90% rise time, overshoot, 5% settling,
-steady error, voltage saturation, and cross-axis coupling from the 20 kHz
+tracking error, gain, lag, commanded phase volts, raw voltage ratio, fault
+state, and encoder RPM. `analyze_current_trace.py` reports 10-90% rise time,
+overshoot, 5% settling, steady error, commanded phase volts, raw saturation,
+and cross-axis coupling from the 20 kHz
 startup trace. Generated captures belong under ignored `scratch/`.
 
 `flash-jlink.ps1` builds and validates the current-regulated firmware image, then

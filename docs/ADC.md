@@ -113,9 +113,9 @@ retained 2 MHz ADC clock, the two 28.5-cycle current conversions require about
 6 microseconds before the next 50 microsecond trigger. PWM is inhibited until
 the first complete pair is available. A DMA error or invalid result immediately
 removes PWM authority while heartbeat, protocol, and OLED diagnostics remain
-alive; the OLED shows the numeric status as `A####`. `vBus` is not part of this
-synchronous sequence and its earlier 20 Hz polling is temporarily inactive in
-the characterization image. On the tested board DMA channel 1 instead set
+alive; the OLED shows the numeric status as `A####`. In that historical image,
+`vBus` was not part of the synchronous sequence and its earlier 20 Hz polling
+was inactive. On the tested board DMA channel 1 instead set
 `ERRF` immediately and hardware cleared `CHEN`, as specified by the DMA error
 behavior in the user manual.
 
@@ -173,14 +173,31 @@ measurement, not the estimate, is the acceptance evidence. DMA completion then p
 The TIM3 update guardian allows one empty update for this pipelined result and
 faults on a second consecutive update without a new output.
 
+Firmware 0.28.0 adds a one-rank PA3 automatic-injected conversion after every
+regular A/B pair. The regular pair still completes DMA and releases the 20 kHz
+current loop first; VBUS conversion does not enter that interrupt path. At the
+16 MHz ADC clock, the two 7.5-cycle current conversions require approximately
+2.5 microseconds and the 55.5-cycle VBUS conversion requires approximately
+4.25 microseconds. From the 80%-carrier trigger, the complete sequence therefore
+ends near 46.75 microseconds in the 50-microsecond period, leaving a nominal
+3.25-microsecond margin before the next trigger. Foreground accepts the latest
+completed injected value without reconfiguring or stopping the production ADC.
+Commissioning status schema 3 publishes its raw value, validity, and accepted
+sample count; the host converts it to measured bus volts and converts the raw
+phase-command ratio into commanded carrier-average phase volts. The timing
+addition is bench-confirmed: inactive status reported 23.829 V at the 24 V
+supply setting, all 22 active samples held 23.776-23.815 V during a one-second 1 rev/s /
+606 mA run, 20,001 regular current-loop updates completed, the VBUS counter
+advanced, and all ADC/deadline/control/reset/panic checks remained clear.
+
 Remaining analog work is to characterize temperature and unit-to-unit gain
 tolerance, amplifier settling/bandwidth and clipping, and repeat across bus
 voltage. Switching-correlated offset or noise should be quantified beyond
 the successful current operating point. The 80%-phase trigger should be
 scoped to quantify switching-edge contamination, ISR latency, and
 conversion/control completion relative to the following preload boundary.
-Analog-watchdog thresholds and restoring periodic `vBus` acquisition also
-remain active current/voltage-envelope work.
+Analog-watchdog thresholds and production calibration/tolerance for the active
+`vBus` measurement remain current/voltage-envelope work.
 
 ## Trust summary
 

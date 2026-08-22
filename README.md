@@ -53,6 +53,10 @@ analyzes the result, and opens a self-contained plot report:
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
+On protocol 1.10 the live line and report use measured bus volts and commanded
+carrier-average phase volts; controller-native ratios remain only in the saved
+diagnostic data.
+
 The firmware supervisor still owns readiness and bridge authority; the active
 operation owns its duration/deadline, while the current backend independently
 owns current, voltage, duty, fast-loop deadline, and fault limits. Press Ctrl+C
@@ -67,10 +71,22 @@ closed-loop shaft-speed, signed-direction, or position command. Those controls
 remain separate from this diagnostic: firmware 0.25.1 established the qualified
 signed-velocity baseline, firmware 0.26.0 is the flashed relative-position
 baseline, and firmware 0.26.1 adds an independent encoder-production liveness
-guard through the same production actuator and fault path. Firmware 0.27.1 is
-the current source/build candidate; it advances timestamped electrical phase
+guard through the same production actuator and fault path. Firmware 0.27.1
+advances timestamped electrical phase
 inside the 20 kHz backend instead of holding each 1 kHz observation and removes
-the commissioning-era velocity/position cascade bottleneck.
+the commissioning-era velocity/position cascade bottleneck. Identity,
+readiness, live-policy, and bounded positive-velocity confirmation pass on
+hardware through a 12 rev/s request. At 24 V, +8 rev/s reaches and passes target
+without current clipping; +12 rev/s reaches both the 2.999 A nominal demand
+and the 70%-of-bus phase-voltage ceiling (16.8 V at the nominal 24 V setting)
+and plateaus near 10 rev/s. Every run ends
+without a predictor, encoder, backend, current-loop, supervisor, reset, or panic
+fault. Firmware 0.28.0 / protocol 1.10 is now flashed; it adds validity-tagged
+VBUS sampling after each current pair and reports amperes, measured bus volts,
+and commanded phase volts through the host interface. Inactive status measured
+23.829 V at the 24 V supply setting. A one-second 1 rev/s / 606 mA regression
+completed 20,001 current-loop updates with advancing VBUS samples, zero terminal
+duties, and no ADC, deadline, encoder, backend, reset, or panic fault.
 
 The 0.23 candidate adds the first production motion command: a signed,
 calibrated q-current demand with firmware-reported current, slew, velocity,
@@ -116,7 +132,7 @@ first bench move after flashing is:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 position-status
-py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 ```
 
 The move succeeds only with result `settled`; reaching its deadline releases
@@ -136,7 +152,31 @@ following-error checks remain pending.
 
 ## Current operating envelope
 
-Firmware 0.26.0 / protocol 1.9 is the current flashed product build. Its
+Firmware 0.28.0 / protocol 1.10 is the currently flashed evaluation build.
+Identity, readiness, generation-3 calibration restore, the 16 rev/s / 256 rev/s² /
+2.999 A nominal live velocity policy, and clean terminal release pass on hardware.
+Positive direct-velocity runs through 6 rev/s at 12 V appeared smooth and
+reached their targets at the bench with no perceptible heating or bench-supply
+current-limit entry. Full telemetry at 6 rev/s shows why: commanded phase voltage
+clipped at 70% of the bus (about 8.4 V at the nominal 12 V supply setting) in
+27/62 active samples while the measured A/B current-vector
+magnitude peaked near 148 counts (about 0.90 A nominal), far below the requested
+495 counts. At 24 V the matched run eliminated voltage/current-command clipping
+and reduced RMS velocity error from 1.197 to 0.638 rev/s. A +8 rev/s command
+reached target with only two sampled phase-voltage clamps; +12 rev/s saturated
+both q-demand and the nominal 16.8 V phase ceiling in most samples and
+plateaued around 9.1-9.9
+rev/s. The predictor, encoder, backend, current loop, supervisor, reset, and
+panic paths remained clear. The automatic-injected PA3 path is now bench-
+confirmed inactive and during bounded motion: it reported 23.829 V inactive,
+held 23.776-23.815 V across all 22 samples from a one-second 1 rev/s / 606 mA run, advanced its sample
+counter, and left the current-loop, deadline, authority-release, reset, and
+panic checks clear. Measured VBUS and commanded phase volts are directly
+visible while raw ratios remain available for controller diagnosis. Current
+counts remain independent of bus
+voltage: the supply changes voltage headroom and therefore achievable current
+tracking, not the shunt/amplifier/ADC current scale.
+Firmware 0.26.0 remains the bench-qualified relative-position baseline. Its
 mirrored relative-position and generic-STOP evidence is summarized above. The
 earlier 0.25.1 velocity qualification remains accepted: mirrored ±0.1 rev/s,
 25-count, two-second commands moved in the requested encoder coordinate,
@@ -227,7 +267,9 @@ matches the asymmetric A+/B- shunt placement.
 Each MCU bridge command drives tied EG3013 HIN/LIN inputs. Command low selects
 the low-side FET and command high selects the high-side FET, so all-low is a
 deterministic zero-voltage vector, not an all-FET-off state. All current-loop
-faults converge on that vector. Reset/halt waveforms, thermal limits, and the
+faults and normal motion releases converge on that vector. It shorts both ends
+of each winding low and therefore dynamically brakes the rotating motor; the
+present board/firmware has no passive coast state. Reset/halt waveforms, thermal limits, and the
 wider voltage/current/speed envelope remain engineering
 work; they no longer block bounded motor operation on the tested board.
 
@@ -291,10 +333,12 @@ generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional gates are an ordinary firmware 0.27.1 smoke run,
-the physical Right-button and loaded following-error position checks, and then
-staged measurement through the now-commandable 16 rev/s velocity envelope with
-predicted phase.
+accepted. The next functional gates are current-loop bandwidth/phase-tracking
+work at the measured 8-12 rev/s boundary, predictor-lead timing measurements,
+the corresponding negative-direction checks, and the corrected position-
+cascade and loaded following-error checks. The present +12 rev/s saturation
+evidence determines that control work; it is not a reason to restore a lower
+software command ceiling.
 Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,

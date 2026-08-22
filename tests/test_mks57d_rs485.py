@@ -196,6 +196,124 @@ def position_capture_args(root: Path) -> SimpleNamespace:
 
 
 class VelocityCaptureTests(unittest.TestCase):
+    def test_commissioning_status_reports_physical_voltage(self) -> None:
+        body = console.STATUS_V3_BODY.pack(
+            3,
+            1 << 11,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            123,
+            2048,
+            2048,
+            2048,
+            2048,
+            10,
+            -10,
+            8,
+            -8,
+            500,
+            -250,
+            0,
+            0,
+            0,
+            0,
+            25,
+            495,
+            600,
+            700,
+            500,
+            0,
+            0,
+            0,
+            1815,
+            1234,
+        )
+
+        status = console.parse_status(body)
+
+        self.assertIn("vbus_snapshot_valid", status["flags"])
+        self.assertAlmostEqual(
+            status["adc"]["bus_voltage_volts"], 23.987, places=3
+        )
+        self.assertAlmostEqual(
+            status["loop"]["phase_voltage_command_volts"]["a"],
+            11.994,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            status["loop"]["phase_voltage_command_volts"]["b"],
+            -5.997,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            status["loop"]["phase_voltage_limit_volts"], 16.791, places=3
+        )
+
+    def test_schema_two_status_remains_decodable_without_vbus(self) -> None:
+        body = bytes(console.STATUS_V2_BODY.size)
+
+        status = console.parse_status(body)
+
+        self.assertIsNone(status["adc"]["bus_voltage_volts"])
+        self.assertIsNone(
+            status["loop"]["phase_voltage_command_volts"]["a"]
+        )
+
+    def test_current_commands_accept_milliamperes(self) -> None:
+        parser = console.make_parser()
+
+        configure = parser.parse_args(
+            ["configure", "--current-ma", "750", "--frequency-hz", "20"]
+        )
+        align = parser.parse_args(["align", "--current-ma", "750"])
+        torque = parser.parse_args(["torque", "--current-ma", "750"])
+        velocity = parser.parse_args(
+            ["velocity", "--rpm", "480", "--current-limit-ma", "3000"]
+        )
+        position = parser.parse_args(
+            [
+                "position",
+                "--revolutions",
+                "0.25",
+                "--max-rpm",
+                "120",
+                "--acceleration-rps2",
+                "4",
+                "--current-limit-ma",
+                "3000",
+            ]
+        )
+
+        self.assertEqual(configure.current_ma, 750.0)
+        self.assertEqual(align.current_ma, 750.0)
+        self.assertEqual(torque.current_ma, 750.0)
+        self.assertEqual(velocity.current_limit_ma, 3000.0)
+        self.assertEqual(position.current_limit_ma, 3000.0)
+
+    def test_live_motion_lines_report_nominal_amperes(self) -> None:
+        velocity_row = console._velocity_csv_row(
+            {
+                "host_elapsed_seconds": 0.1,
+                "velocity": velocity_status("tracking"),
+                "drive": DRIVE_STATUS,
+                "encoder": ENCODER_STATUS,
+            }
+        )
+        position_row = console._position_csv_row(
+            {
+                "host_elapsed_seconds": 0.1,
+                "position": position_status("moving"),
+                "drive": DRIVE_STATUS,
+                "encoder": ENCODER_STATUS,
+            }
+        )
+
+        self.assertIn("Iq=+0.012/0.151 A", console._velocity_live_line(velocity_row, 2000))
+        self.assertIn("Iq=+0.055/0.606 A", console._position_live_line(position_row, 3000))
+
     def test_stop_after_is_scoped_to_motion_capture_parsers(self) -> None:
         parser = console.make_parser()
         align = parser.parse_args(["align", "--counts", "50"])

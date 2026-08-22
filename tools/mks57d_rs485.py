@@ -18,6 +18,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 DEFAULT_ADDRESS = 1
+MAX_WIRE_FRAME_SIZE = 84
 VELOCITY_MINIMUM_DURATION_MILLIS = 3
 POSITION_MINIMUM_DURATION_MILLIS = 100
 VELOCITY_CONSOLE_INTERVAL_SECONDS = 0.2
@@ -67,6 +68,7 @@ FLAG_NAMES = {
     8: "remote_start_pending",
     9: "remote_stop_pending",
     10: "fault_present",
+    11: "vbus_snapshot_valid",
 }
 
 INPUT_BITS = {
@@ -318,7 +320,8 @@ POSITION_FAULT_NAMES = {
     4: "actuator_fault",
 }
 
-STATUS_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
+STATUS_V2_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
+STATUS_V3_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHI")
 CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
@@ -337,6 +340,9 @@ VELOCITY_TELEMETRY_FIELDS = (
     "reference_velocity_rps",
     "measured_velocity_rps",
     "velocity_error_rps",
+    "requested_q_current_amperes",
+    "applied_q_current_amperes",
+    "current_limit_amperes",
     "requested_q_current_counts",
     "applied_q_current_counts",
     "current_limit_counts",
@@ -349,6 +355,10 @@ VELOCITY_TELEMETRY_FIELDS = (
     "loop_fault_flags_hex",
     "loop_faults",
     "loop_sample_count",
+    "bus_voltage_volts",
+    "phase_a_voltage_command_volts",
+    "phase_b_voltage_command_volts",
+    "phase_voltage_limit_volts",
     "encoder_status",
     "encoder_transport_status",
     "encoder_flags_hex",
@@ -379,6 +389,9 @@ POSITION_TELEMETRY_FIELDS = (
     "reference_velocity_rps",
     "target_velocity_rps",
     "measured_velocity_rps",
+    "requested_q_current_amperes",
+    "applied_q_current_amperes",
+    "current_limit_amperes",
     "requested_q_current_counts",
     "applied_q_current_counts",
     "current_limit_counts",
@@ -391,6 +404,10 @@ POSITION_TELEMETRY_FIELDS = (
     "loop_fault_flags_hex",
     "loop_faults",
     "loop_sample_count",
+    "bus_voltage_volts",
+    "phase_a_voltage_command_volts",
+    "phase_b_voltage_command_volts",
+    "phase_voltage_limit_volts",
     "encoder_status",
     "encoder_transport_status",
     "encoder_flags_hex",
@@ -410,6 +427,11 @@ POSITION_TELEMETRY_FIELDS = (
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
+VBUS_VOLTS_PER_COUNT = 3.3 / 4095.0 * 16.4
+
+
+def nominal_amperes_from_counts(counts: int) -> float:
+    return counts * COUNTS_TO_MILLIAMPERES / 1000.0
 
 
 class ProtocolError(RuntimeError):
@@ -523,7 +545,7 @@ class Client:
             self.sequence = 1
         self.serial.write(encode_request(self.address, sequence, command, payload))
         self.serial.flush()
-        wire = self.serial.read_until(b"\x00", 76)
+        wire = self.serial.read_until(b"\x00", MAX_WIRE_FRAME_SIZE)
         if not wire:
             raise ProtocolError("response timeout")
         response = decode_response(wire)
@@ -566,11 +588,13 @@ def input_state(levels: int) -> dict[str, bool]:
 
 
 def parse_status(body: bytes) -> dict[str, Any]:
-    if len(body) != STATUS_BODY.size:
+    if len(body) not in {STATUS_V2_BODY.size, STATUS_V3_BODY.size}:
         raise ProtocolError(
-            f"commissioning status is {len(body)} bytes, expected {STATUS_BODY.size}"
+            "commissioning status is "
+            f"{len(body)} bytes, expected {STATUS_V2_BODY.size} or "
+            f"{STATUS_V3_BODY.size}"
         )
-    values = iter(STATUS_BODY.unpack(body))
+    values = iter(STATUS_V2_BODY.unpack(body[: STATUS_V2_BODY.size]))
     schema = next(values)
     flags = next(values)
     raw_inputs = next(values)
@@ -598,6 +622,27 @@ def parse_status(body: bytes) -> dict[str, Any]:
     remaining_millis = next(values)
     retained_panic = next(values)
     watchdog_reset = next(values)
+    vbus_raw = None
+    vbus_sample_count = None
+    if len(body) == STATUS_V3_BODY.size:
+        vbus_raw, vbus_sample_count = struct.unpack(
+            ">HI", body[STATUS_V2_BODY.size :]
+        )
+    vbus_valid = bool(flags & (1 << 11)) and vbus_raw is not None
+    bus_voltage_unrounded = (
+        vbus_raw * VBUS_VOLTS_PER_COUNT
+        if vbus_valid
+        else None
+    )
+    bus_voltage = (
+        round(bus_voltage_unrounded, 3)
+        if bus_voltage_unrounded is not None
+        else None
+    )
+    phase_voltage_command = {
+        "a": round(bus_voltage_unrounded * voltage_a / 1000.0, 3),
+        "b": round(bus_voltage_unrounded * voltage_b / 1000.0, 3),
+    } if bus_voltage_unrounded is not None else {"a": None, "b": None}
 
     return {
         "schema": schema,
@@ -619,6 +664,9 @@ def parse_status(body: bytes) -> dict[str, Any]:
             "current_b_raw": current_b_raw,
             "current_a_zero_raw": current_a_zero,
             "current_b_zero_raw": current_b_zero,
+            "vbus_raw": vbus_raw,
+            "vbus_sample_count": vbus_sample_count,
+            "bus_voltage_volts": bus_voltage,
         },
         "test": {
             "selected_leg": LEG_NAMES.get(selected_leg, f"leg_{selected_leg}"),
@@ -635,12 +683,17 @@ def parse_status(body: bytes) -> dict[str, Any]:
             "faults": active_names(fault_flags, FAULT_NAMES),
             "sample_count": sample_count,
             "reference_counts": {"a": reference_a, "b": reference_b},
+            "reference_nominal_milliamperes": {
+                "a": round(reference_a * COUNTS_TO_MILLIAMPERES, 1),
+                "b": round(reference_b * COUNTS_TO_MILLIAMPERES, 1),
+            },
             "measured_counts": {"a": measured_a, "b": measured_b},
             "measured_nominal_milliamperes": {
                 "a": round(measured_a * COUNTS_TO_MILLIAMPERES, 1),
                 "b": round(measured_b * COUNTS_TO_MILLIAMPERES, 1),
             },
             "phase_voltage_permille": {"a": voltage_a, "b": voltage_b},
+            "phase_voltage_command_volts": phase_voltage_command,
             "duties_permille": {
                 "a1": duties[0],
                 "a2": duties[1],
@@ -648,7 +701,15 @@ def parse_status(body: bytes) -> dict[str, Any]:
                 "b2": duties[3],
             },
             "hard_current_limit_counts": hard_limit,
+            "hard_current_limit_nominal_amperes": round(
+                nominal_amperes_from_counts(hard_limit), 3
+            ),
             "phase_voltage_limit_permille": voltage_limit,
+            "phase_voltage_limit_volts": (
+                round(bus_voltage_unrounded * voltage_limit / 1000.0, 3)
+                if bus_voltage_unrounded is not None
+                else None
+            ),
         },
     }
 
@@ -780,6 +841,11 @@ def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:
 
 
 def read_current_trace(client: Client) -> list[dict[str, Any]]:
+    drive_status = query_status(client)
+    bus_voltage = drive_status.get("adc", {}).get("bus_voltage_volts")
+    phase_voltage_limit = drive_status.get("loop", {}).get(
+        "phase_voltage_limit_volts"
+    )
     first = query_current_trace_sample(client, 0)
     samples = [first]
     expected_count = first["captured_sample_count"]
@@ -794,6 +860,17 @@ def read_current_trace(client: Client) -> list[dict[str, Any]]:
             (sample["loop_sample_count"] - first_loop_sample) / 20000.0,
             7,
         )
+        sample["bus_voltage_volts"] = bus_voltage
+        sample["phase_voltage_limit_volts"] = phase_voltage_limit
+        raw_voltage = sample["phase_voltage_permille"]
+        sample["phase_voltage_command_volts"] = {
+            phase: (
+                round(bus_voltage * value / 1000.0, 3)
+                if bus_voltage is not None
+                else None
+            )
+            for phase, value in raw_voltage.items()
+        }
     return samples
 
 
@@ -1249,6 +1326,7 @@ def _velocity_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     drive = snapshot["drive"]
     encoder = snapshot["encoder"]
     loop = drive.get("loop", {})
+    adc = drive.get("adc", {})
     reset = drive.get("reset", {})
     estimator = encoder.get("estimator", {})
     reference = velocity["reference_velocity_revolutions_per_second"]
@@ -1266,6 +1344,15 @@ def _velocity_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "reference_velocity_rps": reference,
         "measured_velocity_rps": measured,
         "velocity_error_rps": round(reference - measured, 6),
+        "requested_q_current_amperes": nominal_amperes_from_counts(
+            velocity["requested_q_current_counts"]
+        ),
+        "applied_q_current_amperes": nominal_amperes_from_counts(
+            velocity["applied_q_current_counts"]
+        ),
+        "current_limit_amperes": nominal_amperes_from_counts(
+            velocity["current_limit_counts"]
+        ),
         "requested_q_current_counts": velocity["requested_q_current_counts"],
         "applied_q_current_counts": velocity["applied_q_current_counts"],
         "current_limit_counts": velocity["current_limit_counts"],
@@ -1278,6 +1365,16 @@ def _velocity_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "loop_fault_flags_hex": loop.get("fault_flags_hex", ""),
         "loop_faults": _joined_names(loop.get("faults")),
         "loop_sample_count": loop.get("sample_count", ""),
+        "bus_voltage_volts": adc.get("bus_voltage_volts", ""),
+        "phase_a_voltage_command_volts": loop.get(
+            "phase_voltage_command_volts", {}
+        ).get("a", ""),
+        "phase_b_voltage_command_volts": loop.get(
+            "phase_voltage_command_volts", {}
+        ).get("b", ""),
+        "phase_voltage_limit_volts": loop.get(
+            "phase_voltage_limit_volts", ""
+        ),
         "encoder_status": encoder.get("status", ""),
         "encoder_transport_status": encoder.get("transport_status", ""),
         "encoder_flags_hex": encoder.get("flags_hex", ""),
@@ -1392,14 +1489,26 @@ def _velocity_live_line(
     duration_millis: int,
 ) -> str:
     faults = row["velocity_faults"] or row["loop_faults"] or "none"
+    voltage_text = "Vbus=unavailable"
+    if row["bus_voltage_volts"] not in {"", None}:
+        phase_voltage = max(
+            abs(float(row["phase_a_voltage_command_volts"])),
+            abs(float(row["phase_b_voltage_command_volts"])),
+        )
+        voltage_text = (
+            f"Vbus={float(row['bus_voltage_volts']):5.2f} V  "
+            f"|Vph|={phase_voltage:5.2f}/"
+            f"{float(row['phase_voltage_limit_volts']):5.2f} V"
+        )
     return (
         f"{float(row['host_elapsed_seconds']):6.2f}/"
         f"{duration_millis / 1000.0:.2f} s  "
         f"{str(row['state']):8s}  "
         f"ref={float(row['reference_velocity_rps']):+7.3f}  "
         f"meas={float(row['measured_velocity_rps']):+7.3f} rps  "
-        f"Iq={int(row['applied_q_current_counts']):+4d}/"
-        f"{int(row['current_limit_counts']):d}  "
+        f"Iq={nominal_amperes_from_counts(int(row['applied_q_current_counts'])):+6.3f}/"
+        f"{nominal_amperes_from_counts(int(row['current_limit_counts'])):.3f} A  "
+        f"{voltage_text}  "
         f"enc={row['encoder_sample_interval_us']} us  "
         f"faults={faults}"
     )
@@ -1691,6 +1800,7 @@ def _position_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     drive = snapshot["drive"]
     encoder = snapshot["encoder"]
     loop = drive.get("loop", {})
+    adc = drive.get("adc", {})
     reset = drive.get("reset", {})
     estimator = encoder.get("estimator", {})
     target = position["target_position_revolutions"]
@@ -1719,6 +1829,15 @@ def _position_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "measured_velocity_rps": position[
             "measured_velocity_revolutions_per_second"
         ],
+        "requested_q_current_amperes": nominal_amperes_from_counts(
+            position["requested_q_current_counts"]
+        ),
+        "applied_q_current_amperes": nominal_amperes_from_counts(
+            position["applied_q_current_counts"]
+        ),
+        "current_limit_amperes": nominal_amperes_from_counts(
+            position["current_limit_counts"]
+        ),
         "requested_q_current_counts": position["requested_q_current_counts"],
         "applied_q_current_counts": position["applied_q_current_counts"],
         "current_limit_counts": position["current_limit_counts"],
@@ -1731,6 +1850,16 @@ def _position_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "loop_fault_flags_hex": loop.get("fault_flags_hex", ""),
         "loop_faults": _joined_names(loop.get("faults")),
         "loop_sample_count": loop.get("sample_count", ""),
+        "bus_voltage_volts": adc.get("bus_voltage_volts", ""),
+        "phase_a_voltage_command_volts": loop.get(
+            "phase_voltage_command_volts", {}
+        ).get("a", ""),
+        "phase_b_voltage_command_volts": loop.get(
+            "phase_voltage_command_volts", {}
+        ).get("b", ""),
+        "phase_voltage_limit_volts": loop.get(
+            "phase_voltage_limit_volts", ""
+        ),
         "encoder_status": encoder.get("status", ""),
         "encoder_transport_status": encoder.get("transport_status", ""),
         "encoder_flags_hex": encoder.get("flags_hex", ""),
@@ -1886,6 +2015,17 @@ def _position_live_line(
     duration_millis: int,
 ) -> str:
     faults = row["position_faults"] or row["loop_faults"] or "none"
+    voltage_text = "Vbus=unavailable"
+    if row["bus_voltage_volts"] not in {"", None}:
+        phase_voltage = max(
+            abs(float(row["phase_a_voltage_command_volts"])),
+            abs(float(row["phase_b_voltage_command_volts"])),
+        )
+        voltage_text = (
+            f"Vbus={float(row['bus_voltage_volts']):5.2f} V  "
+            f"|Vph|={phase_voltage:5.2f}/"
+            f"{float(row['phase_voltage_limit_volts']):5.2f} V"
+        )
     return (
         f"{float(row['host_elapsed_seconds']):6.2f}/"
         f"{duration_millis / 1000.0:.2f} s  "
@@ -1894,8 +2034,9 @@ def _position_live_line(
         f"ref={float(row['reference_position_revolutions']):+8.4f}  "
         f"meas={float(row['measured_position_revolutions']):+8.4f} rev  "
         f"err={float(row['profile_following_error_revolutions']):+7.4f}  "
-        f"Iq={int(row['applied_q_current_counts']):+4d}/"
-        f"{int(row['current_limit_counts']):d}  "
+        f"Iq={nominal_amperes_from_counts(int(row['applied_q_current_counts'])):+6.3f}/"
+        f"{nominal_amperes_from_counts(int(row['current_limit_counts'])):.3f} A  "
+        f"{voltage_text}  "
         f"faults={faults}"
     )
 
@@ -2207,7 +2348,9 @@ def make_parser() -> argparse.ArgumentParser:
     trace.add_argument("--output", help="write JSON lines to this path")
 
     configure = commands.add_parser("configure", help="set test demand")
-    configure.add_argument("--counts", type=int, required=True)
+    configure_current = configure.add_mutually_exclusive_group(required=True)
+    configure_current.add_argument("--current-ma", type=float)
+    configure_current.add_argument("--counts", type=int)
     configure.add_argument("--frequency-hz", type=float, required=True)
 
     start = commands.add_parser("start", help="start a bounded remote run")
@@ -2220,16 +2363,16 @@ def make_parser() -> argparse.ArgumentParser:
         "align", help="run the bounded production alignment procedure"
     )
     alignment_current = align.add_mutually_exclusive_group(required=True)
-    alignment_current.add_argument("--counts", type=int)
     alignment_current.add_argument("--current-ma", type=float)
+    alignment_current.add_argument("--counts", type=int)
     align.add_argument("--interval", type=float, default=0.1)
 
     torque = commands.add_parser(
         "torque", help="run a bounded encoder-aligned q-current demand"
     )
     torque_current = torque.add_mutually_exclusive_group(required=True)
-    torque_current.add_argument("--counts", type=int)
     torque_current.add_argument("--current-ma", type=float)
+    torque_current.add_argument("--counts", type=int)
     torque.add_argument("--duration-ms", type=int, default=250)
     torque.add_argument("--interval", type=float, default=0.05)
 
@@ -2240,8 +2383,8 @@ def make_parser() -> argparse.ArgumentParser:
     velocity_speed.add_argument("--rps", type=float)
     velocity_speed.add_argument("--rpm", type=float)
     velocity_current = velocity.add_mutually_exclusive_group(required=True)
-    velocity_current.add_argument("--current-limit-counts", type=int)
     velocity_current.add_argument("--current-limit-ma", type=float)
+    velocity_current.add_argument("--current-limit-counts", type=int)
     velocity.add_argument("--duration-ms", type=int, default=5000)
     velocity.add_argument("--interval", type=float, default=0.05)
     velocity.add_argument(
@@ -2283,8 +2426,8 @@ def make_parser() -> argparse.ArgumentParser:
         help="positive trajectory acceleration in revolutions/second^2",
     )
     position_current = position.add_mutually_exclusive_group(required=True)
-    position_current.add_argument("--current-limit-counts", type=int)
     position_current.add_argument("--current-limit-ma", type=float)
+    position_current.add_argument("--current-limit-counts", type=int)
     position.add_argument("--duration-ms", type=int, default=10000)
     position.add_argument("--interval", type=float, default=0.05)
     position.add_argument(
@@ -2426,10 +2569,26 @@ def main() -> int:
                 for sample in samples:
                     print(json.dumps(sample, sort_keys=True), flush=True)
         elif args.command == "configure":
+            if args.counts is not None:
+                amplitude_counts = args.counts
+            else:
+                if (
+                    args.current_ma is None
+                    or not math.isfinite(args.current_ma)
+                    or args.current_ma <= 0.0
+                ):
+                    raise ProtocolError("--current-ma must be positive")
+                amplitude_counts = round(
+                    args.current_ma / COUNTS_TO_MILLIAMPERES
+                )
+            if not 1 <= amplitude_counts <= 0xFFFF:
+                raise ProtocolError(
+                    "test current must encode as 1..65535 counts"
+                )
             frequency_millihz = round(args.frequency_hz * 1000.0)
             body = client.transact(
                 COMMAND_CONFIGURE_CURRENT_TEST,
-                struct.pack(">HI", args.counts, frequency_millihz),
+                struct.pack(">HI", amplitude_counts, frequency_millihz),
             )
             if len(body) != 6:
                 raise ProtocolError("configure response has an unexpected length")
@@ -2437,6 +2596,9 @@ def main() -> int:
             print_json(
                 {
                     "amplitude_counts": amplitude,
+                    "amplitude_nominal_milliamperes": round(
+                        amplitude * COUNTS_TO_MILLIAMPERES, 1
+                    ),
                     "frequency_hz": frequency_millihz / 1000.0,
                 }
             )

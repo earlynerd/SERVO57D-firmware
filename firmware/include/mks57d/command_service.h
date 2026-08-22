@@ -58,7 +58,8 @@ typedef enum
     COMMAND_COMMISSIONING_FLAG_REMOTE_AUTHORITY = 1u << 7,
     COMMAND_COMMISSIONING_FLAG_REMOTE_START_PENDING = 1u << 8,
     COMMAND_COMMISSIONING_FLAG_REMOTE_STOP_PENDING = 1u << 9,
-    COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT = 1u << 10
+    COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT = 1u << 10,
+    COMMAND_COMMISSIONING_FLAG_VBUS_SNAPSHOT_VALID = 1u << 11
 } command_commissioning_flag_t;
 
 typedef struct
@@ -99,6 +100,8 @@ typedef struct
     uint32_t remote_run_remaining_millis;
     uint8_t retained_panic;
     uint8_t watchdog_reset;
+    uint16_t vbus_raw;
+    uint32_t vbus_sample_count;
 } command_commissioning_status_t;
 
 typedef struct

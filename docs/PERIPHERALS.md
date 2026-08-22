@@ -43,14 +43,18 @@ SysTick, a control ISR, or any safety path.
 The project retains a bounded polling ADC path for PA1 `currentB`, PA2
 `currentA`, and PA3 `vBus`. That path proved all three channels with
 all-or-nothing raw 12-bit samples. Firmware 0.19.0 instead dedicates PA1/PA2 to
-the 20 kHz synchronous current sequence; periodic PA3 bus-voltage sampling is
-the next ADC integration item.
+the 20 kHz synchronous current sequence. Firmware 0.28.0 follows each regular
+current pair with a one-rank automatic-injected PA3 bus-voltage conversion;
+regular DMA completion still releases the current loop first. Commissioning
+status publishes validity and the latest value without stopping or
+reconfiguring the production ADC.
 
 Passive initialization uses HSI divided to the ADC's required 1 MHz timing
 clock and a synchronous HCLK-derived sampling clock no faster than 2 MHz.
 Scan, DMA, interrupts, internal channels, and timer triggers remain disabled.
-Schematic-derived engineering conversion is host-tested but is not yet used by
-the active raw-value display. The detailed register contract, timing assumptions, evidence
+Schematic-derived engineering conversion is host-tested and is now used by the
+host service for measured bus volts and commanded carrier-average phase volts.
+The detailed register contract, timing assumptions, evidence
 confidence, and activation checklist are in [Passive ADC bring-up](ADC.md).
 
 ADC work has two layers:
@@ -61,6 +65,9 @@ ADC work has two layers:
 - **Synchronous current acquisition:** complete at 20 kHz using a TIM2 compare
   at 80% of the TIM3 carrier and DMA completion. Missing, duplicate, clipped,
   and late sequences are fault inputs.
+- **Injected bus-voltage acquisition:** implemented after the regular current
+  pair with nominal 3.25 microseconds of remaining carrier margin; inactive
+  voltage plausibility and active deadline behavior are the hardware gate.
 
 Current control uses the tested board's measured 3.3 V reference,
 schematic-and-board-verified 6.65 current-sense gain, and measured startup

@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.27.1 implements the fast current path, production alignment,
+Status: firmware 0.28.0 implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -18,6 +18,9 @@ document defines those boundaries and the route to faster outer loops. Firmware
 0.27.1 turns each accepted encoder phase/velocity observation into a bounded
 predictor seed and regenerates aligned-q A/B references on every 20 kHz current
 event.
+Firmware 0.28.0 also follows each regular current pair with an automatic-
+injected PA3 VBUS conversion. Regular DMA completion and current-loop release
+remain first; foreground alone consumes the later VBUS result.
 
 ## Goals
 
@@ -84,6 +87,7 @@ Every ISR must meet these rules:
 | Object | Normal writer | Readers | Publication method |
 | --- | --- | --- | --- |
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
+| Raw VBUS sample | ADC automatic-injected completion | Foreground telemetry | Latest completed injected register plus validity and an accepted-sample count; never a current-loop prerequisite |
 | Encoder angle/status/timestamp | PendSV-deferred rotor runtime after SPI DMA | Supervisor, diagnostics, and motion control | Sequence-numbered snapshot; readers retry if publication changes |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
@@ -143,6 +147,11 @@ still requires a channel-budget and latency review.
   documented extra-sample workaround. A missing, duplicate, late, clipped, or
   transfer-error sample is a fast-loop fault rather than permission to reuse an
   earlier duty request.
+- **Injected VBUS:** one slow PA3 conversion automatically follows the regular
+  pair. It has no DMA/ISR and is read by foreground. At 16 MHz the regular pair
+  takes about 2.5 microseconds and VBUS takes about 4.25 microseconds, leaving a
+  nominal 3.25 microseconds before the next carrier trigger. Hardware must
+  confirm both voltage plausibility and unchanged current-loop deadline margin.
 - **Encoder SPI:** TIM6 releases a 1 kHz transaction, TIM7 enforces CS setup and
   hold, DMA channels 2/3 move the fixed four-byte frame, and PendSV performs
   decode/runtime work. One post-power-up exchange is explicitly primed and
@@ -459,6 +468,13 @@ velocity, and position all use the same readiness prerequisite and terminal
 primitive. Motion deadline and STOP release normally, while the controllers'
 independent feedback, motion, numeric, actuator, reference, and backend
 violations enter `FAULT` and the same all-low primitive.
+
+Normal deadline and STOP release also end in this all-low vector. Because both
+ends of each winding are then selected low, a rotating motor is dynamically
+braked and may stop sharply. The tied EG3013 inputs expose no software-commanded
+all-FET-off state, so the present board has no true passive coast mode. A normal
+controlled-deceleration policy is possible, but it is not coasting; faults must
+retain immediate all-low braking.
 
 Software priority is secondary to hardware shutdown. The N32L40x timer/comparator routing documents a promising candidate: COMP1 and COMP2 outputs can be routed to TIM3 `OCREF-clear`, and the general timer channels can clear `OCxREF` when the selected comparator/ETRF condition is active. This could suppress PWM without ISR latency. Whether the two bipolar current channels can obtain complete positive and negative overcurrent coverage, and whether all four outputs reach a safe EG3013 input state, must be demonstrated on the bench.
 

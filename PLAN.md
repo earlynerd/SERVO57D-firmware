@@ -158,6 +158,14 @@ Goal: regulate winding current before attempting position control.
 - [ ] Quantify switching-edge contamination and ISR/preload timing on an oscilloscope.
 - [x] Calibrate PA1/PA2 offsets independently at every safe startup using 32 bridge-zeroed snapshots.
 - [x] Convert ADC readings to signed milliamperes from the measured 3.3 V reference, 20 mOhm shunts, and verified 6.65 amplifier gain (6.059 mA/count on the tested board).
+- [x] Restore production PA3 VBUS acquisition as an automatic-injected
+  conversion after the regular current pair; expose validity, measured bus
+  volts, and commanded phase volts without delaying the current-loop DMA event.
+- [x] Flash-validate 0.28.0 VBUS scaling at the 24 V supply setting while
+  inactive, then run the bounded 1 rev/s active deadline regression: inactive
+  VBUS was 23.829 V, all 22 active samples held 23.776-23.815 V, the accepted-sample
+  counter advanced, 20,001 current-loop updates completed, terminal duties
+  returned to zero, and all ADC/deadline/control/reset/panic faults stayed clear.
 - [x] Implement independent requested-current, raw overcurrent, phase-voltage, and absolute-duty bounds.
 - [x] Implement fixed-point A/B winding PI controllers with conditional anti-windup and low-zero sign-magnitude modulation.
 - [x] Run the controller from every completed two-rank DMA sequence and latch ADC, invalid-output, PWM-write, and missed-update faults to the common all-low bridge path.
@@ -175,6 +183,13 @@ phase-voltage effort against the 70% ceiling. Firmware permits deliberate
 evaluation through 2.999 A / 250 electrical Hz, but those endpoints are
 unqualified. Scope and enclosed-thermal characterization continue
 while encoder alignment and outer-loop integration begin.
+
+Matched velocity tests also establish the role of bus headroom: at 12 V a
++6 rev/s request repeatedly reached the nominal 8.4 V phase ceiling, while the
+24 V repeat removed phase/q-demand clipping and reduced RMS velocity error from
+1.197 to 0.638 rev/s. At 24 V, +8 rev/s reaches target; +12 rev/s exposes the
+next current-tracking boundary by reaching the nominal 16.8 V and 2.999 A
+demand ceilings.
 
 ## Phase 6 — Encoder alignment and servo control
 
@@ -230,7 +245,10 @@ Goal: close the mechanical loop incrementally.
   its output lead and worst-case ISR duration, then evaluate through 2, 4, 5, 8,
   12, and 16 rev/s. The command space is already enabled; the endpoint has 25
   current updates per electrical cycle and 1.25 encoder observations per
-  electrical cycle.
+  electrical cycle. Positive-direction operation reaches target through 8
+  rev/s at 24 V and has clean predictor/fault evidence through a +12 rev/s
+  request; negative-direction staging, scope timing, and high-frequency current
+  tracking remain the active work.
 - [x] Integrate a low-gain velocity loop on the authoritative 1 kHz rotor
   observation, commanding only the bounded aligned-q-current actuator, with an
   acceleration-limited reference, per-command current limit, finite deadline,
@@ -251,7 +269,7 @@ Goal: close the mechanical loop incrementally.
   behavior while absolute position, homing, and step/direction work continues
   through the same fault and authority contracts.
 - [x] Replace the 4 rev/s, 4 rev/s², and 100-count commissioning policy with a
-  16 rev/s/495-count evaluation range, a 64 rev/s² position profile, 256 rev/s²
+  16 rev/s/2.999 A nominal evaluation range, a 64 rev/s² position profile, 256 rev/s²
   inner slew, and an exact 17 rev/s corrected-target allowance. Retain 20 rev/s
   observed-speed and 0.25-revolution following-error shutdown independently.
 - [ ] Stage the exposed velocity range through ±2, ±4, ±5, ±8, ±12, and ±16

@@ -516,7 +516,11 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              status->remote_run_remaining_millis);
                 response_frame->payload[62] = status->retained_panic;
                 response_frame->payload[63] = status->watchdog_reset;
-                payload_length = 64u;
+                write_u16_be(&response_frame->payload[64],
+                             status->vbus_raw);
+                write_u32_be(&response_frame->payload[66],
+                             status->vbus_sample_count);
+                payload_length = 70u;
                 break;
             }
 

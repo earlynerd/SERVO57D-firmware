@@ -1965,8 +1965,8 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     mock_protocol_tx_t transmit = {.accept = true};
     mock_commissioning_t commissioning = {
         .status = {
-            .schema_version = 2u,
-            .flags = 0x000007FFu,
+            .schema_version = 3u,
+            .flags = 0x00000FFFu,
             .raw_input_levels = 0xA5u,
             .debounced_input_levels = 0x5Au,
             .adc_status = 3u,
@@ -1995,6 +1995,8 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .remote_run_remaining_millis = 4321u,
             .retained_panic = 15u,
             .watchdog_reset = 1u,
+            .vbus_raw = 0x0708u,
+            .vbus_sample_count = 0x11121314u,
         },
         .encoder_status = {
             .schema_version = 2u,
@@ -2178,9 +2180,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 64u);
+    EXPECT_TRUE(response.payload_length == 70u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 2u);
+    EXPECT_TRUE(response.payload[1] == 3u);
     EXPECT_TRUE(response.payload[2] == 0u);
     EXPECT_TRUE(response.payload[5] == 0xFFu);
     EXPECT_TRUE(response.payload[6] == 0xA5u);
@@ -2193,6 +2195,10 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[61] == 0xE1u);
     EXPECT_TRUE(response.payload[62] == 15u);
     EXPECT_TRUE(response.payload[63] == 1u);
+    EXPECT_TRUE(response.payload[64] == 0x07u);
+    EXPECT_TRUE(response.payload[65] == 0x08u);
+    EXPECT_TRUE(response.payload[66] == 0x11u);
+    EXPECT_TRUE(response.payload[69] == 0x14u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,

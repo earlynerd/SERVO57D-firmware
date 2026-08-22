@@ -20,6 +20,12 @@ typedef struct
     uint16_t current_a_raw;
 } adc1_current_snapshot_t;
 
+typedef struct
+{
+    uint16_t vbus_raw;
+    uint32_t sample_count;
+} adc1_vbus_snapshot_t;
+
 typedef enum
 {
     ADC1_STATUS_OK = 0,
@@ -54,6 +60,11 @@ adc1_status_t adc1_read_passive(adc_sample_t* output);
 adc1_status_t adc1_start_pwm_synchronized_current(void);
 adc1_status_t adc1_read_synchronized_current(
     adc1_current_snapshot_t* output);
+/* Reads the latest completed PA3 conversion from the automatic injected
+ * sequence. The injected conversion follows the regular current pair and
+ * does not delay its DMA-complete/current-loop event. */
+adc1_status_t adc1_read_synchronized_vbus(
+    adc1_vbus_snapshot_t* output);
 bool adc1_set_current_event_handler(
     adc1_current_event_handler_t handler,
     void* context);

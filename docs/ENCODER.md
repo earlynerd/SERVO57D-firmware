@@ -1,12 +1,12 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.27.1 releases encoder reads at 1 kHz from TIM6, performs
+Status: firmware 0.28.0 releases encoder reads at 1 kHz from TIM6, performs
 bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
 through DMA channels 2/3, and defers decode/runtime publication through PendSV.
 Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
 automatic-alignment and aligned-torque controllers, firmware 0.25.1's bounded
 velocity controller, and firmware 0.26.0's relative-position controller. Native
-protocol 1.9 exposes raw health,
+protocol 1.10 retains encoder schema 2 and exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy
 evidence. The 1 kHz schedule passed its

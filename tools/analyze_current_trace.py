@@ -97,6 +97,11 @@ def analyze(
     voltages = [
         abs(float(sample["phase_voltage_permille"][axis])) for sample in samples
     ]
+    physical_voltages = [
+        abs(float(sample["phase_voltage_command_volts"][axis]))
+        for sample in samples
+        if sample.get("phase_voltage_command_volts", {}).get(axis) is not None
+    ]
     other_measured = [
         abs(float(sample["measured_counts"][other_axis])) for sample in samples
     ]
@@ -127,6 +132,12 @@ def analyze(
             statistics.fmean(error * error for error in tail_errors)
         )
         * COUNTS_TO_MILLIAMPERES,
+        "peak_absolute_voltage_volts": (
+            max(physical_voltages) if physical_voltages else None
+        ),
+        "phase_voltage_limit_volts": samples[0].get(
+            "phase_voltage_limit_volts"
+        ),
         "peak_absolute_voltage_permille": max(voltages),
         "voltage_saturation_fraction": sum(value >= 100.0 for value in voltages)
         / len(voltages),

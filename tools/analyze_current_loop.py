@@ -209,6 +209,17 @@ def analyze(samples: list[dict[str, Any]], settle_seconds: float) -> dict[str, A
         for axis in ("a", "b")
     ]
     voltage_limit = float(settled[0]["loop"]["phase_voltage_limit_permille"])
+    voltage_values = [
+        sample["loop"].get("phase_voltage_command_volts", {}).get(axis)
+        for sample in settled
+        for axis in ("a", "b")
+    ]
+    physical_voltages = [
+        abs(float(value)) for value in voltage_values if value is not None
+    ]
+    physical_voltage_limit = settled[0]["loop"].get(
+        "phase_voltage_limit_volts"
+    )
     sample_deltas = [
         later["loop"]["sample_count"] - earlier["loop"]["sample_count"]
         for earlier, later in zip(active, active[1:])
@@ -254,6 +265,10 @@ def analyze(samples: list[dict[str, Any]], settle_seconds: float) -> dict[str, A
         "combined_rms_error_milliamperes": _rms(all_errors)
         * COUNTS_TO_MILLIAMPERES,
         "peak_absolute_error_counts": max(abs(value) for value in all_errors),
+        "maximum_absolute_phase_voltage_volts": (
+            max(physical_voltages) if physical_voltages else None
+        ),
+        "phase_voltage_limit_volts": physical_voltage_limit,
         "maximum_absolute_voltage_permille": max(voltages),
         "voltage_saturation_fraction": sum(
             value >= voltage_limit for value in voltages
@@ -291,6 +306,12 @@ def compact_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "mb": sample["loop"]["measured_counts"]["b"],
             "va": sample["loop"]["phase_voltage_permille"]["a"],
             "vb": sample["loop"]["phase_voltage_permille"]["b"],
+            "va_volts": sample["loop"].get(
+                "phase_voltage_command_volts", {}
+            ).get("a"),
+            "vb_volts": sample["loop"].get(
+                "phase_voltage_command_volts", {}
+            ).get("b"),
         }
         for sample in active
     ]

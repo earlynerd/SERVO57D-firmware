@@ -144,12 +144,18 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.26.0 / protocol 1.9 is the current flashed product build. It retains
-the qualified velocity service, adds relative-position control through the same
-single-estimator runtime, and expands commandable velocity to 4 rev/s. Firmware
-0.27.1 / protocol 1.9 is the current source/build candidate; it includes the
+Firmware 0.28.0 / protocol 1.10 is the currently flashed evaluation build. It
+retains the 0.27.1 identity, readiness, live-policy, calibration restore, and bounded positive-
+velocity smoke checks pass through a 12 rev/s request. At 24 V, +8 rev/s reaches
+target without q-current clipping; +12 rev/s reaches the 2.999 A nominal
+demand and the 70%-of-bus phase-voltage ceiling (16.8 V at the nominal 24 V
+setting) and plateaus near 10 rev/s, without a
+predictor, encoder, backend, current-loop, supervisor, reset, or panic fault.
+Firmware 0.26.0 remains the bench-qualified relative-position baseline.
+Firmware 0.28.0 retains the 0.27.1 motion envelope and adds automatic-injected VBUS telemetry plus physical
+host electrical units. Firmware 0.27.1 includes the
 independent 3 ms encoder-production guard and adds bounded 20 kHz electrical-
-phase prediction, a 16 rev/s/495-count motion evaluation envelope, and explicit
+phase prediction, a 16 rev/s/2.999 A nominal motion evaluation envelope, and explicit
 position-cascade headroom without changing the wire layout. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
@@ -163,13 +169,13 @@ position-cascade headroom without changing the wire layout. It:
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.9 COBS/CRC frames in foreground and replies to valid
+12. Parses native v1.10 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
     automatic-alignment, generic-STOP, persistent-configuration, and aligned
     q-current, signed velocity, and relative-position requests,
     including live status while active.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
-14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
+14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; regular completion releases the current loop, then a one-rank automatic-injected PA3 conversion captures VBUS. Thirty-two startup current snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
 16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. The retired local Left/Center phase selector cannot request authority. RS-485 may request the bounded rotating-current diagnostic through the supervisor/current backend; deadline, STOP, transport failure, or the physical Right button returns it to `ZERO`.
 17. Keeps RS-485, display, and configuration work in foreground while the timer/DMA/PendSV rotor service remains deterministic and observable during active operation.
@@ -198,7 +204,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.27.1`, authoritative drive state, reset cause,
+22. Publishes firmware `0.28.0`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -258,5 +264,23 @@ host-tool tests (the same two optional reference-cache tests skip). Clean Debug
 and Release post-link builds pass: Debug uses 55,828 bytes Flash, Release uses
 50,248 bytes, and both use 7,444 bytes SRAM1 with no configuration-slot or SRAM2
 allocation. The 240-byte debugger diagnostic ABI remains verified. Hardware
-confirmation of the exposed motion range and corrected position cascade is
-pending.
+smoke confirmation passes through a +12 rev/s request. Raising the bus from
+12 V to 24 V removes clipping at +6 rev/s and reduces RMS velocity error from
+1.197 to 0.638 rev/s. At +8 rev/s the motor reaches target; at +12 rev/s both
+q-demand and phase voltage saturate in most samples and speed plateaus near
+10 rev/s. Negative-direction high-speed response, current-loop phase tracking,
+scoped predictor/current timing, and corrected-position cascade confirmation
+remain open.
+
+Firmware 0.28.0 / protocol 1.10 passes the rebuilt native C suite, 14 applicable
+Python host tests (two optional reference-cache tests skip), and clean Debug
+and Release Arm post-link builds. Debug uses 56,124 bytes Flash, Release uses
+50,520 bytes, and both use 7,452 bytes SRAM1 with no configuration-slot or
+SRAM2 allocation. The 240-byte debugger diagnostic ABI remains verified.
+Commissioning status schema 3 expands the maximum native payload to 72 bytes
+and appends a validity-tagged PA3 VBUS sample/count without changing any older
+status offset. Hardware identity reports 0.28.0/protocol 1.10. Inactive status
+reported 23.829 V at the 24 V supply setting; all 22 samples from a one-second
+1 rev/s / 606 mA regression held 23.776-23.815 V, completed 20,001 current-loop updates with an
+advancing VBUS sample counter, returned all duties to zero, and retained clear
+ADC, deadline, encoder, backend, reset, and panic state.

@@ -109,8 +109,9 @@ with one command:
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
-The command reports live current, voltage effort, and encoder angle; STOP is
-sent on Ctrl+C. It then saves `telemetry.jsonl`, `trace.jsonl`, `summary.json`,
+On protocol 1.10 the command reports live current, measured bus volts,
+commanded carrier-average phase volts, and encoder angle; STOP is sent on
+Ctrl+C. It then saves `telemetry.jsonl`, `trace.jsonl`, `summary.json`,
 and a self-contained `report.html` under ignored `scratch/motor-runs/`, opens
 the report, and restores the prior inactive test configuration. Use
 `--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
@@ -124,7 +125,7 @@ py tools/mks57d_rs485.py --port COM14 identity
 py tools/mks57d_rs485.py --port COM14 boot
 py tools/mks57d_rs485.py --port COM14 encoder
 py tools/mks57d_rs485.py --port COM14 status
-py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
+py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
 ```
 
@@ -305,20 +306,21 @@ py tools/mks57d_rs485.py --port COM14 torque-status
 ```
 
 The initial status must report alignment valid, no active authority/backend,
-±495 counts maximum current, 10,000 counts/s slew, 20 rev/s observed velocity, 1,000 rev/s²
+±2.999 A nominal maximum current (495 raw counts), 60.59 A/s nominal slew
+(10,000 raw counts/s), 20 rev/s observed velocity, 1,000 rev/s²
 acceleration, a 3 ms minimum duration, and a 2,147,483,647 ms maximum
 duration. That maximum comes from wrap-safe 32-bit deadline arithmetic and is
 not a thermal or motor limit; the caller still selects a finite interval for
 every operation. The remaining values are independently enforced 0.23
-candidate values, not physical capability claims. The 495-count current ceiling
-is a 2.999 A evaluation point matching the attached motor's reported 3 A rating,
+candidate values, not physical capability claims. The 2.999 A current ceiling
+matches the attached motor's reported 3 A rating,
 while the separately reported 600-count raw trip is about 3.635 A.
 
 Begin with 5 counts (about 30.3 mA) for a conservative 100 ms, then inspect final
 drive, encoder, torque, fault, reset, and panic state:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 torque --counts 5 --duration-ms 100 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 torque --current-ma 30.3 --duration-ms 100 --interval 0.02
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 encoder
 py tools/mks57d_rs485.py --port COM14 torque-status
@@ -336,7 +338,7 @@ A safety result such as `overacceleration` is a successful
 shutdown-path observation but does not pass the normal-run gate; preserve its
 telemetry and tune only from measured evidence.
 
-If clean, repeat at `--counts -5` and confirm the q-current and mechanical
+If clean, repeat at `--current-ma -30.3` and confirm the q-current and mechanical
 response reverse. Then progress through ±25 counts (151.5 mA) and ±50 counts
 (303 mA) at 100 ms. Do not advance after an unexpected fault, implausible phase
 reference, encoder discontinuity, heating, or supply-current step. Firmware
@@ -388,7 +390,7 @@ The first run uses 0.1 rev/s (6 RPM), a 25-count limit (about 151.5 mA), and a
 two-second deadline:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-counts 25 --duration-ms 2000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000 --interval 0.02
 ```
 
 Acceptance requires ramping then tracking telemetry, a reference slope no
@@ -412,7 +414,7 @@ For deterministic capture without an interactive terminal, use a longer
 firmware deadline and schedule the same generic STOP on the active connection:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-counts 50 --duration-ms 5000 --stop-after-seconds 2 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 303 --duration-ms 5000 --stop-after-seconds 2 --interval 0.02
 ```
 
 Repeat the STOP check with the physical Right button. Those checks establish a
@@ -420,7 +422,7 @@ known comparison point; firmware permission is not conditional on completing
 them. Current-limit saturation is
 an intentional test: confirm `current_at_limit`, bounded recovery, and no
 integrator-driven overshoot while selecting the next request from the live
-495-count policy.
+2.999 A nominal policy.
 Physical encoder/readiness-loss injection is indefinitely deferred on the
 current board/motor assembly. Its common fault/ZERO contract remains covered by
 host/native regression tests and should be physically re-opened only when a
@@ -477,7 +479,7 @@ Begin with a quarter revolution at 30 RPM maximum, 1 rev/s², 100 counts, and a
 three-second deadline:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000 --interval 0.02
 ```
 
 Acceptance requires `moving`, then `settling`, then `complete` / `settled`;
@@ -539,30 +541,80 @@ Confirm `velocity-status` reports 16 rev/s, 256 rev/s², 495 counts, and a
 target above the requested profile speed, through 17 rev/s; this is intentional
 servo headroom, not a protocol-policy mismatch.
 
+Accepted 2026-08-22 result: firmware 0.27.1 reported the expected identity and
+live policy, restored generation-3 calibration, advanced encoder samples at
+nominal 1 kHz, and completed bounded positive-velocity requests through
+12 rev/s with clean terminal references/duties and no predictor, encoder,
+backend, current-loop, supervisor, reset, or panic fault. Active captured
+encoder intervals remained 998-1,002 us. The physical sensor-loss injection
+remains deferred as described above.
+
+### Firmware 0.28.0 physical electrical-units and VBUS gate
+
+After flashing 0.28.0, confirm identity reports protocol 1.10 and passive
+`status` reports commissioning schema 3 with `vbus_snapshot_valid`, a steadily
+advancing VBUS sample count, and a bus-voltage value consistent with the supply
+or a DMM. With the bridge inactive at the present 24 V supply setting, stop and
+inspect wiring/scaling if the reported value is outside 22-26 V; record the DMM
+comparison before assigning a tighter production tolerance. Current commands
+and motion live lines should use amperes, measured VBUS, commanded phase volts,
+and the phase-voltage limit in volts. Raw counts and ratios remain diagnostic
+fields, not the primary command/display units.
+
+Then prove the automatic-injected conversion did not disturb the 20 kHz regular
+DMA deadline with an already bounded low-energy motion run:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 60 --current-limit-ma 606 --duration-ms 1000 --interval 0.02 --jsonl
+```
+
+Require VBUS validity/sample advancement throughout, phase commands no greater
+than the reported voltage limit, normal deadline release, terminal zero
+references/duties, and no ADC, deadline, predictor, backend, supervisor, reset,
+or panic fault. This active run is the timing confirmation; the inactive voltage
+comparison alone does not validate automatic-injected conversion under the
+20 kHz schedule.
+
+This gate passes on the tested board. Identity reported firmware 0.28.0 and
+protocol 1.10. Inactive schema-3 status reported 23.829 V at the 24 V supply
+setting with all bridge duties zero. Across all 22 samples from the documented
+one-second run, VBUS held 23.776-23.815 V and phase command peaked at 2.88 V against a 16.66 V
+reported limit, encoder samples remained at 1,000 us in the live display, and
+the run completed 20,001 current-loop updates. Post-run status reported
+23.815 V, an advanced VBUS accepted-sample count, zero current references and
+bridge duties, no authority, and no ADC, deadline, predictor, encoder, backend, supervisor,
+reset, or panic fault.
+
 ### Expanded velocity evaluation gate
 
 Firmware 0.27.1 permits a direct velocity target through 16 rev/s, inner
-reference slew through 256 rev/s², and per-command current through 495 counts.
-The independent estimator/observed-speed shutdown is 20 rev/s. The already
-accepted 1 rev/s point remains the validated baseline; the larger space is
-permission to find poor tracking, saturation, torque ripple, heating, or another
-real boundary rather than having software preflight hide it. At 16 mechanical
+reference slew through 256 rev/s², and per-command current through 2.999 A
+nominal (495 raw counts).
+The independent estimator/observed-speed shutdown is 20 rev/s. Positive
+operation has now reached target through 8 rev/s at 24 V and exposed a
+q-current/phase-voltage-saturated boundary near 10 rev/s during a 12 rev/s
+request. The larger command space remains permission to find poor tracking,
+saturation, torque ripple, heating, or another real boundary rather than having
+software preflight hide it. At 16 mechanical
 rev/s on the 50-cycle/revolution motor, firmware advances phase on 25 current-
 loop events per electrical cycle and receives 1.25 encoder observations per
 electrical cycle.
 
 Use direct velocity commands to characterize the phase predictor without the
-position following-error policy. Run both signs at 2, 4, 5, 8, 12, and 16 rev/s
-and retain each automatic capture directory. The sequence is a comparison plan,
-not a firmware unlock condition:
+position following-error policy. Run both signs and retain each automatic
+capture directory. Positive-direction captures currently cover 1, 2, 4, 5, 6,
+8, and a 12 rev/s request; repeat the informative points in the negative sign
+while improving the measured current-tracking boundary. The sequence is a
+comparison plan, not a firmware unlock condition:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 120 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 240 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 300 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 480 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 720 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 960 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 120 --current-limit-ma 1503 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 240 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 300 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 360 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --jsonl
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 480 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --jsonl
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 720 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --jsonl
 ```
 
 At each step record sign, the bounded 256 rev/s² reference slope, overshoot,
@@ -570,6 +622,28 @@ current saturation, encoder/control/current/backend faults, and release state.
 Persistent saturation, poor tracking, objectionable torque ripple, excessive
 voltage use, supply instability, or heating is a valid boundary measurement;
 end that run, preserve its capture, and use it as the next engineering input.
+
+The accepted captures identify the present boundary. At 12 V and +6 rev/s,
+commanded phase voltage reached the nominal 8.4 V limit in 27/62 active samples
+and measured-current-vector magnitude peaked near 0.90 A against a 2.999 A
+request;
+bench motion appeared smooth, the supply did not enter current limit, and no
+temperature rise was perceptible. Repeating at 24 V eliminated q-demand and
+phase-voltage clipping, reduced RMS velocity error from 1.197 to 0.638 rev/s,
+and required at most 1.81 A q-current. At 24 V and +8 rev/s the motor
+reached/passed target, q-demand peaked at 2.41 A, and phase voltage touched
+the clamp in 2/61 active samples. A +12 rev/s request then saturated q-demand in
+46/61 samples and the nominal 16.8 V phase ceiling in 45/61 samples, plateauing
+near 9.1-9.9 rev/s.
+The next speed work is high-electrical-frequency current bandwidth/phase
+tracking and predictor timing, not another +16 rev/s saturated run.
+
+Normal deadline, generic STOP, and Right-button release end in the same all-low
+zero-voltage vector used by the safe-state backend. With the tied EG3013 inputs,
+this selects both low-side FETs across each winding and dynamically brakes the
+motor. The board exposes no proven all-FET-off state and therefore has no true
+coast mode. A future controlled deceleration may soften normal stops, but it is
+not coast and must not replace immediate all-low braking on faults.
 
 For position tests, the maximum profile acceleration is 64 rev/s² while the
 inner velocity reference has 256 rev/s² slew and the corrected target has

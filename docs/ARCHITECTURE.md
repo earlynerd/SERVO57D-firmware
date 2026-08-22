@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.27.1 implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.28.0 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -20,6 +20,8 @@ Firmware 0.26.1 adds an independent 3 ms foreground encoder-production guard.
 Firmware 0.27.1 moves aligned-q electrical-phase advance into the authoritative
 20 kHz backend with bounded fixed-point prediction and immediate stale-age
 fault convergence.
+Firmware 0.28.0 appends automatic-injected PA3 VBUS acquisition and protocol
+1.10 status telemetry without moving the regular DMA/current-control event.
 
 ## Design priorities
 
@@ -60,8 +62,8 @@ The current image implements:
   sustained 50 Hz two-page transactions are proven and the current-loop display uses 5 Hz.
 - A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM2-compare-triggered
   20 kHz `currentB`/`currentA` sequence captured by circular DMA channel 1, with
-  host-tested schematic-derived engineering conversion using runtime reference
-  and zeros.
+  a following automatic-injected PA3 VBUS conversion and host-tested schematic-
+  derived engineering conversion using runtime reference and zeros.
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC

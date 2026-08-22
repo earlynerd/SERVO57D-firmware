@@ -1,6 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.9, discovery, boot and encoder telemetry, the
+Status: native protocol 1.10 in flashed firmware 0.28.0. Protocol 1.9 remains
+backward-decodable by the host. Discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
 power-loss-safe motor-configuration storage, bounded aligned q-current, and the
 first bounded velocity service, and relative-position control are implemented
@@ -50,7 +51,7 @@ future features. Version 1 uses a bounded, delimiter-based binary frame:
 COBS {
     version:u8 | device_address:u8 | sequence:u16 |
     message_type:u8 | command:u16 | payload_length:u8 |
-    payload:0..64 bytes | crc16:u16
+    payload:0..72 bytes | crc16:u16
 } 00
 ```
 
@@ -67,8 +68,8 @@ firmware personality or a bridge-authority owner. New protocol work should use
 product motion, service, and diagnostic names while preserving these encodings
 for compatible clients.
 
-The decoded header is 8 bytes, the maximum decoded frame is 74 bytes, and the
-maximum on-wire frame including the delimiter is 76 bytes. Frames with an
+The decoded header is 8 bytes, the maximum decoded frame is 82 bytes, and the
+maximum on-wire frame including the delimiter is 84 bytes. Frames with an
 invalid COBS encoding, inconsistent length, bad CRC, unsupported version, or
 excessive encoded length receive no response. After an oversized frame the
 parser discards through the next delimiter and starts cleanly.
@@ -104,7 +105,7 @@ from causing reply storms.
 | `0x0001` | `PING` | 0-16 opaque bytes | The same bytes |
 | `0x0002` | `GET_IDENTITY` | Empty | Product ID `u32`, firmware major `u8`, minor `u8`, patch `u16`, protocol major `u8`, minor `u8` |
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
-| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-2 commissioning status block |
+| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-3 commissioning status block |
 | `0x0101` | `CONFIGURE_CURRENT_TEST` | Amplitude counts `u16`, frequency millihertz `u32` | Applied amplitude counts `u16`, frequency millihertz `u32` |
 | `0x0102` | `START_CURRENT_TEST` | Initial leg `u8`, duration milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
@@ -154,6 +155,13 @@ headroom; no command or payload layout changes. Protocol 1.3 added the bounded c
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
 diagnostic record, including the native-protocol capability.
+
+Firmware 0.28.0 / protocol 1.10 appends the latest automatic-injected PA3 VBUS
+sample and its accepted foreground sample count to commissioning status schema
+3. Existing status offsets are unchanged. Wire-level current counts,
+phase-command permille, and duty permille remain available as exact controller
+diagnostics; the host treats milliamperes/amperes, measured bus volts, and
+bus-scaled commanded average phase volts as the primary engineering units.
 
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
@@ -500,13 +508,13 @@ the fixed captured count so the host can reject a trace that changes while it
 is being transferred. Trace capture does not alter current reference, voltage,
 duty, duration, deadline, fault, or bridge-authority limits.
 
-`GET_COMMISSIONING_STATUS` returns the following schema-2 body after the common
+`GET_COMMISSIONING_STATUS` returns the following schema-3 body after the common
 status byte. All multi-byte fields are big-endian; signed fields use two's
 complement.
 
 | Body offset | Type | Field |
 | ---: | --- | --- |
-| 0 | `u8` | Schema version, currently 2 |
+| 0 | `u8` | Schema version, currently 3 |
 | 1 | `u32` | Readiness, supervisor authority, pending-action, and fault flags; `FAULT_PRESENT` covers either a current-backend fault or product-supervisor `FAULT` |
 | 5 | `u8` | Raw electrical input levels; clear means asserted |
 | 6 | `u8` | Debounced electrical input levels; clear means asserted |
@@ -528,6 +536,8 @@ complement.
 | 57 | `u32` | Remaining remote-run time in milliseconds |
 | 61 | `u8` | Panic code retained across the last watchdog reset |
 | 62 | `u8` | One if the current boot followed an IWDG reset |
+| 63 | `u16` | Latest PA3 VBUS ADC sample; valid only when commissioning flag bit 11 is set |
+| 65 | `u32` | Count of fresh injected VBUS samples accepted by the foreground reader |
 
 Input-level bits retain their established wire positions: bit 2 is the Left
 button (PA15), bit 0 is Center (PB8), and bit 1 is Right (PB9). The host tools
@@ -538,8 +548,19 @@ the schema or protocol version.
 Commissioning flag bits are: bit 0 ADC ready, 1 ADC snapshot valid, 2 zero
 calibration ready, 3 current loop initialized, 4 bridge ready, 5 authority
 active, 6 ISR backend active, 7 remote authority, 8 remote start pending,
-9 remote stop pending, and 10 fault present. The status body is 63 bytes and
-the complete successful response payload is 64 bytes.
+9 remote stop pending, 10 fault present, and 11 VBUS snapshot valid. The
+schema-3 status body is 69 bytes and the complete successful response payload
+is 70 bytes. Schema-2's 63-byte body remains decodable by the host for older
+flashed images.
+
+The physical voltage reported by the host is derived from the measured PA3
+sample using the fitted 15.4 kOhm/1 kOhm divider and the tested-board 3.3 V ADC
+reference. Phase A/B volts are controller-commanded carrier-average voltages,
+`VBUS × phase_command_permille / 1000`; they are not independent phase-terminal
+measurements and therefore do not include bridge drop, dead time, or winding
+terminal probing. Current counts are set by the shunt/amplifier/ADC transfer
+and do not change with bus voltage; VBUS changes the voltage headroom available
+to make measured current track the requested current.
 
 | Bit | Capability |
 | ---: | --- |
