@@ -1,6 +1,8 @@
 # Decision Log
 
-Forward-facing, append-only record of architectural and behavioral decisions for this project. Read this file at the start of each session — it is more reliable than memory and supersedes any conflicting claims in AGENTS.md or README.
+Forward-facing, append-only record of architectural and behavioral decisions
+for this project. Search it when structural history can affect the task; the
+newest applicable entry supersedes conflicting older statements.
 
 When a decision is reversed or superseded, append a new entry rather than rewriting the old one.
 
@@ -792,3 +794,10 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Supersedes:** The absence of a production caller for `APP_EVENT_FAULT_ACKNOWLEDGED`, the implicit reset-required workflow after motion/current-backend faults, and any proposed health-gated recovery policy. It does not weaken immediate fault convergence, remove independent runtime limits, or authorize energization before normal readiness returns.
 - **Affects:** firmware version 0.29.0, native protocol 1.11, command service, ADC restart, bridge/current-backend recovery, rotor-runtime controller reset, supervisor behavior, `tools/mks57d_rs485.py`, host/native tests, Phase 6/7 plan, and protocol/build/bring-up/architecture documentation
 - **Validation:** Sixteen Python console tests pass, including typed recovery parsing and CLI exposure. The rebuilt native C suite passes byte-exact 15-byte successful-response coverage. Clean Debug and Release Arm post-link builds pass: Debug uses 58,160 bytes Flash and 7,464 bytes SRAM1; Release uses 52,352 bytes Flash and 7,464 bytes SRAM1, with no configuration-slot or SRAM2 allocation and the 240-byte debugger diagnostic ABI intact. Hardware validation of following-error clear, `DIAGNOSTIC` to `READY`, and a subsequent bounded command remains pending flash.
+
+## 2026-08-22 — Make documentation task-routed and single-owner
+
+- **Decision:** Session startup reads only the README operating snapshot and documentation router. Structural work searches for the latest applicable decisions, normally three to five; bench work reads the shared stop conditions and applicable procedure. `PLAN.md` contains active outcomes only, and each volatile fact has one canonical owner.
+- **Why:** Blanket reading and duplicated status made ordinary work expensive, produced a misleading backlog, and required recent commits to update more documentation files than source files.
+- **Supersedes:** The full-README and unconditional last-ten-decision reading defaults, historical phase checklists in the active plan, and routine replication of versions, limits, and validation narratives. Safety invariants and task-relevant reading remain mandatory.
+- **Affects:** `AGENTS.md`, `README.md`, `PLAN.md`, `docs/README.md`, decision/debug logging practice, and related personal skills

@@ -3,384 +3,117 @@
 Clean-sheet firmware for the N32L406CBL7-based Makerbase MKS SERVO57D RS-485
 closed-loop stepper controller.
 
-## Project ambition
+## Current operating snapshot
 
-This project is building a high-performance motor drive, not a permanently
-derated commissioning demonstration. The goal is responsive, precise current,
-velocity, and position control that makes useful use of the board's available
-bus voltage, phase current, encoder, and 20 kHz control bandwidth. Safety comes
-from independent measured limits, bounded authority, timing guarantees, and a
-common immediate fault path—not from leaving the product constrained to tiny
-current, voltage, speed, or motion ceilings.
+Firmware 0.29.0 / native protocol 1.11 is the current source candidate. It adds
+explicit operator-acknowledged in-place fault recovery; its host and native
+tests and Debug/Release Arm builds pass, while its hardware recovery gate
+remains pending. Firmware 0.28.0 / protocol 1.10 is the flashed hardware
+baseline.
 
-Operating limits are expanded deliberately from bench evidence, and every
-accepted point remains motor-, supply-, board-, cooling-, and enclosure-specific.
-Makerbase advertises 12-24 V operation, 0-5200 mA current, 20 kHz current,
-velocity, and position loops, 3000+ RPM, and up to 256 "subdivision" (16 by
-default). Matching those capabilities—or identifying and fixing the concrete
-board or control limitation that prevents each one—is an active product
-requirement. The vendor figures are not yet verified safe operating limits, so
-expansion remains measurement-gated, but the present low commissioning ceilings
-are temporary and must not displace current, voltage, speed, and loop-rate work
-behind unrelated feature development. Any architecture, estimator, timing,
-power-stage, sensing, thermal, or test-fixture work needed to reach them is in
-scope now.
+The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
+deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
+torque, signed velocity, and relative-position control. At 24 V, a +8 rev/s
+request reaches target. A +12 rev/s request reaches the 2.999 A nominal
+q-demand and 70%-of-bus phase-voltage ceilings and plateaus near 10 rev/s
+without predictor, encoder, backend, current-loop, supervisor, reset, or panic
+faults. Automatic-injected VBUS telemetry reports physical bus and commanded
+phase volts without delaying the current-loop DMA event.
+
+The next control work is high-electrical-frequency current tracking and measured
+predictor/output timing, followed by negative-direction speed staging,
+0.29.0 in-place recovery validation, and the remaining position fault/stop
+gates. Exact live, validated, evaluation, and hard limits are owned by
+[the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
+by [the project plan](PLAN.md).
 
 ## Evaluation-firmware warning
 
-**This firmware deliberately exposes unqualified operating zones so the drive's
-real boundaries can be measured. Firmware acceptance of a command is not a
-claim that the attached motor, supply, load, mechanics, cooling, or control
-tuning will perform well there.** Current saturation, poor tracking, stalls,
-following-error or overspeed shutdown, heating, supply disturbance, vibration,
-and unexpectedly energetic motion are possible. Start below the point of
-interest, use an appropriate current-limited supply and mechanical fixture,
-capture telemetry, and keep the physical Right-button stop and supply cutoff
-immediately available.
+This firmware deliberately exposes unqualified operating zones so the drive's
+real boundaries can be measured. Firmware acceptance is not a claim that the
+attached motor, supply, load, mechanics, cooling, or tuning will perform well
+there. Current saturation, poor tracking, stalls, heating, supply disturbance,
+vibration, and energetic motion are possible.
 
-The rotating-current operation is retained as a production motor-diagnostic
-client of the same drive supervisor used by motion control. It is the measured
-foundation used by the 0.23 aligned torque candidate, not a parallel authority
-path or the final velocity/position interface.
+Use a current-limited supply, a suitable mechanical fixture, finite current,
+voltage, duration, and motion bounds, and captured telemetry. Keep the physical
+Right-button stop and supply cutoff immediately available. The common all-low
+`ZERO` state dynamically brakes the motor; the proven board path has no passive
+software coast state.
 
-## Run a test move and view plots
+## Run a bounded test
 
-With the motor connected to a current-limited supply and the RS-485 adapter on
-`COM14`, one command runs a bounded move, captures current and encoder telemetry,
-analyzes the result, and opens a self-contained plot report:
+With the motor safely connected and the RS-485 adapter on `COM14`, this command
+runs a bounded rotating-current diagnostic, captures telemetry, analyzes it,
+and opens a self-contained report:
 
 ```powershell
 py tools/motor_test.py --port COM14 --current-ma 750 --rpm 24 --seconds 5
 ```
 
-On protocol 1.10 and later the live line and report use measured bus volts and commanded
-carrier-average phase volts; controller-native ratios remain only in the saved
-diagnostic data.
-
-The firmware supervisor still owns readiness and bridge authority; the active
-operation owns its duration/deadline, while the current backend independently
-owns current, voltage, duty, fast-loop deadline, and fault limits. Press Ctrl+C
-to send STOP. Each run is saved under ignored
-`scratch/motor-runs/`, and the tool restores the preceding inactive test
-configuration unless `--keep-config` is requested. Use `--no-open` to capture
-without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
-
-This interface currently commands a positive-frequency rotating current vector;
-`--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
-closed-loop shaft-speed, signed-direction, or position command. Those controls
-remain separate from this diagnostic: firmware 0.25.1 established the qualified
-signed-velocity baseline, firmware 0.26.0 is the flashed relative-position
-baseline, and firmware 0.26.1 adds an independent encoder-production liveness
-guard through the same production actuator and fault path. Firmware 0.27.1
-advances timestamped electrical phase
-inside the 20 kHz backend instead of holding each 1 kHz observation and removes
-the commissioning-era velocity/position cascade bottleneck. Identity,
-readiness, live-policy, and bounded positive-velocity confirmation pass on
-hardware through a 12 rev/s request. At 24 V, +8 rev/s reaches and passes target
-without current clipping; +12 rev/s reaches both the 2.999 A nominal demand
-and the 70%-of-bus phase-voltage ceiling (16.8 V at the nominal 24 V setting)
-and plateaus near 10 rev/s. Every run ends
-without a predictor, encoder, backend, current-loop, supervisor, reset, or panic
-fault. Firmware 0.28.0 / protocol 1.10 is now flashed; it adds validity-tagged
-VBUS sampling after each current pair and reports amperes, measured bus volts,
-and commanded phase volts through the host interface. Inactive status measured
-23.829 V at the 24 V supply setting. A one-second 1 rev/s / 606 mA regression
-completed 20,001 current-loop updates with advancing VBUS samples, zero terminal
-duties, and no ADC, deadline, encoder, backend, reset, or panic fault.
-
-The 0.23 candidate adds the first production motion command: a signed,
-calibrated q-current demand with firmware-reported current, slew, velocity,
-acceleration, feedback-age, and duration bounds. After flashing, the initial
-bench gate starts at 151.5 mA for 250 ms:
-
-```powershell
-py tools/mks57d_rs485.py --port COM14 torque-status
-py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
-```
-
-The command uses `RUN` motion authority and the existing 20 kHz current backend;
-it is torque-producing current, not a velocity request, so keep clear of the
-shaft and use the current-limited supply procedure in
-[the bring-up guide](docs/BRINGUP.md).
-
-Firmware 0.27.1 opens the signed closed-loop velocity evaluation service to
-±16 rev/s (±960 RPM), uses 256 rev/s² inner reference slew, and accepts the
-existing aligned-actuator envelope through 495 current counts (about 2.999 A
-nominal). The independent observed-speed shutdown remains 20 rev/s, the current
-estimator plausibility boundary. These are permissions for deliberate
-measurement, not qualified performance. Inspect the live policy after flashing
-before starting:
+For production motion status and a conservative relative move:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rpm 300 --current-limit-ma 750 --duration-ms 3000
-```
-
-The command reports the acceleration-limited reference, measured speed,
-requested and actually applied q-current, saturation, deadline, authority, and
-fault state. Each run stores normalized metadata and CSV telemetry under
-`scratch/velocity-runs/`; the terminal shows only a compact live status line.
-Positive/negative deadline, explicit STOP, physical Right-button stop, and
-hand-loaded saturation/recovery gates pass. Initial velocity qualification is
-accepted; physical feedback-loss injection is deferred indefinitely on the
-current board/motor assembly because the encoder is inaccessible.
-
-The 0.26.0 / protocol 1.9 product image adds a relative-position command with
-separate travel, trajectory-velocity, acceleration, current, start-speed,
-following-error, feedback-age, settling, and deadline bounds. A conservative
-first bench move after flashing is:
-
-```powershell
 py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 ```
 
-The move succeeds only with result `settled`; reaching its deadline releases
-the motor but reports a non-success result. Ctrl+C, generic STOP, and the
-physical Right button retain the same immediate release path. Position runs use
-the velocity command's recording convention: normalized `metadata.json` and
-`telemetry.csv` under `scratch/position-runs/`, with one compact live terminal
-line instead of repeated nested JSON. Full JSONL remains opt-in.
-
-The first 0.26.0 position hardware sub-gate passes. Mirrored ±0.25-revolution
-moves settled in 1.29/1.35 seconds with -0.000427/+0.001465 revolution endpoint
-error, used at most 32 of 100 current counts, stayed below 0.05 revolution
-profile following error, and held captured encoder timing to 1000 us. A
-scheduled generic STOP also cleared all current references and duties without
-faults or calibration changes. Physical Right-button stop and loaded
-following-error checks remain pending.
-
-Firmware 0.29.0 source / protocol 1.11 adds explicit in-place fault recovery:
+On firmware 0.29.0 / protocol 1.11, an operator can acknowledge and attempt
+in-place recovery after removing a fault's initiating condition:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 clear-faults
 ```
 
-The command is the operator acknowledgment that the cause has been removed; it
-does not demand a second healthy encoder/current/input observation before
-clearing. It establishes `ZERO`, rebuilds the ADC/DMA, PWM/current backend and
-faulted controller state, and returns the supervisor to uncommanded
-`DIAGNOSTIC`. Normal fresh samples then restore `READY`; a condition that is
-still present simply faults again. `stop` remains a stop request and does not
-clear faults.
+`clear-faults` establishes `ZERO`, rebuilds the ADC/DMA, PWM/current backend,
+and controller runtime, and returns the supervisor to uncommanded
+`DIAGNOSTIC`. Fresh current and encoder production must restore `READY`
+before another command can energize the bridge. A persistent condition faults
+again normally. `stop` remains a separate authority-termination request and
+does not clear fault latches.
 
-## Current operating envelope
+Read the safety prerequisites and only the applicable procedure in
+[the bench bring-up guide](docs/BRINGUP.md) before hardware work. The
+[tool guide](tools/README.md) documents capture formats and additional commands.
 
-Firmware 0.29.0 / protocol 1.11 is the current source candidate; firmware
-0.28.0 / protocol 1.10 remains the currently flashed evaluation build.
-Identity, readiness, generation-3 calibration restore, the 16 rev/s / 256 rev/s² /
-2.999 A nominal live velocity policy, and clean terminal release pass on hardware.
-Positive direct-velocity runs through 6 rev/s at 12 V appeared smooth and
-reached their targets at the bench with no perceptible heating or bench-supply
-current-limit entry. Full telemetry at 6 rev/s shows why: commanded phase voltage
-clipped at 70% of the bus (about 8.4 V at the nominal 12 V supply setting) in
-27/62 active samples while the measured A/B current-vector
-magnitude peaked near 148 counts (about 0.90 A nominal), far below the requested
-495 counts. At 24 V the matched run eliminated voltage/current-command clipping
-and reduced RMS velocity error from 1.197 to 0.638 rev/s. A +8 rev/s command
-reached target with only two sampled phase-voltage clamps; +12 rev/s saturated
-both q-demand and the nominal 16.8 V phase ceiling in most samples and
-plateaued around 9.1-9.9
-rev/s. The predictor, encoder, backend, current loop, supervisor, reset, and
-panic paths remained clear. The automatic-injected PA3 path is now bench-
-confirmed inactive and during bounded motion: it reported 23.829 V inactive,
-held 23.776-23.815 V across all 22 samples from a one-second 1 rev/s / 606 mA run, advanced its sample
-counter, and left the current-loop, deadline, authority-release, reset, and
-panic checks clear. Measured VBUS and commanded phase volts are directly
-visible while raw ratios remain available for controller diagnosis. Current
-counts remain independent of bus
-voltage: the supply changes voltage headroom and therefore achievable current
-tracking, not the shunt/amplifier/ADC current scale.
-Firmware 0.26.0 remains the bench-qualified relative-position baseline. Its
-mirrored relative-position and generic-STOP evidence is summarized above. The
-earlier 0.25.1 velocity qualification remains accepted: mirrored ±0.1 rev/s,
-25-count, two-second commands moved in the requested encoder coordinate,
-completed at their deadlines, and returned to `ZERO` with no control, encoder,
-current-loop, reset, or watchdog faults. The correction maps velocity effort
-through the already persisted alignment direction without changing the
-configuration schema or wire protocol. A 303 mA run accepted
-generic STOP, a 606 mA / 1 rev/s run accepted the physical Right button, and
-hand-loaded runs demonstrated bounded saturation/recovery without faults or
-material overshoot. The physical feedback-loss gate is indefinitely deferred;
-the fault/ZERO contract remains covered by host/native tests. Firmware
-0.24.15 passed its ordinary hardware
-smoke check. Firmware 0.24.14 retired
-the local Left/Center phase selector and its direct fixed-duty PWM helper while
-retaining the RS-485 rotating-current diagnostic through the product supervisor
-and current backend. Firmware 0.24.15 makes the deterministic rotor runtime the
-sole estimator owner and gives the not-yet-linked motion candidate an immutable,
-timestamped position/velocity observation instead of raw encoder samples. The
-0.25.1 / protocol 1.8 image closes the
-first bounded signed mechanical-velocity loop on that observation. It applies
-an acceleration-limited reference and PI current request, then commands only
-the existing aligned-q-current actuator. The 0.26.0 / protocol 1.9 product
-image reuses that controller and actuator beneath a bench-tested trapezoidal
-relative-position profile; step/direction remains disconnected. The current product line provides bounded signed
-encoder-aligned q-current through the same supervisor,
-current backend, and ZERO-vector fault path, and accepts the full wrap-safe
-finite-deadline range. Torque activation is seeded only by newly accepted
-encoder feedback so command-processing latency is not mistaken for an active
-feedback overrun. Firmware 0.26.1 additionally requires foreground evidence
-that accepted encoder production has advanced within 3 ms. Loss of that
-evidence removes idle readiness or forces every energized authority through
-the common fault/`ZERO` path; protocol 1.9's estimator-ready bit now includes
-this liveness condition without changing its wire layout. Firmware 0.27.1
-retains protocol 1.9 and feeds each accepted phase/velocity observation into a
-bounded fixed-point predictor in the 20 kHz DMA-completion path. The backend
-advances the q-current A/B vector for the next PWM preload, includes a nominal
-7 us output lead, and immediately faults to `ZERO` if prediction age exceeds
-2 ms. Firmware 0.22.0's
-power-loss-safe dual-slot motor-
-configuration storage remains accepted through first-save, unchanged-save,
-power-cycle restore, persistent-clear, and no-restored-authority gates. The
-firmware runs from the fitted
-8 MHz crystal at a bench-proven 64 MHz system clock, closes independent A/B
-winding-current loops at 20 kHz, releases timestamped encoder acquisition at
-1 kHz from TIM6, transfers each frame through SPI1 DMA channels 2/3, defers
-decode and rotor-runtime work through PendSV, updates the OLED, and serves native RS-485 telemetry,
-automatic alignment, persistent configuration in protocol 1.6, and the bounded
-20 kHz startup-trace service.
-Two 757.4 mA automatic alignments and a generic-STOP abort passed on the tested
-motor with clean authority release, zero faults, and no reset or retained panic. The 0.19.0
-supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
-deadline release and at 151.5 mA / 5 Hz through an explicit STOP. The new 1 kHz
-estimator is bench-proven at idle and during a 757 mA / 20 Hz bounded run;
-physical readiness-loss fault injection is indefinitely deferred on this
-assembly because the encoder cannot be accessed non-destructively.
+## Architecture and scope
 
-The deterministic rotor-feedback path is bench-proven during a 606 mA aligned-
-torque command lasting five seconds: it completed 100,000 current-loop updates,
-held encoder intervals to 1000-1001 us, reported zero encoder, DMA, estimator,
-backend, or control faults, and returned all references and bridge duties to
-zero at the deadline.
+One product drive supervisor owns `RESET_SAFE`, `DIAGNOSTIC`, `READY`,
+`ALIGN`, `RUN`, and `FAULT`. The project-owned timer, ADC, modulation,
+current backend, and direct-GPIO `ZERO` mechanism are the only bridge authority
+path. Motion controllers may request bounded current through that path; they do
+not write bridge registers.
 
-The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
-calibration, initialized current control, and a healthy encoder move the product
-supervisor from `DIAGNOSTIC` to `READY`. The transitional local Left/Center
-phase selector has been retired; it no longer requests bridge authority. RS-485
-can configure 1-495 ADC counts (about 6.06 mA-2.999 A)
-and 0.001-250 Hz electrical frequency, start a 0.003-2,147,483.647 second run, stream current,
-duty, fault, reset, and encoder state, or stop diagnostic or motion authority.
-The physical Right button remains an immediate stop input. The
-independent raw-current trip is about 3.635 A, phase voltage is limited to 70%
-of the bus, and the timer guardian latches missed current-loop updates. Loss of
-readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
-backend and enters `FAULT`.
+The project is actively engineering toward Makerbase's advertised 12–24 V,
+0–5200 mA, 20 kHz loop, 3000+ RPM, and 256-subdivision endpoints—or toward a
+measured explanation and implementation change where the present board or
+control architecture prevents them. Those advertised values are product goals,
+not verified safe limits.
 
-Those numeric ceilings are the present firmware operating contract, not a
-claim about the board's physical capability. The project is replacing inherited
-commissioning values with a traceable limit model: every retained bound must be
-tied to hardware, motor configuration, measured qualification, or an explicit
-diagnostic policy and must have an enforcement owner, telemetry, and a test.
-
-The loop starts from all-low `ZERO` and uses low-zero sign-magnitude PWM: for
-each winding, only the leg selected by the voltage-command sign switches while
-the opposite leg remains low. Current is sampled at 80% of the carrier through
-a 16 MHz, TIM2-released two-rank ADC/DMA sequence. The phase-specific bridge mapping
-matches the asymmetric A+/B- shunt placement.
-
-Each MCU bridge command drives tied EG3013 HIN/LIN inputs. Command low selects
-the low-side FET and command high selects the high-side FET, so all-low is a
-deterministic zero-voltage vector, not an all-FET-off state. All current-loop
-faults and normal motion releases converge on that vector. It shorts both ends
-of each winding low and therefore dynamically brakes the rotating motor; the
-present board/firmware has no passive coast state. Reset/halt waveforms, thermal limits, and the
-wider voltage/current/speed envelope remain engineering
-work; they no longer block bounded motor operation on the tested board.
-
-A separate general-motion candidate still exercises remote lease expiry,
-step/direction behavior, bounded position trajectories, and fault recovery
-against host-side deterministic plants. The hardware image owns the only angle
-tracker and publishes validated mechanical position/velocity observations.
-Firmware 0.26.0 promotes only focused relative position into the product;
-step/direction, leases, and the candidate's broader motion shell remain
-separately compiled and unlinked.
-
-## Current project status
-
-Bench-proven on the tested board:
-
-- 64 MHz HSE/PLL clock operation and explicit APB/timer clock derivation;
-- OLED, MT6816 encoder, local and isolated inputs, and RS-485 command/response;
-- all four TIM3 AF2 bridge outputs and 20 kHz two-rank ADC/DMA current acquisition;
-- independent startup zero calibration and signed-current conversion using the
-  measured 3.3 V ADC reference, 6.65 sense gain, 20 mOhm shunts, and
-  6.059 mA/count scale;
-- delayed 80%-carrier ADC/DMA sampling and 100,000 consecutive fault-free
-  current-loop updates during a five-second 757 mA motor run;
-- correct A/B feedback and all four bridge-leg polarities;
-- encoder-confirmed rotation at -5.97 RPM from a commanded 5 Hz electrical
-  vector (6.00 RPM expected), with zero encoder, SPI, current-loop, or reset
-  faults;
-- measured two-phase stepper geometry at 757.5 mA: +90-degree electrical
-  commands moved the encoder -84, -80, -81, and -81 counts, totaling -326
-  counts versus -327.68 theoretical for 50 electrical cycles per mechanical
-  revolution; this establishes negative encoder direction for positive
-  electrical phase;
-- firmware 0.18.2 proportional gain `Kp=2` with the integral gain retained at
-  `1/64` per 20 kHz step: a 303 mA startup step has 6.53 ms 10-90% rise time,
-  8% overshoot, and 14.0 mA tail RMS error; 606 mA / 15 Hz tracks -17.78 RPM
-  versus -18 RPM commanded, and 757 mA / 20 Hz tracks 1.97 revolutions over
-  five seconds versus 2.00 commanded with 25.2% peak voltage effort.
-
-Host-, build-, and bench-validated in firmware 0.21.0: one product drive supervisor owns
-`RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT`, separates diagnostic
-from motion authority, gates energization on current-path and encoder readiness,
-and deauthorizes every fault transition. The product build also contains the
-measured 50-cycle alignment mapping, a bounded automatic alignment controller,
-transactional calibration math, a microsecond timebase, and 1 kHz estimator
-telemetry. The controller requests `ALIGN` motion authority, applies phase-zero
-and quarter-phase current vectors through the production backend, validates
-current tracking, encoder stability, geometry, and return closure, and commits
-the new zero/direction only after the complete sequence passes.
-On hardware, stationary polling produced no raw-count or velocity movement over
-five seconds. During a 757 mA / 20 Hz run, sampled encoder intervals were
-981-1001 us with a 5.450 ms cumulative worst case, estimator velocity averaged
--0.3953 revolution/s versus -0.4000 commanded, and no estimator fault occurred.
-
-Successful/repeatable automatic alignment and explicit STOP are accepted on the
-tested motor. The alignment-specific Right-button abort remains a physical
-check. Induced readiness-loss testing is indefinitely deferred on the current
-assembly while its common fault/ZERO behavior remains host/native tested. Firmware 0.22.0
-reserves the final two 2 KiB Flash pages
-for alternating versioned configuration records, validates schema, CRC-32,
-generation, commit marker, and motor geometry at boot, automatically persists
-alignment only after authority/backend release, and exposes status/save/clear
-through the production command service. Interrupted-write fallback is host-
-tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional gates are current-loop bandwidth/phase-tracking
-work at the measured 8-12 rev/s boundary, predictor-lead timing measurements,
-the corresponding negative-direction checks, and the corrected position-
-cascade and loaded following-error checks. The present +12 rev/s saturation
-evidence determines that control work; it is not a reason to restore a lower
-software command ceiling.
-Remaining characterization
-includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
-unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
-reset/halt waveforms, and timer capture for step/direction/enable. See
-[the project plan](PLAN.md).
-
-## Intended outcome and scope
-
-The project is progressing toward reproducible open firmware with bounded
-two-phase current, velocity, and position control;
-step/direction and RS-485 interfaces; and documented calibration,
-configuration, fault handling, and update procedures.
-
-This is a clean-sheet implementation. It will not extract, disassemble, or
+This remains a clean-sheet implementation. It will not extract, disassemble, or
 reproduce Makerbase firmware or its bootloader. The canonical interface is a
 project-owned versioned protocol over a transport-independent command service;
-Modbus RTU and publicly documented Makerbase commands are optional adapters.
-The project does not redesign the PCB or make the controller suitable for
-safety-critical machinery.
+Modbus RTU and documented Makerbase commands are optional adapters. The project
+does not redesign the PCB or make the controller suitable for safety-critical
+machinery.
 
 ## Documentation
 
-Use the [documentation index](docs/README.md) to select the subsystem material
-needed for a task. The index routes to hardware evidence, architecture,
-building, bench procedures, protocol details, and reference provenance.
-`DECISIONS.md` remains the append-only architectural history; it is not routine
-cover-to-cover reading.
+Use [the documentation index](docs/README.md) to select the minimum relevant
+material. In particular:
+
+- [operating limits](docs/OPERATING_LIMITS.md) own numeric envelopes;
+- [protocol](docs/PROTOCOL.md) owns commands and wire formats;
+- [architecture](docs/ARCHITECTURE.md) and
+  [real-time architecture](docs/REALTIME_ARCHITECTURE.md) own control and timing
+  contracts;
+- [the project plan](PLAN.md) contains active incomplete work only;
+- `DECISIONS.md` and `DEBUG_LOG.md` preserve structural and debugging history
+  and are searched when relevant, not read routinely from cover to cover.
+
+Build, flash, and host-test instructions are in
+[the building guide](docs/BUILDING.md).
 
 ## Repository layout
 
@@ -389,14 +122,9 @@ cover-to-cover reading.
 | `firmware/` | Embedded firmware and portable control/application code |
 | `tests/` | Native tests and deterministic host plants |
 | `docs/` | Routed architecture, hardware, bring-up, and protocol documentation |
-| `tools/` | Build, programming, and reference-cache helpers |
+| `tools/` | Host control, analysis, build, programming, and reference helpers |
 | `reference/` | External-document catalog and ignored local cache |
 | `vendor/` | Imported manufacturer-support manifest and required source subset |
-| `DECISIONS.md` | Append-only architectural and behavioral history |
-
-External manufacturer material remains under ignored `reference/local/` and
-`vendor/local/` directories until its provenance and redistribution terms are
-recorded.
 
 ## License
 

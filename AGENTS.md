@@ -1,40 +1,53 @@
 # Repository Guidance
 
-Read the current operating envelope and project status in `README.md` before making
-project changes. Use `docs/README.md` to select only the documentation relevant
-to the task.
+## Start with the smallest relevant context
 
-Additional reading is conditional:
+Before changing the project:
 
-- Read the last 10 entries in `DECISIONS.md` before changing architecture,
-  protocol, pins, timing, safety contracts, or project scope. Read the full log
-  only for audits, reversals, or unresolved historical conflicts.
-- Read `PLAN.md` before changing milestones or scope.
-- Read `docs/BRINGUP.md` before bench procedures or hardware tests.
+- Read the current operating snapshot in `README.md` and the routing table in
+  `docs/README.md`.
+- Follow the routing table to only the subsystem documents needed for the task.
+- For architecture, protocol, pins, timing, safety contracts, or project-scope
+  work, search `DECISIONS.md` by subsystem and read the latest applicable
+  entries, normally no more than three to five. Read the full log only for an
+  explicit audit, reversal, or unresolved historical conflict.
+- Read `PLAN.md` only when changing priorities, milestones, or scope.
+- Before bench work, read the safety prerequisites and the applicable stage in
+  `docs/BRINGUP.md`; unrelated stages are not prerequisite reading.
 
-The newest applicable entry in `DECISIONS.md` is the architectural source of
-truth when documents conflict.
+The newest applicable decision is authoritative when historical documents
+conflict. Steady-state facts belong in the canonical document listed below,
+not in repeated session summaries.
 
-## Project state
+## Parallel work
 
-This is an active clean-sheet firmware project for an N32L406CBL7-based
-Makerbase MKS SERVO57D RS-485 controller. Firmware 0.29.0 / protocol 1.11 is
-the current source candidate and adds explicit operator-acknowledged in-place
-fault recovery; firmware 0.28.0 / protocol 1.10 is the flashed hardware
-baseline. Its 20 kHz two-phase current loop, 1 kHz deterministic rotor
-service, persisted alignment, aligned torque, velocity, and relative-position
-stack are bench-proven. At 24 V, +8 rev/s reaches target; a +12 rev/s request
-reaches the 2.999 A nominal q-demand and 70%-of-bus phase-voltage ceilings and
-plateaus near 10 rev/s without a control, encoder, reset, or panic fault.
-It adds automatic-injected VBUS telemetry plus physical amperes/volts in the
-host interface. Inactive status measured 23.829 V at the 24 V supply setting;
-a one-second 1 rev/s / 606 mA regression completed 20,001 current-loop updates
-with advancing VBUS samples, zero terminal duties, and no ADC, deadline,
-encoder, backend, reset, or panic fault. The product ambition is a high-performance motor drive: expand
-useful current, voltage, speed, and motion from measurements rather than
-treating low commissioning ceilings as permanent design targets. The next
-control objective is improved high-electrical-frequency current tracking and
-predictor timing, followed by continued signed speed/position evaluation.
+For tasks with two or more independent workstreams, use subagents when parallel
+execution materially improves speed or review coverage. Give each editing agent
+exclusive ownership of named files or modules, and keep shared integration
+files with the root agent. The root agent synthesizes the results, resolves
+conflicts, and runs end-to-end validation. Prefer one agent for small or
+sequential tasks and work dominated by shared mutable state.
+
+## Documentation ownership
+
+- `README.md`: concise current source/flashed baseline, safety warning, and
+  entry points.
+- `PLAN.md`: active incomplete outcomes and explicit deferrals only.
+- `DECISIONS.md`: short append-only records of structural choices and why
+  they were made.
+- `DEBUG_LOG.md`: durable resolved bugs or genuinely new unresolved evidence,
+  not routine test narration.
+- `docs/OPERATING_LIMITS.md`: numeric operating envelopes, classification,
+  enforcement owner, and next evidence.
+- `docs/PROTOCOL.md`: wire formats, commands, compatibility, and version
+  semantics.
+- `docs/ARCHITECTURE.md` and `docs/REALTIME_ARCHITECTURE.md`: ownership,
+  layering, control flow, and timing contracts.
+- `docs/BRINGUP.md`: bench safety and executable hardware procedures.
+
+Update only the canonical documents made stale by a change. Prefer links over
+duplicating versions, limits, validation results, or historical narrative
+across many files.
 
 ## Working rules
 
