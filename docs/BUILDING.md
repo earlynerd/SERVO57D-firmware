@@ -92,7 +92,7 @@ backend should first be checked unloaded. The script requires a valid RDP L0
 option-byte state and does not release read protection or erase option bytes.
 After reset, bridge authority remains under the product supervisor. RS-485
 diagnostic and motion commands are the current operating interfaces; local
-Next/Enter inputs cannot energize the bridge.
+Left/Center inputs cannot energize the bridge.
 
 ## Host tests
 
@@ -144,10 +144,12 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.25.1 / protocol 1.8 is the current flashed product build. It corrects
+Firmware 0.25.1 / protocol 1.8 remains the current flashed product build. It corrects
 the controller-to-actuator polarity omission exposed by the first 0.25.0 run
 and provides the first bounded velocity product service on the single-estimator
-rotor-observation boundary. It:
+rotor-observation boundary. Firmware 0.26.0 / protocol 1.9 is the current
+host/build-validated candidate; it adds relative-position control through that
+same runtime and expands commandable velocity to 4 rev/s. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -160,15 +162,15 @@ rotor-observation boundary. It:
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.8 COBS/CRC frames in foreground and replies to valid
+12. Parses native v1.9 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
     automatic-alignment, generic-STOP, persistent-configuration, and aligned
-    q-current and signed velocity requests,
+    q-current, signed velocity, and relative-position requests,
     including live status while active.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
 14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; 32 startup snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
-16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. The retired local Next/Enter phase selector cannot request authority. RS-485 may request the bounded rotating-current diagnostic through the supervisor/current backend; deadline, STOP, transport failure, or raw Menu returns it to `ZERO`.
+16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. The retired local Left/Center phase selector cannot request authority. RS-485 may request the bounded rotating-current diagnostic through the supervisor/current backend; deadline, STOP, transport failure, or the physical Right button returns it to `ZERO`.
 17. Keeps RS-485, display, and configuration work in foreground while the timer/DMA/PendSV rotor service remains deterministic and observable during active operation.
 18. Loads a motor alignment only from a schema/range/CRC/commit-valid record
     whose geometry matches the running firmware. A successful alignment is
@@ -184,14 +186,19 @@ rotor-observation boundary. It:
     updates only the bounded aligned-q-current actuator. Target speed, observed
     speed, per-command current, reference acceleration, feedback age, deadline,
     actuator health, and common STOP/fault paths remain independently enforced.
-21. Publishes firmware `0.25.1`, authoritative drive state, reset cause,
+21. Starts a valid relative-position request only near rest, advances a bounded
+    trapezoidal profile, applies independent following-error and settling
+    policy, and changes only the target of the existing velocity/current
+    actuator. Travel, trajectory speed/acceleration, current, feedback age,
+    duration, STOP, Right-button, and fault limits remain separate.
+22. Publishes firmware `0.26.0`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
     `g_diagnostics` RAM record; estimator, alignment, and configuration fields
     are presently on wire rather than appended to that debugger ABI.
-22. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
-23. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+23. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
+24. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Firmware 0.24.13 passed the deterministic rotor-service regression on COM14:
 more than 54,000 idle samples held 1000-1001 us intervals with zero transport
@@ -208,6 +215,14 @@ Debug uses 47,764
 bytes of the 124 KiB application region and 6,796 bytes of SRAM1; Release uses
 42,848 bytes and the same SRAM1, with no allocation in the configuration slots
 or SRAM2. READY boot, passive velocity status, and positive/negative low-speed
-deadline completion have passed. The remaining hardware gate covers explicit
-STOP, raw-Menu stop, current saturation recovery, and common fault/ZERO
-behavior on induced encoder/readiness loss.
+deadline completion have passed. Explicit STOP, physical Right-button stop, and
+hand-loaded current saturation/recovery also pass. Initial velocity qualification
+is accepted. Physical encoder/readiness-loss injection is indefinitely deferred
+on this assembly; common fault/ZERO behavior remains host/native tested.
+
+Firmware 0.26.0 passes the native C suite, the Python host-tool suite, and clean
+Debug/Release Arm post-link builds. Debug uses 54,252 bytes of the 124 KiB
+application region and 7,404 bytes SRAM1; Release uses 48,568 bytes and the
+same SRAM1. Neither image allocates a configuration slot or SRAM2, and the
+240-byte debugger diagnostic ABI remains verified. Position and the expanded
+2-4 rev/s velocity envelope have not yet been flashed or bench-qualified.

@@ -17,6 +17,7 @@ enum
     ROTOR_CONTROL_REQUEST_TORQUE = 1u << 1,
     ROTOR_CONTROL_REQUEST_STOP = 1u << 2,
     ROTOR_CONTROL_REQUEST_VELOCITY = 1u << 3,
+    ROTOR_CONTROL_REQUEST_POSITION = 1u << 4,
     ROTOR_CONTROL_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0,
     ROTOR_CONTROL_MT6816_RESPONSE_LENGTH = 4u,
     NVIC_PRIORITY_SHIFT = 8u - __NVIC_PRIO_BITS
@@ -60,7 +61,8 @@ static bool runtime_active(const rotor_control_runtime_t* runtime)
 {
     return alignment_controller_is_active(&runtime->alignment_controller) ||
            aligned_torque_controller_is_active(&runtime->torque_controller) ||
-           velocity_controller_is_active(&runtime->velocity_controller);
+           velocity_controller_is_active(&runtime->velocity_controller) ||
+           position_controller_is_active(&runtime->position_controller);
 }
 
 static rotor_observation_t runtime_observation(
@@ -95,6 +97,7 @@ static void publish_snapshot(rotor_control_runtime_t* runtime)
     runtime->published.alignment_controller = runtime->alignment_controller;
     runtime->published.torque_controller = runtime->torque_controller;
     runtime->published.velocity_controller = runtime->velocity_controller;
+    runtime->published.position_controller = runtime->position_controller;
     runtime->published.estimator_fault_flags =
         runtime->estimator_fault_flags;
     runtime->published.estimator_sample_interval_us =
@@ -142,6 +145,11 @@ static void fail_active_control(rotor_control_runtime_t* runtime,
         (void)velocity_controller_actuator_failed(
             &runtime->velocity_controller, now_millis);
     }
+    if (position_controller_is_active(&runtime->position_controller))
+    {
+        (void)position_controller_actuator_failed(
+            &runtime->position_controller, now_millis);
+    }
     alignment_controller_abort(&runtime->alignment_controller, now_millis);
     current_loop_backend_get_snapshot(&loop);
     if (aligned_torque_controller_is_active(&runtime->torque_controller))
@@ -169,6 +177,12 @@ static void process_stop_request(rotor_control_runtime_t* runtime,
     {
         alignment_controller_abort(&runtime->alignment_controller,
                                    now_millis);
+        stopped = true;
+    }
+    if (position_controller_is_active(&runtime->position_controller))
+    {
+        (void)position_controller_stop(
+            &runtime->position_controller, now_millis);
         stopped = true;
     }
     if (velocity_controller_is_active(&runtime->velocity_controller))
@@ -213,7 +227,8 @@ static void reject_requests_without_feedback(
     }
     else if ((requests & (ROTOR_CONTROL_REQUEST_ALIGNMENT |
                           ROTOR_CONTROL_REQUEST_TORQUE |
-                          ROTOR_CONTROL_REQUEST_VELOCITY)) != 0u)
+                          ROTOR_CONTROL_REQUEST_VELOCITY |
+                          ROTOR_CONTROL_REQUEST_POSITION)) != 0u)
     {
         (void)current_loop_backend_stop();
         board_bridge_force_low_zero();
@@ -337,6 +352,73 @@ static bool start_velocity(rotor_control_runtime_t* runtime,
         }
         if (aligned_torque_controller_is_active(
                 &runtime->torque_controller))
+        {
+            (void)aligned_torque_controller_stop(
+                &runtime->torque_controller, now_millis);
+        }
+        (void)current_loop_backend_stop();
+        board_bridge_force_low_zero();
+        runtime->event_flags |= ROTOR_CONTROL_EVENT_FAULT;
+        return false;
+    }
+    return true;
+}
+
+static bool start_position(rotor_control_runtime_t* runtime,
+                           const mt6816_sample_t* sample,
+                           uint32_t now_millis,
+                           uint32_t timestamp_us)
+{
+    current_loop_backend_snapshot_t loop = {0};
+    uint32_t electrical_phase_q32 = 0u;
+    const rotor_observation_t observation = runtime_observation(runtime);
+    const int32_t velocity_q16_16 = float_to_q16_16(
+        runtime->angle_tracker.velocity_revolutions_per_second);
+
+    current_loop_backend_get_snapshot(&loop);
+    if (runtime_active(runtime) || !loop.initialized || loop.active ||
+        (loop.fault_flags != 0u) ||
+        !motor_alignment_electrical_phase_q32(
+            &runtime->motor_alignment,
+            sample->angle_raw,
+            &electrical_phase_q32) ||
+        !position_controller_start_relative(
+            &runtime->position_controller,
+            runtime->requested_position_displacement_revolutions_q16_16,
+            runtime->requested_position_maximum_velocity_q16_16,
+            runtime->requested_position_maximum_acceleration_q16_16,
+            runtime->requested_position_current_limit_counts,
+            runtime->requested_position_duration_millis,
+            now_millis,
+            &observation) ||
+        !velocity_controller_start_tracking(
+            &runtime->velocity_controller,
+            0,
+            runtime->requested_position_current_limit_counts,
+            runtime->requested_position_duration_millis,
+            runtime->motor_alignment.status.encoder_direction,
+            now_millis,
+            &observation) ||
+        !aligned_torque_controller_start_tracking(
+            &runtime->torque_controller,
+            runtime->requested_position_duration_millis,
+            now_millis,
+            timestamp_us,
+            velocity_q16_16) ||
+        !current_loop_backend_set_reference_counts(0, 0) ||
+        !current_loop_backend_start())
+    {
+        if (position_controller_is_active(&runtime->position_controller))
+        {
+            (void)position_controller_actuator_failed(
+                &runtime->position_controller, now_millis);
+        }
+        if (velocity_controller_is_active(&runtime->velocity_controller))
+        {
+            (void)velocity_controller_actuator_failed(
+                &runtime->velocity_controller, now_millis);
+        }
+        if (aligned_torque_controller_is_active(&runtime->torque_controller))
         {
             (void)aligned_torque_controller_stop(
                 &runtime->torque_controller, now_millis);
@@ -536,13 +618,129 @@ static void update_velocity(rotor_control_runtime_t* runtime,
     }
 }
 
+static void update_position(rotor_control_runtime_t* runtime,
+                            const mt6816_sample_t* sample,
+                            uint32_t now_millis,
+                            uint32_t timestamp_us)
+{
+    current_loop_backend_snapshot_t loop = {0};
+    aligned_torque_status_t torque_status;
+    position_control_event_t position_event;
+    velocity_control_event_t velocity_event =
+        VELOCITY_CONTROL_EVENT_NONE;
+    aligned_torque_event_t torque_event = ALIGNED_TORQUE_EVENT_NONE;
+    rotor_observation_t observation = runtime_observation(runtime);
+    uint32_t electrical_phase_q32 = 0u;
+    int32_t velocity_target_q16_16 = 0;
+    int16_t q_current_request = 0;
+    const bool phase_valid = motor_alignment_electrical_phase_q32(
+        &runtime->motor_alignment,
+        sample->angle_raw,
+        &electrical_phase_q32);
+
+    observation.timestamp_us = timestamp_us;
+    current_loop_backend_get_snapshot(&loop);
+    position_event = position_controller_update(
+        &runtime->position_controller,
+        now_millis,
+        &observation,
+        &velocity_target_q16_16);
+    if (position_event == POSITION_CONTROL_EVENT_VELOCITY_CHANGED)
+    {
+        if (!velocity_controller_set_target(
+                &runtime->velocity_controller, velocity_target_q16_16))
+        {
+            (void)position_controller_actuator_failed(
+                &runtime->position_controller, now_millis);
+            position_event = POSITION_CONTROL_EVENT_FAILED;
+        }
+        else
+        {
+            velocity_event = velocity_controller_update(
+                &runtime->velocity_controller,
+                now_millis,
+                &observation,
+                &q_current_request);
+            if ((velocity_event ==
+                 VELOCITY_CONTROL_EVENT_CURRENT_CHANGED) &&
+                aligned_torque_controller_set_target(
+                    &runtime->torque_controller, q_current_request))
+            {
+                torque_event = aligned_torque_controller_update(
+                    &runtime->torque_controller,
+                    now_millis,
+                    timestamp_us,
+                    phase_valid,
+                    electrical_phase_q32,
+                    float_to_q16_16(
+                        observation.velocity_revolutions_per_second),
+                    loop.active);
+                if (torque_event == ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED)
+                {
+                    aligned_torque_controller_get_status(
+                        &runtime->torque_controller, &torque_status);
+                    if (!current_loop_backend_set_reference_counts(
+                            torque_status.current_a_reference_counts,
+                            torque_status.current_b_reference_counts))
+                    {
+                        (void)aligned_torque_controller_reference_rejected(
+                            &runtime->torque_controller, now_millis);
+                        torque_event = ALIGNED_TORQUE_EVENT_FAILED;
+                    }
+                }
+            }
+            if ((velocity_event !=
+                 VELOCITY_CONTROL_EVENT_CURRENT_CHANGED) ||
+                (torque_event != ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED))
+            {
+                (void)position_controller_actuator_failed(
+                    &runtime->position_controller, now_millis);
+                position_event = POSITION_CONTROL_EVENT_FAILED;
+            }
+        }
+    }
+
+    if (position_event == POSITION_CONTROL_EVENT_COMPLETED)
+    {
+        if (velocity_controller_is_active(&runtime->velocity_controller))
+        {
+            (void)velocity_controller_stop(
+                &runtime->velocity_controller, now_millis);
+        }
+        if (aligned_torque_controller_is_active(&runtime->torque_controller))
+        {
+            (void)aligned_torque_controller_stop(
+                &runtime->torque_controller, now_millis);
+        }
+        (void)stop_backend(
+            runtime, ROTOR_CONTROL_EVENT_AUTHORITY_RELEASED);
+    }
+    else if (position_event == POSITION_CONTROL_EVENT_FAILED)
+    {
+        if (velocity_controller_is_active(&runtime->velocity_controller))
+        {
+            (void)velocity_controller_actuator_failed(
+                &runtime->velocity_controller, now_millis);
+        }
+        if (aligned_torque_controller_is_active(&runtime->torque_controller))
+        {
+            (void)aligned_torque_controller_stop(
+                &runtime->torque_controller, now_millis);
+        }
+        (void)current_loop_backend_stop();
+        board_bridge_force_low_zero();
+        runtime->event_flags |= ROTOR_CONTROL_EVENT_FAULT;
+    }
+}
+
 bool rotor_control_runtime_init(
     rotor_control_runtime_t* runtime,
     const angle_tracker_t* angle_tracker,
     const motor_alignment_t* motor_alignment,
     const alignment_controller_t* alignment_controller,
     const aligned_torque_controller_t* torque_controller,
-    const velocity_controller_t* velocity_controller)
+    const velocity_controller_t* velocity_controller,
+    const position_controller_t* position_controller)
 {
     const diagnostics_encoder_t empty_encoder = {
         .status = MT6816_STATUS_NOT_ATTEMPTED,
@@ -552,10 +750,12 @@ bool rotor_control_runtime_init(
     if ((runtime == NULL) || (angle_tracker == NULL) ||
         (motor_alignment == NULL) || (alignment_controller == NULL) ||
         (torque_controller == NULL) || (velocity_controller == NULL) ||
+        (position_controller == NULL) ||
         !angle_tracker_config_is_valid(&angle_tracker->config) ||
         !motor_alignment->initialized ||
         !alignment_controller->initialized ||
-        !torque_controller->initialized || !velocity_controller->initialized)
+        !torque_controller->initialized || !velocity_controller->initialized ||
+        !position_controller->initialized)
     {
         return false;
     }
@@ -565,6 +765,7 @@ bool rotor_control_runtime_init(
     runtime->alignment_controller.alignment = NULL;
     runtime->torque_controller = *torque_controller;
     runtime->velocity_controller = *velocity_controller;
+    runtime->position_controller = *position_controller;
     runtime->encoder_diagnostics = empty_encoder;
     runtime->estimator_fault_flags = 0u;
     runtime->estimator_sample_interval_us = 0u;
@@ -577,6 +778,11 @@ bool rotor_control_runtime_init(
     runtime->requested_velocity_revolutions_per_second_q16_16 = 0;
     runtime->requested_velocity_current_limit_counts = 0u;
     runtime->requested_velocity_duration_millis = 0u;
+    runtime->requested_position_displacement_revolutions_q16_16 = 0;
+    runtime->requested_position_maximum_velocity_q16_16 = 0;
+    runtime->requested_position_maximum_acceleration_q16_16 = 0;
+    runtime->requested_position_current_limit_counts = 0u;
+    runtime->requested_position_duration_millis = 0u;
     runtime->event_flags = 0u;
     runtime->initialized = true;
     publish_snapshot(runtime);
@@ -660,6 +866,44 @@ bool rotor_control_runtime_request_velocity(
     runtime->requested_velocity_duration_millis = duration_millis;
     __DMB();
     runtime->request_flags = ROTOR_CONTROL_REQUEST_VELOCITY;
+    runtime_critical_exit(previous);
+    return true;
+}
+
+bool rotor_control_runtime_request_position_relative(
+    rotor_control_runtime_t* runtime,
+    int32_t displacement_revolutions_q16_16,
+    int32_t maximum_velocity_revolutions_per_second_q16_16,
+    int32_t maximum_acceleration_revolutions_per_second2_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis)
+{
+    uint32_t previous;
+
+    if ((runtime == NULL) || !runtime->initialized ||
+        (displacement_revolutions_q16_16 == 0) ||
+        (maximum_velocity_revolutions_per_second_q16_16 <= 0) ||
+        (maximum_acceleration_revolutions_per_second2_q16_16 <= 0) ||
+        (current_limit_counts == 0u) || (duration_millis == 0u))
+    {
+        return false;
+    }
+    previous = runtime_critical_enter();
+    if ((runtime->request_flags != 0u) || runtime_active(runtime))
+    {
+        runtime_critical_exit(previous);
+        return false;
+    }
+    runtime->requested_position_displacement_revolutions_q16_16 =
+        displacement_revolutions_q16_16;
+    runtime->requested_position_maximum_velocity_q16_16 =
+        maximum_velocity_revolutions_per_second_q16_16;
+    runtime->requested_position_maximum_acceleration_q16_16 =
+        maximum_acceleration_revolutions_per_second2_q16_16;
+    runtime->requested_position_current_limit_counts = current_limit_counts;
+    runtime->requested_position_duration_millis = duration_millis;
+    __DMB();
+    runtime->request_flags = ROTOR_CONTROL_REQUEST_POSITION;
     runtime_critical_exit(previous);
     return true;
 }
@@ -865,12 +1109,22 @@ void rotor_control_runtime_spi_callback(
         started = start_velocity(
             runtime, &sample, now_millis, timestamp_us);
     }
+    else if ((requests & ROTOR_CONTROL_REQUEST_POSITION) != 0u)
+    {
+        started = start_position(
+            runtime, &sample, now_millis, timestamp_us);
+    }
 
     if (!started)
     {
         if (alignment_controller_is_active(&runtime->alignment_controller))
         {
             update_alignment(runtime, &sample, now_millis);
+        }
+        else if (position_controller_is_active(
+                     &runtime->position_controller))
+        {
+            update_position(runtime, &sample, now_millis, timestamp_us);
         }
         else if (velocity_controller_is_active(
                      &runtime->velocity_controller))

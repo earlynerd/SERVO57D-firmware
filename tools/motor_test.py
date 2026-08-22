@@ -685,7 +685,7 @@ def main() -> int:
                     stop_succeeded = False
                     print(
                         "error: STOP was not acknowledged; rely on the firmware "
-                        f"deadline or assert Menu: {error}",
+                        f"deadline or press the Right button: {error}",
                         file=sys.stderr,
                     )
             if not args.keep_config and stop_succeeded:

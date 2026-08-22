@@ -6,17 +6,17 @@
 
 enum
 {
-    USER_INPUT_KEY_ENTER = 1u << 0,
-    USER_INPUT_KEY_MENU = 1u << 1,
-    USER_INPUT_KEY_NEXT = 1u << 2,
+    USER_INPUT_BUTTON_CENTER = 1u << 0,
+    USER_INPUT_BUTTON_RIGHT = 1u << 1,
+    USER_INPUT_BUTTON_LEFT = 1u << 2,
     USER_INPUT_M_IN1 = 1u << 3,
     USER_INPUT_M_IN2 = 1u << 4,
     USER_INPUT_STEP = 1u << 5,
     USER_INPUT_DIRECTION = 1u << 6,
     USER_INPUT_ENABLE = 1u << 7,
-    USER_INPUT_MASK = USER_INPUT_KEY_ENTER |
-                      USER_INPUT_KEY_MENU |
-                      USER_INPUT_KEY_NEXT |
+    USER_INPUT_MASK = USER_INPUT_BUTTON_CENTER |
+                      USER_INPUT_BUTTON_RIGHT |
+                      USER_INPUT_BUTTON_LEFT |
                       USER_INPUT_M_IN1 |
                       USER_INPUT_M_IN2 |
                       USER_INPUT_STEP |

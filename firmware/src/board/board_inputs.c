@@ -9,23 +9,23 @@ enum
 {
     STEP_PIN = 0u,
     DIRECTION_PIN = 8u,
-    KEY_NEXT_PIN = 15u,
+    BUTTON_LEFT_PIN = 15u,
     ENABLE_PIN = 7u,
-    KEY_ENTER_PIN = 8u,
-    KEY_MENU_PIN = 9u,
+    BUTTON_CENTER_PIN = 8u,
+    BUTTON_RIGHT_PIN = 9u,
     M_IN2_PIN = 12u,
     M_IN1_PIN = 13u,
     GPIOA_INPUT_MODE_MASK = (3u << (STEP_PIN * 2u)) |
                             (3u << (DIRECTION_PIN * 2u)) |
-                            (3u << (KEY_NEXT_PIN * 2u)),
+                            (3u << (BUTTON_LEFT_PIN * 2u)),
     GPIOB_INPUT_MODE_MASK = (3u << (ENABLE_PIN * 2u)) |
-                            (3u << (KEY_ENTER_PIN * 2u)) |
-                            (3u << (KEY_MENU_PIN * 2u)) |
+                            (3u << (BUTTON_CENTER_PIN * 2u)) |
+                            (3u << (BUTTON_RIGHT_PIN * 2u)) |
                             (3u << (M_IN2_PIN * 2u)) |
                             (3u << (M_IN1_PIN * 2u)),
-    GPIOA_INPUT_PULLUPS = 1u << (KEY_NEXT_PIN * 2u),
-    GPIOB_INPUT_PULLUPS = (1u << (KEY_ENTER_PIN * 2u)) |
-                          (1u << (KEY_MENU_PIN * 2u)) |
+    GPIOA_INPUT_PULLUPS = 1u << (BUTTON_LEFT_PIN * 2u),
+    GPIOB_INPUT_PULLUPS = (1u << (BUTTON_CENTER_PIN * 2u)) |
+                          (1u << (BUTTON_RIGHT_PIN * 2u)) |
                           (1u << (M_IN2_PIN * 2u)) |
                           (1u << (M_IN1_PIN * 2u))
 };
@@ -70,17 +70,17 @@ uint32_t board_inputs_read_raw(void)
     {
         levels |= USER_INPUT_ENABLE;
     }
-    if ((gpiob & (1u << KEY_ENTER_PIN)) != 0u)
+    if ((gpiob & (1u << BUTTON_CENTER_PIN)) != 0u)
     {
-        levels |= USER_INPUT_KEY_ENTER;
+        levels |= USER_INPUT_BUTTON_CENTER;
     }
-    if ((gpiob & (1u << KEY_MENU_PIN)) != 0u)
+    if ((gpiob & (1u << BUTTON_RIGHT_PIN)) != 0u)
     {
-        levels |= USER_INPUT_KEY_MENU;
+        levels |= USER_INPUT_BUTTON_RIGHT;
     }
-    if ((gpioa & (1u << KEY_NEXT_PIN)) != 0u)
+    if ((gpioa & (1u << BUTTON_LEFT_PIN)) != 0u)
     {
-        levels |= USER_INPUT_KEY_NEXT;
+        levels |= USER_INPUT_BUTTON_LEFT;
     }
     if ((gpiob & (1u << M_IN1_PIN)) != 0u)
     {

@@ -1,5 +1,41 @@
 # Debug Log
 
+## 2026-08-22 — Relative-position settle, polarity, and generic STOP gates passed
+
+- **Observation:** Firmware 0.26.0 / protocol 1.9 ran mirrored ±0.25-revolution commands at 0.5 rev/s maximum, 1 rev/s², and a 100-count current limit. The positive move settled in 1.29 s at -0.000427 revolution endpoint error; the negative move settled in 1.35 s at +0.001465 revolution error. Both stayed at or below 32 requested/applied current counts, below 0.05 revolution maximum profile following error, and at 1000 us captured encoder intervals. A separate +0.5-revolution command accepted scheduled generic STOP at 0.5 s and returned zero current references and duties with no faults.
+- **Root cause:** No defect observed. The product position profile, dynamic velocity target, persisted `encoder_direction = -1` effort mapping, aligned-current actuator, capture tool, and normal release lifecycle behaved coherently in both signs.
+- **Fix:** No firmware change required; accept mirrored settled completion and generic STOP as the first position hardware sub-gate. Calibration generation 3 remained unchanged, final encoder velocity returned to zero, and controller, current-loop, encoder, reset, watchdog, and retained-panic telemetry stayed clear. Physical Right-button stop and loaded following-error behavior remain pending.
+- **Class:** position-settle-stop-bench-validation
+- **Recently-touched?** yes
+- **Time to fix:** no fix required; one short captured bench-validation pass
+
+## 2026-08-21 — Physical encoder-loss regression deferred on the current assembly
+
+- **Observation:** The encoder is mounted between the controller PCB and motor and is physically inaccessible in the assembled drive. Inducing no-magnet or readiness loss would require disturbing the assembly and risk damaging the sensor, board, or interconnect.
+- **Root cause:** This is a test-access limitation, not a firmware defect. The runtime still handles invalid, stale, and lost-ready feedback through the common fault/ZERO path in native controller tests.
+- **Fix:** Indefinitely defer physical encoder/readiness-loss injection on this assembly and accept initial velocity qualification from the completed deadline, STOP, Right-button, and hand-loaded saturation/recovery gates. Reopen only with a non-destructive future test point or fixture; do not remove automated fault-path coverage.
+- **Class:** inaccessible-encoder-fault-injection
+- **Recently-touched?** no
+- **Time to fix:** one scope decision and post-flash safe-state verification
+
+## 2026-08-21 — Low-current velocity run stalled at the command ceiling
+
+- **Observation:** A 0.1 rev/s, 25-count, 30-second firmware 0.25.1 velocity command moved about 0.055 revolution, then reported zero speed while holding the 25-count current limit for 598 of 630 captured samples. Encoder transport, 1 kHz timing, current-loop health, reset, and panic telemetry stayed clean, and the deadline released all authority, references, and duties.
+- **Root cause:** The caller-selected 25-count limit supplied only about 151.5 mA to a NEMA23-sized motor and was insufficient at the encountered load/detent position. `firmware/src/control/velocity_controller.c:264-268` correctly clamped the PI request, `firmware/src/control/pi_controller.c:66-84` prevented further windup, and `firmware/src/control/velocity_controller.c:228-233` retained authority until the finite deadline because stall detection is not implemented yet.
+- **Fix:** No firmware change required; repeating at the already current-path-proven 50-count/303 mA point produced sustained motion and passed deterministic generic STOP with clean authority, reference, and duty release.
+- **Class:** low-speed-current-limit-stall
+- **Recently-touched?** yes
+- **Time to fix:** approximately 30 minutes of bench capture, code audit, and one higher-current confirmation
+
+## 2026-08-21 — Velocity STOP, Right-button, and saturation gates passed
+
+- **Observation:** Firmware 0.25.1 still required generic STOP, physical-button stop, and current saturation/recovery qualification on hardware. A 0.1 rev/s, 50-count command accepted scheduled generic STOP at two seconds; a 1 rev/s, 100-count command accepted the physical Right button at 1.331 seconds; and three five-second 1 rev/s captures exercised load-induced current limiting. The operator reported hand-loading the shaft on two runs; this is recorded as qualitative disturbance evidence rather than a calibrated torque measurement.
+- **Root cause:** No defect observed. `firmware/src/app/rotor_control_runtime.c:450-535` kept velocity and aligned-current lifecycle ownership together, while `firmware/src/main.c:2220-2226` converted the raw Right-button assertion into the common stop request and `firmware/src/control/pi_controller.c:66-84` bounded saturation without integrator windup.
+- **Fix:** No firmware change required; accept generic STOP, physical Right-button stop, bounded current limiting, and two recovery traces. The three captures contained 29, 11, and 23 at-limit samples; two returned to about 0.99 rev/s, while the first ended at 0.59 rev/s still at the limit and is not counted as a recovery. Every terminal snapshot showed zero q-current/duties, unchanged calibration, 1000-1001 us encoder timing, and no control, encoder, reset, or panic faults. Future disturbance testing uses a guarded brake or load fixture.
+- **Class:** velocity-stop-saturation-bench-validation
+- **Recently-touched?** yes
+- **Time to fix:** approximately one bench qualification session
+
 ## 2026-08-20 — Firmware 0.22 configuration persistence passed hardware acceptance
 
 - **Observation:** After flashing 0.22.0, automatic alignment save, unchanged-save wear avoidance, power-cycle restore, persistent clear, slot alternation, and safe boot restoration required validation on COM14.

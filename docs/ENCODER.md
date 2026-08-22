@@ -138,7 +138,10 @@ five seconds, completed 100,000 current-loop samples, preserved zero encoder,
 DMA, estimator, backend, and control faults, and returned all duties and
 references to zero at deadline.
 
-Remaining work is to test the no-magnet/readiness-loss and Menu-abort paths.
+Velocity Right-button abort passes. Physical no-magnet/readiness-loss injection
+is indefinitely deferred on the current board/motor assembly because the encoder
+is inaccessible without risking damage; its common fault/ZERO behavior remains
+host/native tested. The alignment-specific Right-button gate remains.
 The bench-validated supervisor-owned automatic alignment procedure
 establishes the per-motor electrical zero transactionally before motion can use
 electrical phase; accepted calibration persists through the dual-slot production

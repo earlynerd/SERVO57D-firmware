@@ -101,6 +101,17 @@ bool velocity_controller_start(
     int8_t actuator_direction,
     uint32_t now_millis,
     const rotor_observation_t* observation);
+bool velocity_controller_start_tracking(
+    velocity_controller_t* controller,
+    int32_t target_velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis,
+    int8_t actuator_direction,
+    uint32_t now_millis,
+    const rotor_observation_t* observation);
+bool velocity_controller_set_target(
+    velocity_controller_t* controller,
+    int32_t target_velocity_revolutions_per_second_q16_16);
 velocity_control_event_t velocity_controller_update(
     velocity_controller_t* controller,
     uint32_t now_millis,

@@ -36,8 +36,8 @@ board; isolated outputs remain provisional.
 | PB5 | `SPI_MOSI` | Encoder SPI1 data to sensor, AF0 |
 | PB6 | `SPI_CS` | Encoder software-controlled chip select |
 | PB7 | `nEN` | Isolated enable input; relation to bridge inhibit, if any, requires tracing |
-| PB8 | `KEY_ENTER` | Enter button input |
-| PB9 | `KEY_MENU` | Menu button input |
+| PB8 | `BUTTON_CENTER` (schematic `KEY_ENTER`) | Center button input |
+| PB9 | `BUTTON_RIGHT` (schematic `KEY_MENU`) | Right button input; immediate physical stop |
 | PB12 | `M_IN2` | Isolated auxiliary input |
 | PB13 | `M_IN1` | Isolated auxiliary input |
 | PB14 | `M_OUT1` | Isolated auxiliary output |
@@ -47,7 +47,7 @@ board; isolated outputs remain provisional.
 | PA10 | `RX` | USART1 receive, AF4 |
 | PA13 | `SWDIO` | Debug data |
 | PA14 | `SWCLK` | Debug clock |
-| PA15 | `KEY_NEXT` | Next button input |
+| PA15 | `BUTTON_LEFT` (schematic `KEY_NEXT`) | Left button input |
 | PC13 | `RE1` | Proven RS-485 direction: low receive, high transmit |
 | PD0/BOOT0 | `LED` | Active-high onboard blue status LED |
 
@@ -61,11 +61,11 @@ PA14 SWCLK remain untouched.
 
 On the tested board, the physical button order is:
 
-| Position | OLED label | Function | MCU pin |
+| Position | OLED label | Canonical function | MCU pin |
 | --- | --- | --- | --- |
-| Left | `N` | Next | PA15 |
-| Center | `E` | Enter | PB8 |
-| Right | `M` | Menu | PB9 |
+| Left | `L` | Left button | PA15 |
+| Center | `C` | Center button | PB8 |
+| Right | `R` | Immediate physical stop | PB9 |
 
 All three buttons and both isolated M_IN1/M_IN2 inputs have been observed to
 change their corresponding active-low OLED state independently.
@@ -171,7 +171,7 @@ state. Firmware uses all four commands low as its deterministic zero-voltage
 vector, while recognizing that all four low-side FETs remain on.
 
 With a 12 V bus and the motor disconnected, firmware 0.10.0 measured 0 V DC
-across both windings in `ZERO`. Holding Enter for the 500 Hz, nominally 50%
+across both windings in `ZERO`. Holding the Center button for the 500 Hz, nominally 50%
 single-leg pattern produced approximately 6 V average across the selected
 phase on a Fluke meter. This supports the expected two-level bridge polarity
 and differential zero vector; it does not establish edge shape, actual

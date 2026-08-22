@@ -40,9 +40,9 @@ without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
 This interface currently commands a positive-frequency rotating current vector;
 `--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
 closed-loop shaft-speed, signed-direction, or position command. Those controls
-remain separate from this diagnostic: firmware 0.25.1 provides signed closed-
-loop speed through the dedicated `velocity` service, while position remains the
-next motion milestone.
+remain separate from this diagnostic: firmware 0.25.1 provides the flashed,
+qualified signed-velocity baseline, while the 0.26.0 build candidate adds
+bounded relative-position control through the same production actuator.
 
 The 0.23 candidate adds the first production motion command: a signed,
 calibrated q-current demand with firmware-reported current, slew, velocity,
@@ -59,44 +59,75 @@ it is torque-producing current, not a velocity request, so keep clear of the
 shaft and use the current-limited supply procedure in
 [the bring-up guide](docs/BRINGUP.md).
 
-Firmware 0.25.1 provides the first signed closed-loop velocity product service on
-top of that actuator. Inspect the live policy before starting; the initial
-candidate is intentionally bounded to ±1 rev/s, 1 rev/s² reference slew, and
-100 current counts (about 606 mA):
+Firmware 0.26.0 expands the signed closed-loop velocity evaluation service to
+±4 rev/s (±240 RPM), 4 rev/s² reference slew, and 100 current counts (about
+606 mA). The independent observed-speed shutdown remains 5 rev/s. Inspect the
+live policy after flashing before starting:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 60 --current-limit-ma 606 --duration-ms 3000
 ```
 
 The command reports the acceleration-limited reference, measured speed,
 requested and actually applied q-current, saturation, deadline, authority, and
 fault state. Each run stores normalized metadata and CSV telemetry under
 `scratch/velocity-runs/`; the terminal shows only a compact live status line.
-It remains a bench candidate until positive/negative deadline, STOP, Menu,
-saturation, and induced-feedback-loss tests pass.
+Positive/negative deadline, explicit STOP, physical Right-button stop, and
+hand-loaded saturation/recovery gates pass. Initial velocity qualification is
+accepted; physical feedback-loss injection is deferred indefinitely on the
+current board/motor assembly because the encoder is inaccessible.
+
+The 0.26.0 / protocol 1.9 candidate adds a relative-position command with
+separate travel, trajectory-velocity, acceleration, current, start-speed,
+following-error, feedback-age, settling, and deadline bounds. A conservative
+first bench move after flashing is:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 position-status
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000
+```
+
+The move succeeds only with result `settled`; reaching its deadline releases
+the motor but reports a non-success result. Ctrl+C, generic STOP, and the
+physical Right button retain the same immediate release path. Position runs use
+the velocity command's recording convention: normalized `metadata.json` and
+`telemetry.csv` under `scratch/position-runs/`, with one compact live terminal
+line instead of repeated nested JSON. Full JSONL remains opt-in.
+
+The first 0.26.0 position hardware sub-gate passes. Mirrored ±0.25-revolution
+moves settled in 1.29/1.35 seconds with -0.000427/+0.001465 revolution endpoint
+error, used at most 32 of 100 current counts, stayed below 0.05 revolution
+profile following error, and held captured encoder timing to 1000 us. A
+scheduled generic STOP also cleared all current references and duties without
+faults or calibration changes. Physical Right-button stop and loaded
+following-error checks remain pending.
 
 ## Current operating envelope
 
-Firmware 0.25.1 / protocol 1.8 is the current flashed product build. Mirrored
+Firmware 0.25.1 / protocol 1.8 remains the current flashed product build. Mirrored
 ±0.1 rev/s, 25-count, two-second commands moved in the requested encoder
 coordinate, completed at their deadlines, and returned to `ZERO` with no
 control, encoder, current-loop, reset, or watchdog faults. The correction maps
 velocity effort through the already persisted alignment direction without
-changing the configuration schema or wire protocol. Explicit STOP, raw Menu,
-saturation/recovery, and induced-fault velocity gates remain pending. Firmware
+changing the configuration schema or wire protocol. A 303 mA run accepted
+generic STOP, a 606 mA / 1 rev/s run accepted the physical Right button, and
+hand-loaded runs demonstrated bounded saturation/recovery without faults or
+material overshoot. The physical feedback-loss gate is indefinitely deferred;
+the fault/ZERO contract remains covered by host/native tests. Firmware
 0.24.15 passed its ordinary hardware
 smoke check. Firmware 0.24.14 retired
-the local Next/Enter phase selector and its direct fixed-duty PWM helper while
+the local Left/Center phase selector and its direct fixed-duty PWM helper while
 retaining the RS-485 rotating-current diagnostic through the product supervisor
 and current backend. Firmware 0.24.15 makes the deterministic rotor runtime the
 sole estimator owner and gives the not-yet-linked motion candidate an immutable,
 timestamped position/velocity observation instead of raw encoder samples. The
-0.25.1 / protocol 1.8 candidate is host- and build-validated and closes the
+0.25.1 / protocol 1.8 image closes the
 first bounded signed mechanical-velocity loop on that observation. It applies
 an acceleration-limited reference and PI current request, then commands only
-the existing aligned-q-current actuator; position and step/direction remain
-disconnected. The current product line provides bounded signed
+the existing aligned-q-current actuator. The 0.26.0 / protocol 1.9 build
+candidate reuses that controller and actuator beneath a tested trapezoidal
+relative-position profile; step/direction remains disconnected. The current product line provides bounded signed
 encoder-aligned q-current through the same supervisor,
 current backend, and ZERO-vector fault path, and accepts the full wrap-safe
 finite-deadline range. Torque activation is seeded only by newly accepted
@@ -116,7 +147,8 @@ motor with clean authority release, zero faults, and no reset or retained panic.
 supervisor-authorized path is bench-proven at 303 mA / 5 Hz through normal
 deadline release and at 151.5 mA / 5 Hz through an explicit STOP. The new 1 kHz
 estimator is bench-proven at idle and during a 757 mA / 20 Hz bounded run;
-readiness-loss fault injection still requires hardware regression.
+physical readiness-loss fault injection is indefinitely deferred on this
+assembly because the encoder cannot be accessed non-destructively.
 
 The deterministic rotor-feedback path is bench-proven during a 606 mA aligned-
 torque command lasting five seconds: it completed 100,000 current-loop updates,
@@ -126,12 +158,12 @@ zero at the deadline.
 
 The image preloads PA6/PA7/PB0/PB1 low and maps them to TIM3. Independent zero
 calibration, initialized current control, and a healthy encoder move the product
-supervisor from `DIAGNOSTIC` to `READY`. The transitional local Next/Enter
+supervisor from `DIAGNOSTIC` to `READY`. The transitional local Left/Center
 phase selector has been retired; it no longer requests bridge authority. RS-485
 can configure 1-495 ADC counts (about 6.06 mA-2.999 A)
 and 0.001-250 Hz electrical frequency, start a 0.003-2,147,483.647 second run, stream current,
 duty, fault, reset, and encoder state, or stop diagnostic or motion authority.
-Raw Menu remains an immediate physical stop input. The
+The physical Right button remains an immediate stop input. The
 independent raw-current trip is about 3.635 A, phase voltage is limited to 70%
 of the bus, and the timer guardian latches missed current-loop updates. Loss of
 readiness before a run returns to `DIAGNOSTIC`; loss while energized stops the
@@ -160,9 +192,9 @@ A separate general-motion candidate still exercises remote lease expiry,
 step/direction behavior, bounded position trajectories, and fault recovery
 against host-side deterministic plants. The hardware image owns the only angle
 tracker and publishes validated mechanical position/velocity observations.
-Firmware 0.25.1 links only the focused low-speed velocity controller described
-above; position, step/direction, and the candidate's broader motion limits have
-not been promoted into the product.
+Firmware 0.26.0 promotes only focused relative position into the product;
+step/direction, leases, and the candidate's broader motion shell remain
+separately compiled and unlinked.
 
 ## Current project status
 
@@ -207,15 +239,17 @@ five seconds. During a 757 mA / 20 Hz run, sampled encoder intervals were
 -0.3953 revolution/s versus -0.4000 commanded, and no estimator fault occurred.
 
 Successful/repeatable automatic alignment and explicit STOP are accepted on the
-tested motor. Menu abort and induced readiness-loss behavior remain physical
-fault-injection checks. Firmware 0.22.0 reserves the final two 2 KiB Flash pages
+tested motor. The alignment-specific Right-button abort remains a physical
+check. Induced readiness-loss testing is indefinitely deferred on the current
+assembly while its common fault/ZERO behavior remains host/native tested. Firmware 0.22.0
+reserves the final two 2 KiB Flash pages
 for alternating versioned configuration records, validates schema, CRC-32,
 generation, commit marker, and motor geometry at boot, automatically persists
 alignment only after authority/backend release, and exposes status/save/clear
 through the production command service. Interrupted-write fallback is host-
 tested, and physical power-cycle restore plus persistent clear are bench-
-accepted. The next functional gate is low-speed velocity bench validation and
-tuning, followed by position control. Remaining characterization
+accepted. The next functional gate is staged relative-position bench validation
+and expansion of the new 240 RPM velocity evaluation envelope. Remaining characterization
 includes expansion beyond the inherited 1 A firmware endpoint, enclosed thermal behavior, current-sense temperature and
 unit-to-unit tolerance, bus-voltage protection, bootstrap/duty limits,
 reset/halt waveforms, and timer capture for step/direction/enable. See

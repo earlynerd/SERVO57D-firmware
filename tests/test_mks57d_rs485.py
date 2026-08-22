@@ -11,10 +11,17 @@ from tools import mks57d_rs485 as console
 
 def velocity_status(state: str) -> dict:
     active = state not in {"complete", "stopped", "failed"}
+    result = (
+        "deadline"
+        if state == "complete"
+        else "stopped"
+        if state == "stopped"
+        else "none"
+    )
     return {
         "schema": 1,
         "state": state,
-        "result": "deadline" if state == "complete" else "none",
+        "result": result,
         "flags_hex": "0x01" if active else "0x00",
         "flags": ["active"] if active else [],
         "fault_flags_hex": "0x00000000",
@@ -37,6 +44,60 @@ def velocity_status(state: str) -> dict:
             "maximum_current_counts": 100,
             "minimum_duration_millis": 3,
             "maximum_duration_millis": 2147483647,
+        },
+    }
+
+
+def position_status(state: str) -> dict:
+    active = state in {"moving", "settling"}
+    result = (
+        "settled"
+        if state == "complete"
+        else "stopped"
+        if state == "stopped"
+        else "following_error"
+        if state == "failed"
+        else "none"
+    )
+    progress = {
+        "idle": (0.0, 0.0, 0.0),
+        "moving": (0.10, 0.09, 0.30),
+        "settling": (0.25, 0.249, 0.01),
+        "complete": (0.25, 0.25, 0.0),
+        "stopped": (0.10, 0.09, 0.0),
+        "failed": (0.20, 0.0, 0.0),
+    }
+    reference, measured, velocity = progress[state]
+    flags = ["active"] if active else []
+    faults = ["following_error"] if state == "failed" else []
+    return {
+        "schema": 1,
+        "state": state,
+        "result": result,
+        "flags_hex": "0x01" if active else "0x00",
+        "flags": flags,
+        "fault_flags_hex": "0x00000004" if faults else "0x00000000",
+        "faults": faults,
+        "target_position_revolutions": 0.25,
+        "reference_position_revolutions": reference,
+        "measured_position_revolutions": measured,
+        "reference_velocity_revolutions_per_second": velocity,
+        "target_velocity_revolutions_per_second": velocity,
+        "measured_velocity_revolutions_per_second": velocity,
+        "requested_q_current_counts": 10 if active else 0,
+        "requested_q_current_nominal_milliamperes": 60.6 if active else 0.0,
+        "applied_q_current_counts": 9 if active else 0,
+        "applied_q_current_nominal_milliamperes": 54.5 if active else 0.0,
+        "current_limit_counts": 100,
+        "current_limit_nominal_milliamperes": 605.9,
+        "elapsed_millis": 100 if active else 2000,
+        "remaining_millis": 1900 if active else 0,
+        "policy": {
+            "maximum_relative_travel_revolutions": 100.0,
+            "maximum_velocity_revolutions_per_second": 4.0,
+            "maximum_acceleration_revolutions_per_second2": 4.0,
+            "maximum_following_error_revolutions": 0.25,
+            "minimum_duration_millis": 100,
         },
     }
 
@@ -72,8 +133,15 @@ ENCODER_STATUS = {
 
 
 class FakeClient:
-    def __init__(self, start_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        start_error: Exception | None = None,
+        start_command: int = console.COMMAND_START_VELOCITY,
+        payload_length: int = 10,
+    ) -> None:
         self.start_error = start_error
+        self.start_command = start_command
+        self.payload_length = payload_length
         self.start_count = 0
 
     def transact(self, command: int, payload: bytes = b"") -> bytes:
@@ -83,12 +151,13 @@ class FakeClient:
             raise self.start_error
         return b""
 
-    @staticmethod
-    def assert_start_payload(command: int, payload: bytes) -> None:
-        if command != console.COMMAND_START_VELOCITY:
+    def assert_start_payload(self, command: int, payload: bytes) -> None:
+        if command != self.start_command:
             raise AssertionError(f"unexpected command 0x{command:04X}")
-        if len(payload) != 10:
-            raise AssertionError("velocity request must be 10 bytes")
+        if len(payload) != self.payload_length:
+            raise AssertionError(
+                f"request must be {self.payload_length} bytes"
+            )
 
 
 def capture_args(root: Path) -> SimpleNamespace:
@@ -103,10 +172,147 @@ def capture_args(root: Path) -> SimpleNamespace:
         timeout=0.75,
         jsonl=False,
         quiet=True,
+        stop_after_seconds=None,
+    )
+
+
+def position_capture_args(root: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        output_root=root,
+        revolutions=0.25,
+        max_rps=0.5,
+        max_rpm=None,
+        acceleration_rps2=1.0,
+        duration_ms=2000,
+        interval=0.01,
+        port="COM14",
+        baud=115200,
+        address=1,
+        timeout=0.75,
+        jsonl=False,
+        quiet=True,
+        stop_after_seconds=None,
     )
 
 
 class VelocityCaptureTests(unittest.TestCase):
+    def test_stop_after_is_scoped_to_motion_capture_parsers(self) -> None:
+        parser = console.make_parser()
+        align = parser.parse_args(["align", "--counts", "50"])
+        velocity = parser.parse_args(
+            [
+                "velocity",
+                "--rps",
+                "0.1",
+                "--current-limit-counts",
+                "50",
+                "--stop-after-seconds",
+                "2",
+            ]
+        )
+        position = parser.parse_args(
+            [
+                "position",
+                "--revolutions",
+                "0.25",
+                "--max-rps",
+                "0.5",
+                "--acceleration-rps2",
+                "1",
+                "--current-limit-counts",
+                "50",
+                "--stop-after-seconds",
+                "2",
+            ]
+        )
+
+        self.assertFalse(hasattr(align, "stop_after_seconds"))
+        self.assertEqual(velocity.stop_after_seconds, 2.0)
+        self.assertEqual(position.stop_after_seconds, 2.0)
+
+    def test_velocity_and_position_accept_rpm_units(self) -> None:
+        parser = console.make_parser()
+        velocity = parser.parse_args(
+            [
+                "velocity",
+                "--rpm",
+                "240",
+                "--current-limit-counts",
+                "100",
+            ]
+        )
+        position = parser.parse_args(
+            [
+                "position",
+                "--revolutions",
+                "0.25",
+                "--max-rpm",
+                "120",
+                "--acceleration-rps2",
+                "4",
+                "--current-limit-counts",
+                "100",
+            ]
+        )
+
+        self.assertEqual(velocity.rpm, 240.0)
+        self.assertIsNone(velocity.rps)
+        self.assertEqual(position.max_rpm, 120.0)
+        self.assertEqual(position.revolutions, 0.25)
+
+    def test_position_status_decodes_policy_and_faults(self) -> None:
+        body = console.POSITION_STATUS_BODY.pack(
+            1,
+            5,
+            6,
+            0x85,
+            1 << 2,
+            round(1.5 * 65536),
+            round(1.25 * 65536),
+            round(1.0 * 65536),
+            round(0.5 * 65536),
+            round(0.25 * 65536),
+            round(0.125 * 65536),
+            -25,
+            -24,
+            100,
+            1234,
+            8766,
+            100 * 65536,
+            4 * 65536,
+            4 * 65536,
+            round(0.25 * 65536),
+        )
+        client = mock.Mock()
+        client.transact.return_value = body
+
+        status = console.query_position(client)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_GET_POSITION_STATUS
+        )
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["result"], "following_error")
+        self.assertEqual(status["faults"], ["following_error"])
+        self.assertEqual(status["target_position_revolutions"], 1.5)
+        self.assertEqual(
+            status["policy"]["maximum_velocity_revolutions_per_second"],
+            4.0,
+        )
+        self.assertEqual(
+            status["policy"]["maximum_following_error_revolutions"],
+            0.25,
+        )
+
+    def test_input_state_uses_physical_button_names(self) -> None:
+        levels = 0xFF & ~(1 << 2)
+        state = console.input_state(levels)
+
+        self.assertEqual(list(state)[:3], ["left", "center", "right"])
+        self.assertTrue(state["left"])
+        self.assertFalse(state["center"])
+        self.assertFalse(state["right"])
+
     def common_patches(self, velocity_side_effect):
         return (
             mock.patch.object(
@@ -199,6 +405,241 @@ class VelocityCaptureTests(unittest.TestCase):
             )
             self.assertEqual(metadata["capture"]["status"], "error")
             self.assertEqual(metadata["capture"]["error"], "response timeout")
+
+    def test_scheduled_stop_uses_active_connection_and_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = capture_args(root)
+            args.stop_after_seconds = 0.05
+            stop = mock.Mock()
+            patches = self.common_patches(
+                [velocity_status("tracking"), velocity_status("stopped")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "stop_drive", stop),
+                mock.patch.object(
+                    console.time,
+                    "monotonic",
+                    side_effect=[
+                        100.0,
+                        100.1,
+                        100.1,
+                        100.1,
+                        100.2,
+                        100.2,
+                    ],
+                ),
+            ):
+                result = console._run_velocity_capture(
+                    FakeClient(),
+                    args,
+                    round(0.1 * 65536.0),
+                    50,
+                    velocity_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            stop.assert_called_once()
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                metadata["final"]["velocity"]["state"], "stopped"
+            )
+            self.assertEqual(
+                metadata["final"]["velocity"]["result"], "stopped"
+            )
+            self.assertTrue(metadata["capture"]["scheduled_stop_sent"])
+            self.assertEqual(metadata["capture"]["status"], "complete")
+
+
+class PositionCaptureTests(unittest.TestCase):
+    @staticmethod
+    def position_client(start_error: Exception | None = None) -> FakeClient:
+        return FakeClient(
+            start_error=start_error,
+            start_command=console.COMMAND_START_POSITION_RELATIVE,
+            payload_length=18,
+        )
+
+    @staticmethod
+    def common_patches(position_side_effect):
+        return (
+            mock.patch.object(
+                console, "query_position", side_effect=position_side_effect
+            ),
+            mock.patch.object(console, "query_status", return_value=DRIVE_STATUS),
+            mock.patch.object(
+                console, "query_encoder", return_value=ENCODER_STATUS
+            ),
+            mock.patch.object(
+                console,
+                "query_identity",
+                return_value={"firmware": "0.26.0", "protocol": "1.9"},
+            ),
+            mock.patch.object(console, "query_configuration", return_value={}),
+            mock.patch.object(console.time, "sleep", return_value=None),
+        )
+
+    def run_capture(
+        self,
+        client: FakeClient,
+        args: SimpleNamespace,
+        initial_position: dict,
+    ) -> int:
+        return console._run_position_capture(
+            client,
+            args,
+            round(args.revolutions * 65536.0),
+            round(args.max_rps * 65536.0),
+            round(args.acceleration_rps2 * 65536.0),
+            100,
+            initial_position,
+            velocity_status("idle"),
+        )
+
+    def test_capture_writes_metadata_and_compact_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.common_patches(
+                [
+                    position_status("moving"),
+                    position_status("settling"),
+                    position_status("complete"),
+                ]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+            ):
+                result = self.run_capture(
+                    self.position_client(),
+                    position_capture_args(root),
+                    position_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            run_directories = list(root.iterdir())
+            self.assertEqual(len(run_directories), 1)
+            run_directory = run_directories[0]
+            metadata = json.loads(
+                (run_directory / "metadata.json").read_text(encoding="utf-8")
+            )
+            with (run_directory / "telemetry.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream))
+
+            self.assertEqual(metadata["capture"]["status"], "complete")
+            self.assertEqual(metadata["analysis"]["sample_count"], 3)
+            self.assertNotIn("policy", metadata["initial"]["position"])
+            self.assertNotIn("policy", metadata["final"]["position"])
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[-1]["state"], "complete")
+            self.assertEqual(rows[-1]["result"], "settled")
+            self.assertIn("target_position_error_revolutions", rows[-1])
+            self.assertIn("profile_following_error_revolutions", rows[-1])
+            self.assertNotIn("policy", rows[-1])
+            self.assertFalse((run_directory / "telemetry.jsonl").exists())
+
+    def test_ambiguous_start_error_still_sends_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client = self.position_client(
+                console.ProtocolError("response timeout")
+            )
+            stop = mock.Mock()
+            patches = self.common_patches([position_status("stopped")])
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "stop_drive", stop),
+            ):
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "response timeout"
+                ):
+                    self.run_capture(
+                        client,
+                        position_capture_args(root),
+                        position_status("idle"),
+                    )
+
+            stop.assert_called_once_with(client)
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["capture"]["status"], "error")
+            self.assertEqual(metadata["capture"]["error"], "response timeout")
+
+    def test_scheduled_stop_uses_active_connection_and_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = position_capture_args(root)
+            args.stop_after_seconds = 0.05
+            stop = mock.Mock()
+            patches = self.common_patches(
+                [position_status("moving"), position_status("stopped")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "stop_drive", stop),
+                mock.patch.object(
+                    console.time,
+                    "monotonic",
+                    side_effect=[
+                        100.0,
+                        100.1,
+                        100.1,
+                        100.1,
+                        100.2,
+                        100.2,
+                    ],
+                ),
+            ):
+                result = self.run_capture(
+                    self.position_client(),
+                    args,
+                    position_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            stop.assert_called_once()
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                metadata["final"]["position"]["state"], "stopped"
+            )
+            self.assertEqual(
+                metadata["final"]["position"]["result"], "stopped"
+            )
+            self.assertTrue(metadata["capture"]["scheduled_stop_sent"])
+            self.assertEqual(metadata["capture"]["status"], "complete")
 
 
 if __name__ == "__main__":

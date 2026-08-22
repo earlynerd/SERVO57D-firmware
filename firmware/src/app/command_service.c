@@ -350,6 +350,47 @@ void command_service_dispatch(const command_service_context_t* context,
             }
             return;
 
+        case COMMAND_OPERATION_START_POSITION_RELATIVE:
+            if (request->payload_length != 18u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->position.start_relative == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->position.start_relative(
+                context->position.context,
+                (int32_t)read_u32_be(request->payload),
+                (int32_t)read_u32_be(&request->payload[4]),
+                (int32_t)read_u32_be(&request->payload[8]),
+                read_u16_be(&request->payload[12]),
+                read_u32_be(&request->payload[14]));
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
+        case COMMAND_OPERATION_GET_POSITION_STATUS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->position.get_status == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->position.get_status(
+                context->position.context,
+                &response->data.position_status);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_POSITION_STATUS;
+            }
+            return;
+
         case COMMAND_OPERATION_GET_BOOT_STATUS:
             if (request->payload_length != 0u)
             {

@@ -93,12 +93,12 @@ the already-tested board.
 ## Stage 6 — Current-regulated motor operation
 
 Current product firmware operates an attached two-phase stepper through
-independent 20 kHz winding-current loops. The retired local Next/Enter selector
+independent 20 kHz winding-current loops. The retired local Left/Center selector
 cannot request bridge authority. RS-485 requests diagnostic authority from the
 product drive supervisor after current-path and encoder readiness and provides
 configurable current amplitude, electrical
 frequency, initial phase, run duration, STOP, and live current plus encoder
-telemetry. Timeout, Menu, transport failure, or STOP ends authority.
+telemetry. Timeout, the physical Right button, transport failure, or STOP ends authority.
 
 Use a current-limited bench supply and connect the motor normally. The accepted
 run used `COM14`; replace it with the port reported by `list` when necessary.
@@ -193,7 +193,8 @@ Initial result on the tested motor: accepted. Two 757.4 mA runs each measured
 `-1`, and zero-count closure. Both completed in 2.55 seconds and released
 authority without a current-loop, encoder, reset, or panic fault. A third run
 stopped at 113 ms reported `aborted`, cleared backend/authority, and preserved
-the accepted zero/direction. Menu and induced readiness-loss injection remain.
+the accepted zero/direction. The alignment-specific Right-button test remains.
+Physical readiness-loss injection is indefinitely deferred on this assembly.
 
 Use the already accepted motor, 12 V supply, and a current-limited supply
 setting appropriate for the 757 mA test point. Confirm the flashed identity is
@@ -279,10 +280,11 @@ py tools/mks57d_rs485.py --port COM14 stop
 
 The alignment result must become `aborted`, the prior accepted calibration must
 remain valid and unchanged, and authority/backend activity must clear. Repeat
-with Menu and then with an induced encoder-readiness loss; Menu is an orderly
-abort, while readiness loss during authority must enter the common fault path.
-Do not perform the readiness-loss injection until an immediate supply cutoff is
-available and the ordinary/STOP runs have passed.
+with the Right button, which is an orderly abort. Physical encoder/readiness-loss
+injection is indefinitely deferred on the current assembly because the encoder
+is inaccessible without risking damage. Reinstate that physical test only if a
+future assembly or fixture provides a non-destructive injection mechanism; keep
+the automated common fault/ZERO tests active.
 
 ### Aligned q-current hardware gate
 
@@ -348,9 +350,10 @@ Validate multi-second duration and explicit STOP separately by starting a
 and pressing Ctrl+C while it is active. The CLI sends the same generic STOP as
 the standalone `py tools/mks57d_rs485.py --port COM14 stop` command.
 The result must become `stopped`, backend and authority must clear immediately,
-and alignment/configuration must remain unchanged. Repeat Menu and induced
-encoder/readiness-loss tests only after ordinary/deadline and STOP behavior pass;
-the latter must enter the common fault/ZERO path.
+and alignment/configuration must remain unchanged. Repeat with the Right button
+only after ordinary/deadline and STOP behavior pass. Physical encoder/readiness-
+loss injection is indefinitely deferred on this assembly; its common fault/ZERO
+contract remains an automated regression.
 
 ### Low-speed velocity hardware gate
 
@@ -398,28 +401,132 @@ snapshots are needed, or `--output-root PATH` to relocate the run directories.
 If clean, repeat at `--rps -0.1` and verify direction reverses. Then run a
 five-second command and press Ctrl+C during tracking; status must retain
 `stopped`, with immediate authority/backend release and unchanged calibration.
-Repeat the STOP check with raw Menu. Only after those pass should current limit,
+For deterministic capture without an interactive terminal, use a longer
+firmware deadline and schedule the same generic STOP on the active connection:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-counts 50 --duration-ms 5000 --stop-after-seconds 2 --interval 0.02
+```
+
+Repeat the STOP check with the physical Right button. Only after those pass should current limit,
 target magnitude, reversal rate, or load increase. Current-limit saturation is
 an intentional test: confirm `current_at_limit`, bounded recovery, and no
 integrator-driven overshoot before raising the 100-count candidate ceiling.
-Induced encoder/readiness loss is last and must enter common fault/ZERO with an
-immediate supply cutoff available.
+Physical encoder/readiness-loss injection is indefinitely deferred on the
+current board/motor assembly. Its common fault/ZERO contract remains covered by
+host/native regression tests and should be physically re-opened only when a
+non-destructive injection mechanism exists.
 
 Bench status on 2026-08-21: firmware 0.25.1 passed the mirrored ±0.1 rev/s,
 25-count, two-second deadline gates. Both directions followed the requested raw
 encoder coordinate, stayed below 25 counts, held sampled encoder intervals to
 1,000 us, reported no faults, and released all current references and bridge
-duties at deadline. Explicit STOP, raw Menu, saturation/recovery, and induced
-encoder/readiness-loss tests remain pending.
+duties at deadline. A 50-count/303 mA command accepted generic STOP after two
+seconds with clean release. A 1 rev/s, 100-count/606 mA command accepted the
+physical Right button. Across three captures, including two hand-loaded shaft
+disturbances, the controller
+reported 29, 11, and 23 current-limit samples; two runs returned to about
+0.99 rev/s with no faults and no material overshoot, while the first ended still
+current-limited and is not counted as a recovery. The reported disturbances
+are qualitative rather than calibrated torque measurements; a guarded brake or
+load fixture is preferred for repeatable measurements. Induced encoder/readiness-
+loss injection is indefinitely deferred on this assembly. With that explicit
+scope deferral, initial velocity qualification is accepted.
 
 After that gate, the next implementation sequence is:
 
-1. Tune and expand the velocity current/speed/acceleration envelope from the
-   captured signed responses.
-2. Add position trajectories, following-error detection, step/direction
-   capture, and native motion commands.
-3. Characterize the useful current, speed, acceleration, bus-voltage, and
+1. Bench-qualify the focused relative-position command through settle, STOP,
+   Right-button stop, and following-error behavior.
+2. Stage the expanded velocity envelope through 2, 3, and 4 rev/s in both
+   signs while preserving the capture directories.
+3. Add step/direction capture and the broader motion/application commands.
+4. Characterize the useful current, speed, acceleration, bus-voltage, and
    thermal envelope with encoder tracking as the acceptance measure.
+
+### Relative-position hardware gate
+
+Firmware 0.26.0 / protocol 1.9 adds a bounded relative-position trajectory to
+the production rotor runtime. The position controller generates a trapezoidal
+reference and a bounded position correction, then changes only the target of
+the existing velocity PI and aligned-q-current actuator. The command has
+separate relative-travel, velocity, acceleration, current, start-speed,
+following-error, feedback-age, settling, and duration limits. It starts only
+when measured speed is at most 0.1 rev/s. No new alignment is required when the
+stored calibration is valid.
+
+After flashing, confirm firmware `0.26.0`, protocol `1.9`, restored calibration,
+zero faults, and the passive position policy:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 identity
+py tools/mks57d_rs485.py --port COM14 configuration
+py tools/mks57d_rs485.py --port COM14 status
+py tools/mks57d_rs485.py --port COM14 position-status
+```
+
+Begin with a quarter revolution at 30 RPM maximum, 1 rev/s², 100 counts, and a
+three-second deadline:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+```
+
+Acceptance requires `moving`, then `settling`, then `complete` / `settled`;
+profile and corrected velocity must remain within the requested bounds,
+requested/applied current must stay within 100 counts, and the final measured
+position must be within 0.002 revolution at no more than 0.02 rev/s for 50
+consecutive samples. After completion, supervisor state returns to `READY`,
+authority/backend/actuator activity clears, all current references and bridge
+duties return to zero, and every position, velocity, actuator, encoder,
+current-loop, reset, and watchdog fault remains clear. A terminal `deadline`
+is a safe release but not a successful position move.
+
+Repeat with `--revolutions -0.25`, then with a long deadline issue generic
+STOP and repeat using the physical Right button. Apply shaft load during a
+separate 100-count move and confirm either bounded recovery or a following-error
+failure at 0.25 revolution; a failure must enter the common fault/`ZERO` path
+without exceeding the current limit. Preserve each generated directory under
+`scratch/position-runs/`: `metadata.json` retains the request, policies,
+endpoints, and summary, while `telemetry.csv` contains the compact trajectory,
+error, current, drive, and encoder time series. Add `--jsonl` only when complete
+nested protocol snapshots are needed.
+
+Bench status on 2026-08-22: firmware 0.26.0 passed mirrored ±0.25-revolution
+moves at 0.5 rev/s maximum, 1 rev/s², and 100 current counts. The positive move
+settled in about 1.29 s with -0.000427 revolution endpoint error; the negative
+move settled in about 1.35 s with +0.001465 revolution error. Both used at most
+32 current counts, kept maximum profile following error below 0.05 revolution,
+held captured encoder intervals to 1000 us, and reported no faults. A separate
++0.5-revolution move accepted scheduled generic STOP at 0.5 s, finalized its
+capture, cleared current references and bridge duties, and coasted to zero
+measured speed without changing generation-3 calibration. Physical Right-button
+stop and loaded following-error behavior remain pending.
+
+### Expanded velocity evaluation gate
+
+Firmware 0.26.0 raises the commandable target and reference-acceleration
+ceilings from 1 to 4 rev/s and rev/s² while leaving the independent observed
+speed shutdown at 5 rev/s and current limit at 100 counts. The already accepted
+1 rev/s point remains the validated baseline; 4 rev/s is permission to measure,
+not a qualified speed claim. At 4 mechanical rev/s on the 50-cycle/revolution
+motor, the 1 kHz measured-phase path provides only five phase updates per
+electrical cycle, so current tracking, voltage effort, audible/torque quality,
+and faults decide whether phase prediction must move into the 20 kHz path.
+
+After the position gate, run both signs at 2, then 3, then 4 rev/s and retain
+each automatic capture directory:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 120 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 180 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+py tools/mks57d_rs485.py --port COM14 velocity --rpm 240 --current-limit-counts 100 --duration-ms 3000 --interval 0.02
+```
+
+At each step require correct sign, bounded 4 rev/s² reference slope, no
+unexpected overshoot, no encoder/control/current/backend faults, and clean
+deadline release. Stop expansion at the first persistent current saturation,
+poor tracking, objectionable torque ripple, excessive voltage use, supply
+instability, or heating; that measurement becomes the next engineering input.
 
 ## Stop conditions during motor development
 

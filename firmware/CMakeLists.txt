@@ -7,6 +7,7 @@ set(MOTION_CANDIDATE_SOURCES
     src/control/current_controller.c
     src/control/motion_profile.c
     src/control/pi_controller.c
+    src/control/position_controller.c
     src/control/servo_core.c
     src/control/velocity_controller.c
 )
@@ -45,9 +46,11 @@ set(PROJECT_SOURCES
     src/control/alignment_controller.c
     src/control/angle_tracker.c
     src/control/motor_alignment.c
+    src/control/motion_profile.c
     src/control/phase_current_loop.c
     src/control/phase_current_reference.c
     src/control/pi_controller.c
+    src/control/position_controller.c
     src/control/rotating_current_test.c
     src/control/velocity_controller.c
     src/drivers/adc_calibration.c

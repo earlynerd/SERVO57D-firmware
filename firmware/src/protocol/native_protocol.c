@@ -374,6 +374,12 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_VELOCITY_STATUS:
             *operation = COMMAND_OPERATION_GET_VELOCITY_STATUS;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_START_POSITION_RELATIVE:
+            *operation = COMMAND_OPERATION_START_POSITION_RELATIVE;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_POSITION_STATUS:
+            *operation = COMMAND_OPERATION_GET_POSITION_STATUS;
+            return true;
         default:
             return false;
     }
@@ -844,6 +850,61 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                         integral_gain_current_counts_per_position_q16_16);
                 write_u32_be(&response_frame->payload[59],
                              status->maximum_duration_millis);
+                payload_length = 63u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_POSITION_STATUS:
+            {
+                const command_position_status_t* status =
+                    &command_response->data.position_status;
+
+                response_frame->payload[1] = status->schema_version;
+                response_frame->payload[2] = status->state;
+                response_frame->payload[3] = status->result;
+                response_frame->payload[4] = status->flags;
+                write_u32_be(&response_frame->payload[5],
+                             status->fault_flags);
+                write_u32_be(&response_frame->payload[9],
+                             (uint32_t)status->
+                                 target_position_revolutions_q16_16);
+                write_u32_be(&response_frame->payload[13],
+                             (uint32_t)status->
+                                 reference_position_revolutions_q16_16);
+                write_u32_be(&response_frame->payload[17],
+                             (uint32_t)status->
+                                 measured_position_revolutions_q16_16);
+                write_u32_be(&response_frame->payload[21],
+                             (uint32_t)status->
+                                 reference_velocity_revolutions_per_second_q16_16);
+                write_u32_be(&response_frame->payload[25],
+                             (uint32_t)status->
+                                 target_velocity_revolutions_per_second_q16_16);
+                write_u32_be(&response_frame->payload[29],
+                             (uint32_t)status->
+                                 measured_velocity_revolutions_per_second_q16_16);
+                write_u16_be(&response_frame->payload[33],
+                             (uint16_t)status->requested_q_current_counts);
+                write_u16_be(&response_frame->payload[35],
+                             (uint16_t)status->applied_q_current_counts);
+                write_u16_be(&response_frame->payload[37],
+                             status->current_limit_counts);
+                write_u32_be(&response_frame->payload[39],
+                             status->elapsed_millis);
+                write_u32_be(&response_frame->payload[43],
+                             status->remaining_millis);
+                write_u32_be(&response_frame->payload[47],
+                             (uint32_t)status->
+                                 maximum_relative_travel_revolutions_q16_16);
+                write_u32_be(&response_frame->payload[51],
+                             (uint32_t)status->
+                                 maximum_velocity_revolutions_per_second_q16_16);
+                write_u32_be(&response_frame->payload[55],
+                             (uint32_t)status->
+                                 maximum_acceleration_revolutions_per_second2_q16_16);
+                write_u32_be(&response_frame->payload[59],
+                             (uint32_t)status->
+                                 maximum_following_error_revolutions_q16_16);
                 payload_length = 63u;
                 break;
             }

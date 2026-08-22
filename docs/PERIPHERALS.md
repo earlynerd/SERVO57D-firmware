@@ -15,7 +15,7 @@ remain revision-specific until another board revision is checked.
 | Encoder | SPI1 on PB3 SCK, PB4 MISO, PB5 MOSI, PB6 software CS; MT6816-compatible protocol | High; bench-proven motion and wrap behavior | Position is stable at rest, follows shaft motion consistently, and wraps repeatably once per revolution. Exact marking, quantitative noise, zero alignment, and control-rate signal integrity remain open. |
 | Bridge waveform | TIM3 channels 1-4 on PA6, PA7, PB0, PB1 | High; all legs and motor rotation bench-proven | The AF2 mapping, all four output polarities, low-zero modulation, 16 MHz ADC with 80%-carrier current sampling, and encoder-observed rotation through 757 mA / 20 Hz are proven on the tested board. Driver timing and expanded-envelope characterization remain. |
 | RS-485 | USART1 AF4 on PA9/PA10 with PC13 direction control; DMA channels 4/5 | High; command/response bench-proven | The working connector is `485_A2`/`485_B2`, contrary to the apparent published connector routing. Reset-time bus state and exact direction timing still require scope measurements. |
-| Passive inputs | PB8 Enter, PB9 Menu, PA15 Next, PB13 M_IN1, PB12 M_IN2, PA0 `nSTP`, PA8 `nDIR`, PB7 `nEN` | High; all bench-proven active-low | Static OLED monitoring confirms each physical input independently. Step pulse capture, rate limits, and operating semantics remain deferred. |
+| Passive inputs | PA15 Left, PB8 Center, PB9 Right, PB13 M_IN1, PB12 M_IN2, PA0 `nSTP`, PA8 `nDIR`, PB7 `nEN` | High; all bench-proven active-low | Static OLED monitoring confirms each physical input independently. The Right button is the immediate physical stop. Step pulse capture, rate limits, and operating semantics remain deferred. |
 
 ## Implementation order
 
@@ -91,11 +91,11 @@ See [MT6816 encoder bring-up](ENCODER.md).
 
 ### 4. Inputs and RS-485
 
-Firmware 0.23.1 samples eight inputs every 10 ms. PB8 Enter, PB9 Menu,
-PA15 Next, PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven;
-three consecutive changed samples update each independently. The physical keys
-are left Next, center Enter, and right Menu, and both auxiliary inputs respond
-independently.
+Firmware samples eight inputs every 10 ms. PA15 Left, PB8 Center, PB9 Right,
+PB13 M_IN1, and PB12 M_IN2 use pull-ups and have been bench-proven; three
+consecutive changed samples update each independently. The three unlabeled
+local controls are named only by physical position, and the Right button is the
+immediate stop. Both auxiliary inputs respond independently.
 
 PA0 `nSTP`, PA8 `nDIR`, and PB7 `nEN` are configured as high-impedance inputs
 with no MCU pulls. The current OLED view shows their debounced raw levels as

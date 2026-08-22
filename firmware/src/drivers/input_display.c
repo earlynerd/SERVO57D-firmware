@@ -18,9 +18,9 @@ enum
     GLYPH_ONE = 1u,
     GLYPH_TWO = 2u,
     GLYPH_DASH = 3u,
-    GLYPH_E = 4u,
-    GLYPH_M = 5u,
-    GLYPH_N = 6u
+    GLYPH_L = 4u,
+    GLYPH_C = 5u,
+    GLYPH_R = 6u
 };
 
 static const uint8_t s_glyphs[][GLYPH_WIDTH] = {
@@ -28,23 +28,23 @@ static const uint8_t s_glyphs[][GLYPH_WIDTH] = {
     {0x00u, 0x42u, 0x7Fu, 0x40u, 0x00u}, /* 1 */
     {0x42u, 0x61u, 0x51u, 0x49u, 0x46u}, /* 2 */
     {0x08u, 0x08u, 0x08u, 0x08u, 0x08u}, /* - */
-    {0x7Fu, 0x49u, 0x49u, 0x49u, 0x41u}, /* E */
-    {0x7Fu, 0x02u, 0x0Cu, 0x02u, 0x7Fu}, /* M */
-    {0x7Fu, 0x02u, 0x04u, 0x08u, 0x7Fu}, /* N */
+    {0x7Fu, 0x40u, 0x40u, 0x40u, 0x40u}, /* L */
+    {0x3Eu, 0x41u, 0x41u, 0x41u, 0x22u}, /* C */
+    {0x7Fu, 0x09u, 0x19u, 0x29u, 0x46u}, /* R */
 };
 
 static const uint8_t s_label_glyphs[USER_INPUT_LOCAL_COUNT] = {
-    GLYPH_E,
-    GLYPH_M,
-    GLYPH_N,
+    GLYPH_L,
+    GLYPH_C,
+    GLYPH_R,
     GLYPH_ONE,
     GLYPH_TWO,
 };
 
 static const uint32_t s_input_bits[USER_INPUT_LOCAL_COUNT] = {
-    USER_INPUT_KEY_ENTER,
-    USER_INPUT_KEY_MENU,
-    USER_INPUT_KEY_NEXT,
+    USER_INPUT_BUTTON_LEFT,
+    USER_INPUT_BUTTON_CENTER,
+    USER_INPUT_BUTTON_RIGHT,
     USER_INPUT_M_IN1,
     USER_INPUT_M_IN2,
 };

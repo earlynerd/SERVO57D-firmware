@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -25,6 +26,7 @@
 #include "mks57d/native_protocol.h"
 #include "mks57d/panic.h"
 #include "mks57d/platform.h"
+#include "mks57d/position_controller.h"
 #include "mks57d/rs485.h"
 #include "mks57d/rotating_current_test.h"
 #include "mks57d/rotor_control_runtime.h"
@@ -71,6 +73,7 @@ enum
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 1u,
     VELOCITY_STATUS_SCHEMA_VERSION = 1u,
+    POSITION_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
@@ -109,6 +112,30 @@ typedef struct
     bool start_requested;
     bool stop_requested;
 } velocity_command_context_t;
+
+typedef struct
+{
+    product_command_context_t* product;
+    app_supervisor_t* supervisor;
+    bool* bridge_ready;
+    diagnostics_encoder_t* encoder_diagnostics;
+    angle_tracker_t* angle_tracker;
+    uint32_t* estimator_fault_flags;
+    motor_alignment_t* motor_alignment;
+    alignment_controller_t* alignment_controller;
+    aligned_torque_controller_t* aligned_torque_controller;
+    velocity_controller_t* velocity_controller;
+    position_controller_t* position_controller;
+    rotor_control_runtime_t* rotor_control_runtime;
+    uint32_t* raw_input_levels;
+    int32_t requested_displacement_revolutions_q16_16;
+    int32_t requested_maximum_velocity_q16_16;
+    int32_t requested_maximum_acceleration_q16_16;
+    uint16_t requested_current_limit_counts;
+    uint32_t requested_duration_millis;
+    bool start_requested;
+    bool stop_requested;
+} position_command_context_t;
 
 struct product_command_context
 {
@@ -152,6 +179,7 @@ struct product_command_context
     bool torque_start_requested;
     bool torque_stop_requested;
     velocity_command_context_t* velocity_commands;
+    position_command_context_t* position_commands;
 };
 
 static bool encoder_control_ready(
@@ -177,6 +205,15 @@ static bool velocity_request_or_control_active(
            (commands->velocity_commands->start_requested ||
             velocity_controller_is_active(
                 commands->velocity_commands->velocity_controller));
+}
+
+static bool position_request_or_control_active(
+    const product_command_context_t* commands)
+{
+    return (commands != NULL) && (commands->position_commands != NULL) &&
+           (commands->position_commands->start_requested ||
+            position_controller_is_active(
+                commands->position_commands->position_controller));
 }
 
 static int32_t float_to_q16_16(float value)
@@ -421,12 +458,15 @@ static command_status_t commissioning_start(
         velocity_request_or_control_active(commissioning) ||
         ((commissioning->velocity_commands != NULL) &&
          commissioning->velocity_commands->stop_requested) ||
+        position_request_or_control_active(commissioning) ||
+        ((commissioning->position_commands != NULL) &&
+         commissioning->position_commands->stop_requested) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
             commissioning->alignment_controller) ||
         (loop.fault_flags != 0u) ||
-        ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        ((*commissioning->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
@@ -457,6 +497,11 @@ static command_status_t commissioning_stop(void* context)
     {
         commissioning->velocity_commands->start_requested = false;
         commissioning->velocity_commands->stop_requested = true;
+    }
+    if (commissioning->position_commands != NULL)
+    {
+        commissioning->position_commands->start_requested = false;
+        commissioning->position_commands->stop_requested = true;
     }
     return COMMAND_STATUS_OK;
 }
@@ -494,12 +539,15 @@ static command_status_t alignment_start(
         velocity_request_or_control_active(commissioning) ||
         ((commissioning->velocity_commands != NULL) &&
          commissioning->velocity_commands->stop_requested) ||
+        position_request_or_control_active(commissioning) ||
+        ((commissioning->position_commands != NULL) &&
+         commissioning->position_commands->stop_requested) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
             commissioning->alignment_controller) ||
         (loop.fault_flags != 0u) ||
-        ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        ((*commissioning->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
@@ -684,12 +732,15 @@ static command_status_t aligned_torque_start(
         velocity_request_or_control_active(commissioning) ||
         ((commissioning->velocity_commands != NULL) &&
          commissioning->velocity_commands->stop_requested) ||
+        position_request_or_control_active(commissioning) ||
+        ((commissioning->position_commands != NULL) &&
+         commissioning->position_commands->stop_requested) ||
         alignment_controller_is_active(
             commissioning->alignment_controller) ||
         aligned_torque_controller_is_active(
             commissioning->aligned_torque_controller) ||
         loop.active || (loop.fault_flags != 0u) ||
-        ((*commissioning->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        ((*commissioning->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
@@ -865,12 +916,15 @@ static command_status_t velocity_start(
         product->torque_start_requested ||
         product->torque_stop_requested || velocity->start_requested ||
         velocity->stop_requested ||
+        position_request_or_control_active(product) ||
+        ((product->position_commands != NULL) &&
+         product->position_commands->stop_requested) ||
         alignment_controller_is_active(velocity->alignment_controller) ||
         aligned_torque_controller_is_active(
             velocity->aligned_torque_controller) ||
         velocity_controller_is_active(velocity->velocity_controller) ||
         loop.active || (loop.fault_flags != 0u) ||
-        ((*velocity->raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+        ((*velocity->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
@@ -999,6 +1053,232 @@ static command_status_t velocity_get_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t position_start_relative(
+    void* context,
+    int32_t displacement_revolutions_q16_16,
+    int32_t maximum_velocity_revolutions_per_second_q16_16,
+    int32_t maximum_acceleration_revolutions_per_second2_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis)
+{
+    position_command_context_t* position = context;
+    product_command_context_t* product;
+    motor_alignment_status_t alignment_status;
+    current_loop_backend_snapshot_t loop = {0};
+    int64_t displacement_magnitude = displacement_revolutions_q16_16;
+
+    if ((position == NULL) || (position->product == NULL) ||
+        (position->supervisor == NULL) ||
+        (position->bridge_ready == NULL) ||
+        (position->encoder_diagnostics == NULL) ||
+        (position->angle_tracker == NULL) ||
+        (position->estimator_fault_flags == NULL) ||
+        (position->motor_alignment == NULL) ||
+        (position->alignment_controller == NULL) ||
+        (position->aligned_torque_controller == NULL) ||
+        (position->velocity_controller == NULL) ||
+        (position->position_controller == NULL) ||
+        (position->rotor_control_runtime == NULL) ||
+        (position->raw_input_levels == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (displacement_magnitude < 0)
+    {
+        displacement_magnitude = -displacement_magnitude;
+    }
+    if ((displacement_revolutions_q16_16 == 0) ||
+        (displacement_magnitude > float_to_q16_16(
+            position->position_controller->config.
+                maximum_relative_travel_revolutions)) ||
+        (maximum_velocity_revolutions_per_second_q16_16 <= 0) ||
+        (maximum_velocity_revolutions_per_second_q16_16 >
+         float_to_q16_16(position->position_controller->config.
+             maximum_velocity_revolutions_per_second)) ||
+        (maximum_acceleration_revolutions_per_second2_q16_16 <= 0) ||
+        (maximum_acceleration_revolutions_per_second2_q16_16 >
+         float_to_q16_16(position->position_controller->config.
+             maximum_acceleration_revolutions_per_second_squared)) ||
+        (current_limit_counts == 0u) ||
+        (current_limit_counts >
+         position->position_controller->config.maximum_current_counts) ||
+        (duration_millis <
+         position->position_controller->config.minimum_duration_millis) ||
+        (duration_millis >
+         position->position_controller->config.maximum_duration_millis))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+
+    product = position->product;
+    motor_alignment_get_status(
+        position->motor_alignment, &alignment_status);
+    current_loop_backend_get_snapshot(&loop);
+    if ((position->supervisor->state != APP_STATE_READY) ||
+        (position->supervisor->authority != APP_AUTHORITY_NONE) ||
+        !*position->bridge_ready || !alignment_status.valid ||
+        !encoder_control_ready(
+            position->encoder_diagnostics,
+            position->angle_tracker,
+            *position->estimator_fault_flags) ||
+        (fabsf(position->angle_tracker->velocity_revolutions_per_second) >
+         position->position_controller->config.
+             maximum_start_velocity_revolutions_per_second) ||
+        app_supervisor_bridge_authorized(position->supervisor) ||
+        product->remote_start_requested ||
+        product->remote_stop_requested ||
+        product->alignment_start_requested ||
+        product->alignment_stop_requested ||
+        product->torque_start_requested ||
+        product->torque_stop_requested ||
+        (product->velocity_commands != NULL &&
+         (product->velocity_commands->start_requested ||
+          product->velocity_commands->stop_requested)) ||
+        position->start_requested || position->stop_requested ||
+        alignment_controller_is_active(position->alignment_controller) ||
+        aligned_torque_controller_is_active(
+            position->aligned_torque_controller) ||
+        velocity_controller_is_active(position->velocity_controller) ||
+        position_controller_is_active(position->position_controller) ||
+        loop.active || (loop.fault_flags != 0u) ||
+        ((*position->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    position->requested_displacement_revolutions_q16_16 =
+        displacement_revolutions_q16_16;
+    position->requested_maximum_velocity_q16_16 =
+        maximum_velocity_revolutions_per_second_q16_16;
+    position->requested_maximum_acceleration_q16_16 =
+        maximum_acceleration_revolutions_per_second2_q16_16;
+    position->requested_current_limit_counts = current_limit_counts;
+    position->requested_duration_millis = duration_millis;
+    position->stop_requested = false;
+    position->start_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t position_get_status(
+    void* context,
+    command_position_status_t* status)
+{
+    position_command_context_t* position = context;
+    position_controller_status_t controller_status;
+    velocity_controller_status_t velocity_status;
+    aligned_torque_status_t torque_status;
+    motor_alignment_status_t alignment_status;
+    current_loop_backend_snapshot_t loop = {0};
+    int32_t current_magnitude;
+    uint32_t now;
+
+    if ((position == NULL) || (status == NULL) ||
+        (position->supervisor == NULL) ||
+        (position->position_controller == NULL) ||
+        (position->velocity_controller == NULL) ||
+        (position->aligned_torque_controller == NULL) ||
+        (position->motor_alignment == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    now = timebase_millis();
+    position_controller_get_status(
+        position->position_controller, &controller_status);
+    velocity_controller_get_status(
+        position->velocity_controller, &velocity_status);
+    aligned_torque_controller_get_status(
+        position->aligned_torque_controller, &torque_status);
+    motor_alignment_get_status(
+        position->motor_alignment, &alignment_status);
+    current_loop_backend_get_snapshot(&loop);
+    memset(status, 0, sizeof(*status));
+    status->schema_version = POSITION_STATUS_SCHEMA_VERSION;
+    status->state = (uint8_t)controller_status.state;
+    status->result = (uint8_t)controller_status.result;
+    status->fault_flags = controller_status.fault_flags;
+    status->target_position_revolutions_q16_16 =
+        controller_status.target_position_revolutions_q16_16;
+    status->reference_position_revolutions_q16_16 =
+        controller_status.reference_position_revolutions_q16_16;
+    status->measured_position_revolutions_q16_16 =
+        controller_status.measured_position_revolutions_q16_16;
+    status->reference_velocity_revolutions_per_second_q16_16 =
+        controller_status.reference_velocity_revolutions_per_second_q16_16;
+    status->target_velocity_revolutions_per_second_q16_16 =
+        controller_status.target_velocity_revolutions_per_second_q16_16;
+    status->measured_velocity_revolutions_per_second_q16_16 =
+        controller_status.measured_velocity_revolutions_per_second_q16_16;
+    status->requested_q_current_counts =
+        velocity_status.requested_q_current_counts;
+    if (controller_status.active)
+    {
+        status->applied_q_current_counts =
+            torque_status.applied_q_current_counts;
+    }
+    status->current_limit_counts = controller_status.current_limit_counts;
+    status->elapsed_millis = controller_status.elapsed_millis;
+    if (controller_status.active &&
+        ((int32_t)(position->position_controller->deadline_millis - now) > 0))
+    {
+        status->remaining_millis =
+            position->position_controller->deadline_millis - now;
+    }
+    if (controller_status.active)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_ACTIVE;
+    }
+    if (controller_status.active &&
+        (position->supervisor->state == APP_STATE_RUN) &&
+        (position->supervisor->authority == APP_AUTHORITY_MOTION))
+    {
+        status->flags |= COMMAND_POSITION_FLAG_AUTHORITY_ACTIVE;
+    }
+    if (controller_status.active && loop.active)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_BACKEND_ACTIVE;
+    }
+    if (alignment_status.valid)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_ALIGNMENT_VALID;
+    }
+    if (controller_status.active && velocity_status.active)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_VELOCITY_ACTIVE;
+    }
+    if (controller_status.profile_at_target)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_PROFILE_AT_TARGET;
+    }
+    if (controller_status.target_settled)
+    {
+        status->flags |= COMMAND_POSITION_FLAG_TARGET_SETTLED;
+    }
+    current_magnitude = velocity_status.requested_q_current_counts;
+    if (current_magnitude < 0)
+    {
+        current_magnitude = -current_magnitude;
+    }
+    if ((controller_status.current_limit_counts != 0u) &&
+        (current_magnitude >= controller_status.current_limit_counts))
+    {
+        status->flags |= COMMAND_POSITION_FLAG_CURRENT_AT_LIMIT;
+    }
+    status->maximum_relative_travel_revolutions_q16_16 =
+        float_to_q16_16(position->position_controller->config.
+            maximum_relative_travel_revolutions);
+    status->maximum_velocity_revolutions_per_second_q16_16 =
+        float_to_q16_16(position->position_controller->config.
+            maximum_velocity_revolutions_per_second);
+    status->maximum_acceleration_revolutions_per_second2_q16_16 =
+        float_to_q16_16(position->position_controller->config.
+            maximum_acceleration_revolutions_per_second_squared);
+    status->maximum_following_error_revolutions_q16_16 =
+        float_to_q16_16(position->position_controller->config.
+            maximum_following_error_revolutions);
+    return COMMAND_STATUS_OK;
+}
+
 static bool build_product_configuration(
     const motor_alignment_t* motor_alignment,
     product_configuration_t* configuration)
@@ -1052,7 +1332,10 @@ static bool configuration_write_allowed(
            !commissioning->torque_stop_requested &&
            !velocity_request_or_control_active(commissioning) &&
            ((commissioning->velocity_commands == NULL) ||
-            !commissioning->velocity_commands->stop_requested);
+            !commissioning->velocity_commands->stop_requested) &&
+           !position_request_or_control_active(commissioning) &&
+           ((commissioning->position_commands == NULL) ||
+            !commissioning->position_commands->stop_requested);
 }
 
 static command_status_t configuration_get_status(
@@ -1539,11 +1822,20 @@ int main(void)
          * unambiguous for every accepted start time.
          */
         ALIGNED_TORQUE_MAXIMUM_DURATION_MS = INT32_MAX,
-        VELOCITY_MAXIMUM_TARGET_Q16_16 = 1u << 16,
+        VELOCITY_MAXIMUM_TARGET_Q16_16 = 4u << 16,
+        VELOCITY_MAXIMUM_ACCELERATION_Q16_16 = 4u << 16,
         VELOCITY_MAXIMUM_CURRENT_COUNTS = 100u,
         VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         VELOCITY_MINIMUM_DURATION_MS = 3u,
         VELOCITY_MAXIMUM_DURATION_MS = INT32_MAX,
+        POSITION_MAXIMUM_RELATIVE_TRAVEL_Q16_16 = 100u << 16,
+        POSITION_MAXIMUM_VELOCITY_Q16_16 = 4u << 16,
+        POSITION_MAXIMUM_ACCELERATION_Q16_16 = 4u << 16,
+        POSITION_MAXIMUM_CURRENT_COUNTS = 100u,
+        POSITION_REQUIRED_SETTLE_SAMPLES = 50u,
+        POSITION_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
+        POSITION_MINIMUM_DURATION_MS = 100u,
+        POSITION_MAXIMUM_DURATION_MS = INT32_MAX,
         CURRENT_TEST_AMPLITUDE_COUNTS = 25u,
         CURRENT_TEST_FREQUENCY_MILLIHZ = 500u
     };
@@ -1569,6 +1861,12 @@ int main(void)
     _Static_assert(VELOCITY_MAXIMUM_CURRENT_COUNTS <=
                        ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS,
                    "velocity current exceeds the aligned actuator contract");
+    _Static_assert(POSITION_MAXIMUM_CURRENT_COUNTS <=
+                       VELOCITY_MAXIMUM_CURRENT_COUNTS,
+                   "position current exceeds the velocity contract");
+    _Static_assert(POSITION_MAXIMUM_VELOCITY_Q16_16 <=
+                       VELOCITY_MAXIMUM_TARGET_Q16_16,
+                   "position velocity exceeds the velocity contract");
     app_supervisor_t drive_supervisor;
     angle_tracker_t angle_tracker;
     const angle_tracker_config_t angle_tracker_config = {
@@ -1605,6 +1903,7 @@ int main(void)
     };
     aligned_torque_controller_t aligned_torque_controller;
     velocity_controller_t velocity_controller;
+    position_controller_t position_controller;
     const uint8_t encoder_request[ENCODER_READ_BURST_BYTES] = {
         ENCODER_READ_ANGLE_COMMAND, 0u, 0u, 0u,
     };
@@ -1631,13 +1930,34 @@ int main(void)
         },
         .maximum_target_velocity_revolutions_per_second =
             (float)VELOCITY_MAXIMUM_TARGET_Q16_16 / 65536.0f,
-        .maximum_target_acceleration_revolutions_per_second_squared = 1.0f,
+        .maximum_target_acceleration_revolutions_per_second_squared =
+            (float)VELOCITY_MAXIMUM_ACCELERATION_Q16_16 / 65536.0f,
         .maximum_feedback_velocity_revolutions_per_second = 5.0f,
         .maximum_current_counts = VELOCITY_MAXIMUM_CURRENT_COUNTS,
         .maximum_feedback_interval_us =
             VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US,
         .minimum_duration_millis = VELOCITY_MINIMUM_DURATION_MS,
         .maximum_duration_millis = VELOCITY_MAXIMUM_DURATION_MS,
+    };
+    const position_controller_config_t position_controller_config = {
+        .maximum_relative_travel_revolutions =
+            (float)POSITION_MAXIMUM_RELATIVE_TRAVEL_Q16_16 / 65536.0f,
+        .maximum_velocity_revolutions_per_second =
+            (float)POSITION_MAXIMUM_VELOCITY_Q16_16 / 65536.0f,
+        .maximum_acceleration_revolutions_per_second_squared =
+            (float)POSITION_MAXIMUM_ACCELERATION_Q16_16 / 65536.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_start_velocity_revolutions_per_second = 0.1f,
+        .maximum_following_error_revolutions = 0.25f,
+        .position_gain_per_second = 4.0f,
+        .position_tolerance_revolutions = 0.002f,
+        .velocity_tolerance_revolutions_per_second = 0.02f,
+        .maximum_current_counts = POSITION_MAXIMUM_CURRENT_COUNTS,
+        .required_settle_samples = POSITION_REQUIRED_SETTLE_SAMPLES,
+        .maximum_feedback_interval_us =
+            POSITION_MAXIMUM_FEEDBACK_INTERVAL_US,
+        .minimum_duration_millis = POSITION_MINIMUM_DURATION_MS,
+        .maximum_duration_millis = POSITION_MAXIMUM_DURATION_MS,
     };
     boot_self_test_t self_test;
     diagnostics_encoder_t encoder_diagnostics = {
@@ -1714,6 +2034,20 @@ int main(void)
         .rotor_control_runtime = &rotor_control_runtime,
         .raw_input_levels = &raw_input_levels,
     };
+    position_command_context_t position_commands = {
+        .supervisor = &drive_supervisor,
+        .bridge_ready = &bridge_ready,
+        .encoder_diagnostics = &encoder_diagnostics,
+        .angle_tracker = &angle_tracker,
+        .estimator_fault_flags = &estimator_fault_flags,
+        .motor_alignment = &motor_alignment,
+        .alignment_controller = &alignment_controller,
+        .aligned_torque_controller = &aligned_torque_controller,
+        .velocity_controller = &velocity_controller,
+        .position_controller = &position_controller,
+        .rotor_control_runtime = &rotor_control_runtime,
+        .raw_input_levels = &raw_input_levels,
+    };
     product_command_context_t commissioning_context = {
         .supervisor = &drive_supervisor,
         .adc_ready = &adc_ready,
@@ -1745,8 +2079,10 @@ int main(void)
         .test_amplitude_counts = CURRENT_TEST_AMPLITUDE_COUNTS,
         .test_frequency_millihz = CURRENT_TEST_FREQUENCY_MILLIHZ,
         .velocity_commands = &velocity_commands,
+        .position_commands = &position_commands,
     };
     velocity_commands.product = &commissioning_context;
+    position_commands.product = &commissioning_context;
     const command_service_context_t command_context = {
         .product_id = COMMAND_SERVICE_PRODUCT_ID_MKS57D,
         .firmware_major = MKS57D_FIRMWARE_VERSION_MAJOR,
@@ -1790,6 +2126,11 @@ int main(void)
             .start = velocity_start,
             .get_status = velocity_get_status,
         },
+        .position = {
+            .context = &position_commands,
+            .start_relative = position_start_relative,
+            .get_status = position_get_status,
+        },
     };
 
     if (!platform_early_memory_ready())
@@ -1809,7 +2150,9 @@ int main(void)
         !aligned_torque_controller_init(
             &aligned_torque_controller, &aligned_torque_config) ||
         !velocity_controller_init(
-            &velocity_controller, &velocity_controller_config))
+            &velocity_controller, &velocity_controller_config) ||
+        !position_controller_init(
+            &position_controller, &position_controller_config))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
@@ -1836,7 +2179,8 @@ int main(void)
             &motor_alignment,
             &alignment_controller,
             &aligned_torque_controller,
-            &velocity_controller) ||
+            &velocity_controller,
+            &position_controller) ||
         !rotor_control_runtime_get_snapshot(
             &rotor_control_runtime, &rotor_control_snapshot))
     {
@@ -2086,6 +2430,8 @@ int main(void)
                 rotor_control_snapshot.torque_controller;
             velocity_controller =
                 rotor_control_snapshot.velocity_controller;
+            position_controller =
+                rotor_control_snapshot.position_controller;
             estimator_fault_flags =
                 rotor_control_snapshot.estimator_fault_flags;
             estimator_sample_interval_us =
@@ -2119,6 +2465,8 @@ int main(void)
             commissioning_context.torque_stop_requested = false;
             velocity_commands.start_requested = false;
             velocity_commands.stop_requested = false;
+            position_commands.start_requested = false;
+            position_commands.stop_requested = false;
             bridge_ready = false;
             (void)app_supervisor_handle_event(
                 &drive_supervisor,
@@ -2152,6 +2500,8 @@ int main(void)
             commissioning_context.torque_stop_requested = false;
             velocity_commands.start_requested = false;
             velocity_commands.stop_requested = false;
+            position_commands.start_requested = false;
+            position_commands.stop_requested = false;
             if (app_supervisor_bridge_authorized(&drive_supervisor) &&
                 (drive_supervisor.authority == APP_AUTHORITY_MOTION) &&
                 !app_supervisor_handle_event(
@@ -2202,27 +2552,35 @@ int main(void)
                 commissioning_context.alignment_stop_requested = true;
                 commissioning_context.torque_stop_requested = true;
                 velocity_commands.stop_requested = true;
+                position_commands.stop_requested = true;
                 diagnostics_due = true;
             }
         }
 
         if (alignment_controller_is_active(&alignment_controller) &&
-            ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+            ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             commissioning_context.alignment_stop_requested = true;
         }
         if ((commissioning_context.torque_start_requested ||
              aligned_torque_controller_is_active(
                   &aligned_torque_controller)) &&
-            ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+            ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             commissioning_context.torque_stop_requested = true;
         }
         if ((velocity_commands.start_requested ||
              velocity_controller_is_active(&velocity_controller)) &&
-            ((raw_input_levels & USER_INPUT_KEY_MENU) == 0u))
+            !position_controller_is_active(&position_controller) &&
+            ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             velocity_commands.stop_requested = true;
+        }
+        if ((position_commands.start_requested ||
+             position_controller_is_active(&position_controller)) &&
+            ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
+        {
+            position_commands.stop_requested = true;
         }
 
         if (commissioning_context.alignment_stop_requested)
@@ -2264,12 +2622,15 @@ int main(void)
         }
 
         if (commissioning_context.torque_stop_requested ||
-            velocity_commands.stop_requested)
+            velocity_commands.stop_requested ||
+            position_commands.stop_requested)
         {
             commissioning_context.torque_start_requested = false;
             commissioning_context.torque_stop_requested = false;
             velocity_commands.start_requested = false;
             velocity_commands.stop_requested = false;
+            position_commands.start_requested = false;
+            position_commands.stop_requested = false;
             rotor_control_runtime_request_stop(
                 &rotor_control_runtime);
             diagnostics_due = true;
@@ -2339,8 +2700,43 @@ int main(void)
             diagnostics_due = true;
         }
 
+        if (position_commands.start_requested)
+        {
+            const app_transition_context_t energize_context = {
+                .safe_to_energize =
+                    bridge_ready && adc_snapshot_valid &&
+                    encoder_control_ready(
+                        &encoder_diagnostics,
+                        &angle_tracker,
+                        estimator_fault_flags),
+            };
+
+            position_commands.start_requested = false;
+            if (!app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_MOTION_RUN_REQUESTED,
+                    energize_context) ||
+                !rotor_control_runtime_request_position_relative(
+                    &rotor_control_runtime,
+                    position_commands.
+                        requested_displacement_revolutions_q16_16,
+                    position_commands.requested_maximum_velocity_q16_16,
+                    position_commands.requested_maximum_acceleration_q16_16,
+                    position_commands.requested_current_limit_counts,
+                    position_commands.requested_duration_millis))
+            {
+                bridge_ready = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+            }
+            diagnostics_due = true;
+        }
+
         if (commissioning_context.remote_authority_active &&
-            (((raw_input_levels & USER_INPUT_KEY_MENU) == 0u) ||
+            (((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u) ||
              ((int32_t)(now - commissioning_context.
                                   remote_run_deadline_millis) >= 0)))
         {
@@ -2610,6 +3006,8 @@ int main(void)
                 commissioning_context.torque_stop_requested = false;
                 velocity_commands.start_requested = false;
                 velocity_commands.stop_requested = false;
+                position_commands.start_requested = false;
+                position_commands.stop_requested = false;
                 (void)app_supervisor_handle_event(
                     &drive_supervisor,
                     APP_EVENT_FAULT_DETECTED,
@@ -2638,6 +3036,8 @@ int main(void)
                     commissioning_context.torque_stop_requested = false;
                     velocity_commands.start_requested = false;
                     velocity_commands.stop_requested = false;
+                    position_commands.start_requested = false;
+                    position_commands.stop_requested = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
                         &drive_supervisor,
@@ -2667,6 +3067,8 @@ int main(void)
                     commissioning_context.torque_stop_requested = false;
                     velocity_commands.start_requested = false;
                     velocity_commands.stop_requested = false;
+                    position_commands.start_requested = false;
+                    position_commands.stop_requested = false;
                     bridge_ready = false;
                     (void)app_supervisor_handle_event(
                         &drive_supervisor,
@@ -2710,7 +3112,8 @@ int main(void)
                 const bool motion_was_active =
                     aligned_torque_controller_is_active(
                         &aligned_torque_controller) ||
-                    velocity_controller_is_active(&velocity_controller);
+                    velocity_controller_is_active(&velocity_controller) ||
+                    position_controller_is_active(&position_controller);
 
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
@@ -2725,6 +3128,8 @@ int main(void)
                     commissioning_context.torque_stop_requested = false;
                     velocity_commands.start_requested = false;
                     velocity_commands.stop_requested = false;
+                    position_commands.start_requested = false;
+                    position_commands.stop_requested = false;
                 }
                 if (!app_supervisor_handle_event(
                         &drive_supervisor,

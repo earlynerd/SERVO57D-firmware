@@ -112,14 +112,15 @@ bool velocity_controller_init(
     return true;
 }
 
-bool velocity_controller_start(
+static bool start_controller(
     velocity_controller_t* controller,
     int32_t target_velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
     int8_t actuator_direction,
     uint32_t now_millis,
-    const rotor_observation_t* observation)
+    const rotor_observation_t* observation,
+    bool allow_zero_target)
 {
     float target_velocity;
 
@@ -128,7 +129,8 @@ bool velocity_controller_start(
         !observation->valid ||
         !isfinite(observation->position_revolutions) ||
         !isfinite(observation->velocity_revolutions_per_second) ||
-        (target_velocity_revolutions_per_second_q16_16 == 0) ||
+        (!allow_zero_target &&
+         (target_velocity_revolutions_per_second_q16_16 == 0)) ||
         (current_limit_counts == 0u) ||
         (current_limit_counts > controller->config.maximum_current_counts) ||
         (duration_millis < controller->config.minimum_duration_millis) ||
@@ -166,6 +168,75 @@ bool velocity_controller_start(
     controller->last_feedback_timestamp_us = observation->timestamp_us;
     controller->actuator_direction = actuator_direction;
     pi_controller_reset(&controller->current_controller);
+    return true;
+}
+
+bool velocity_controller_start(
+    velocity_controller_t* controller,
+    int32_t target_velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis,
+    int8_t actuator_direction,
+    uint32_t now_millis,
+    const rotor_observation_t* observation)
+{
+    return start_controller(
+        controller,
+        target_velocity_revolutions_per_second_q16_16,
+        current_limit_counts,
+        duration_millis,
+        actuator_direction,
+        now_millis,
+        observation,
+        false);
+}
+
+bool velocity_controller_start_tracking(
+    velocity_controller_t* controller,
+    int32_t target_velocity_revolutions_per_second_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis,
+    int8_t actuator_direction,
+    uint32_t now_millis,
+    const rotor_observation_t* observation)
+{
+    return start_controller(
+        controller,
+        target_velocity_revolutions_per_second_q16_16,
+        current_limit_counts,
+        duration_millis,
+        actuator_direction,
+        now_millis,
+        observation,
+        true);
+}
+
+bool velocity_controller_set_target(
+    velocity_controller_t* controller,
+    int32_t target_velocity_revolutions_per_second_q16_16)
+{
+    float target_velocity;
+
+    if ((controller == NULL) || !controller->initialized ||
+        !controller->status.active)
+    {
+        return false;
+    }
+    target_velocity = q16_16_to_float(
+        target_velocity_revolutions_per_second_q16_16);
+    if (!isfinite(target_velocity) ||
+        (fabsf(target_velocity) >
+         controller->config.maximum_target_velocity_revolutions_per_second))
+    {
+        return false;
+    }
+    controller->target_velocity_revolutions_per_second = target_velocity;
+    controller->status.target_velocity_revolutions_per_second_q16_16 =
+        target_velocity_revolutions_per_second_q16_16;
+    if (controller->status.state == VELOCITY_CONTROL_STATE_TRACKING)
+    {
+        controller->status.state = VELOCITY_CONTROL_STATE_RAMPING;
+    }
     return true;
 }
 

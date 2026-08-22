@@ -82,7 +82,8 @@ coverage remain open. The 0.18.2 current path is bench-proven through 757 mA /
 restoration, and no-reset/no-panic checks. The 0.20.0 build adds a 1 kHz
 timestamped mechanical estimator and protocol-1.4 telemetry. Its idle and
 757 mA / 20 Hz schedule, noise, direction, and velocity regression passes;
-readiness-loss fault injection remains.
+physical readiness-loss injection is indefinitely deferred on the current
+board/motor assembly.
 
 Milestone result: achieved. A clean checkout builds, flashes, boots, and
 reports its version from a defined board state.
@@ -182,8 +183,11 @@ Goal: close the mechanical loop incrementally.
 - [x] Bench-validate successful and repeatable automatic alignment at the
   accepted 757 mA point, including exact return closure, generic STOP, retained
   prior calibration, clean authority release, and reset/fault health.
-- [ ] Exercise physical Menu abort and induced invalid-encoder/readiness-loss
-  shutdown with an immediate supply cutoff available.
+- [ ] Exercise the physical Right-button abort during alignment with an
+  immediate supply cutoff available.
+- [x] Defer physical invalid-encoder/readiness-loss injection indefinitely on
+  the current board/motor assembly because the encoder is inaccessible without
+  risking damage. Retain automated common fault/ZERO regression coverage.
 - [x] Integrate the existing host-tested angle unwrapping and velocity estimator
   with the on-board encoder on the timestamped 1 kHz rotor service without
   enabling the outer servo or importing host-test motion limits.
@@ -199,8 +203,9 @@ Goal: close the mechanical loop incrementally.
   current, velocity, acceleration, feedback-age, duration, STOP, and fault
   contracts plus machine-readable policy telemetry.
 - [ ] Bench-validate positive/negative aligned q-current through deadline,
-  explicit STOP, Menu, and induced encoder/readiness-loss shutdown before
-  expanding the initial velocity candidate beyond its low-speed gate.
+  explicit STOP, and Right-button stop before expanding the initial velocity
+  candidate beyond its low-speed gate. Physical encoder/readiness-loss injection
+  is covered by the indefinite deferral above.
 - [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
   2.999 A motor-rated evaluation point, including current error, voltage
   effort, supply state, winding/power-stage temperature, STOP, and fault health.
@@ -212,10 +217,23 @@ Goal: close the mechanical loop incrementally.
   observation, commanding only the bounded aligned-q-current actuator, with an
   acceleration-limited reference, per-command current limit, finite deadline,
   generic STOP, fault convergence, protocol status, and a host CLI.
-- [ ] Bench-validate positive and negative low-speed velocity through deadline,
-  explicit STOP, Menu, current saturation, and encoder/readiness-loss shutdown;
-  tune gains and expand its envelope only from captured measurements.
-- [ ] Close the position loop with explicit acceleration, velocity, and following-error limits.
+- [x] Bench-validate positive and negative low-speed velocity through deadline,
+  explicit STOP, Right-button stop, and current saturation. Deadline, STOP,
+  Right-button stop, and hand-loaded saturation/recovery pass. Physical
+  encoder/readiness-loss injection is covered by the indefinite deferral above;
+  tune gains and expand the envelope only from captured measurements.
+- [x] Integrate a focused relative-position loop through the production
+  velocity/aligned-current stack with explicit travel, trajectory velocity,
+  acceleration, current, start-speed, feedback-age, following-error, settling,
+  duration, STOP, protocol-status, and common fault/`ZERO` contracts.
+- [x] Bench-validate positive/negative quarter-revolution position through
+  settled completion and generic STOP with bounded current, following error,
+  encoder timing, and clean backend/authority release.
+- [ ] Bench-validate physical Right-button stop and loaded following-error
+  behavior before adding absolute position, homing, or step/direction.
+- [ ] Stage the expanded velocity evaluation ceiling through ±2, ±3, and ±4
+  rev/s, measuring current saturation, tracking, voltage effort, phase-refresh
+  quality, supply behavior, heating, and clean release at every point.
 - [ ] Define stall, encoder-loss, overcurrent, and runaway detection.
 - [x] Establish a live inventory for the active motor-drive limits with units,
   classification, basis, enforcement owner, reporting, and next evidence.

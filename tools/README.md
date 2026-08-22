@@ -8,7 +8,7 @@ Manufacturer executables and archives belong under ignored `vendor/local/`, not 
 
 The motor tools below are product service and engineering-diagnostic tools, not
 an alternate commissioning firmware stack. `motor_test.py`, the identity/status/
-encoder/alignment/torque/velocity/STOP portions of `mks57d_rs485.py`, the
+encoder/alignment/torque/velocity/position/STOP portions of `mks57d_rs485.py`, the
 current trace, and both analyzers
 are retained because they provide repeatable acceptance, tuning, and fault
 evidence. Current-test wire names from native protocol 1.3 remain compatibility
@@ -73,6 +73,8 @@ py tools/mks57d_rs485.py --port COM14 torque-status
 py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
 py tools/mks57d_rs485.py --port COM14 velocity-status
 py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
+py tools/mks57d_rs485.py --port COM14 position-status
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 3000
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --counts 50 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
@@ -122,7 +124,8 @@ regulate velocity. The evaluation shutdown policy permits 5 rev/s (300 RPM),
 tracking and phase-refresh boundaries can be measured instead of preflighted
 away.
 
-Firmware 0.25.1 / protocol 1.8 provides the first product velocity service.
+Firmware 0.26.0 / protocol 1.9 retains the qualified velocity service and adds
+relative position. `velocity` accepts either `--rps` or `--rpm`, while
 `velocity-status` is passive and reports target, acceleration, feedback-speed,
 current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
 signed mechanical target in revolutions per second plus an explicit positive
@@ -137,10 +140,31 @@ being repeated in every row. The terminal overwrites one concise live line at
 about 5 Hz regardless of the capture interval, and prints the saved path plus a
 final summary. Use `--jsonl` to additionally retain complete nested snapshots,
 `--quiet` to suppress live refresh, or `--output-root PATH` to relocate the
-captures. Ctrl+C sends generic STOP and finalizes the directory. The initial
-evaluation envelope is ±1 rev/s, 1 rev/s² reference slew, and at most 100 counts
-(about 606 mA); it is a low-speed bench gate, not the intended final performance
-ceiling.
+captures. Ctrl+C sends generic STOP and finalizes the directory. For a
+repeatable automated shutdown gate, `--stop-after-seconds SECONDS` sends the
+same STOP over the capture's active serial connection before the firmware
+deadline. The 0.26.0 evaluation envelope is ±4 rev/s (±240 RPM), 4 rev/s²
+reference slew, and at most 100 counts (about 606 mA). The independent
+observed-speed shutdown remains 5 rev/s. The flashed 0.25.1 evidence remains
+qualified only through 1 rev/s; the expanded values are bench-evaluation
+permission, not a performance claim.
+
+`position-status` passively reports target/reference/measured position,
+profile/corrected/measured velocity, requested/applied current, state, result,
+faults, and the firmware travel/velocity/acceleration/following-error policy.
+`position` accepts a signed relative displacement plus explicit positive
+trajectory velocity, acceleration, current limit, and deadline. It preflights
+the request against position and velocity policy and sends the 18-byte protocol
+1.9 request. Like `velocity`, each run creates a timestamped directory under
+`scratch/position-runs/`: static request/policy/identity/configuration and
+initial/final snapshots go to `metadata.json`, while compact position,
+velocity, current, drive, and encoder samples stream to `telemetry.csv`. The
+terminal refreshes one concise target/reference/measured/error/current/fault
+line at about 5 Hz. Use `--jsonl`, `--quiet`, `--output-root`, and
+`--stop-after-seconds` exactly as for velocity captures. A deadline safely
+releases the drive but returns a nonzero host result because the requested
+position did not settle. Ctrl+C sends generic STOP and finalizes the capture;
+the physical Right button uses the same firmware release path.
 
 Protocol 1.3 and later firmware also records the first 256 current-loop samples
 after each start. Run a nearly stationary reference for a clean startup step,

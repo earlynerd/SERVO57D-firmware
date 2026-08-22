@@ -33,6 +33,7 @@
 #include "mks57d/pi_controller.h"
 #include "mks57d/phase_current_loop.h"
 #include "mks57d/phase_current_reference.h"
+#include "mks57d/position_controller.h"
 #include "mks57d/rotating_current_test.h"
 #include "mks57d/pulse_input_display.h"
 #include "mks57d/servo_core.h"
@@ -99,6 +100,7 @@ typedef struct
     command_configuration_status_t configuration_status;
     command_aligned_torque_status_t aligned_torque_status;
     command_velocity_status_t velocity_status;
+    command_position_status_t position_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
     uint32_t requested_duration_millis;
@@ -119,6 +121,8 @@ typedef struct
     size_t aligned_torque_status_calls;
     size_t velocity_start_calls;
     size_t velocity_status_calls;
+    size_t position_start_calls;
+    size_t position_status_calls;
     uint16_t requested_trace_index;
     uint16_t requested_alignment_current_counts;
     int16_t requested_q_current_counts;
@@ -126,6 +130,11 @@ typedef struct
     int32_t requested_velocity_revolutions_per_second_q16_16;
     uint16_t requested_velocity_current_limit_counts;
     uint32_t requested_velocity_duration_millis;
+    int32_t requested_position_displacement_revolutions_q16_16;
+    int32_t requested_position_maximum_velocity_q16_16;
+    int32_t requested_position_maximum_acceleration_q16_16;
+    uint16_t requested_position_current_limit_counts;
+    uint32_t requested_position_duration_millis;
 } mock_commissioning_t;
 
 static servo_core_config_t test_servo_config(void)
@@ -171,6 +180,28 @@ static velocity_controller_config_t test_velocity_controller_config(void)
         .maximum_current_counts = 100u,
         .maximum_feedback_interval_us = 2000u,
         .minimum_duration_millis = 3u,
+        .maximum_duration_millis = INT32_MAX,
+    };
+
+    return config;
+}
+
+static position_controller_config_t test_position_controller_config(void)
+{
+    const position_controller_config_t config = {
+        .maximum_relative_travel_revolutions = 100.0f,
+        .maximum_velocity_revolutions_per_second = 4.0f,
+        .maximum_acceleration_revolutions_per_second_squared = 4.0f,
+        .maximum_feedback_velocity_revolutions_per_second = 5.0f,
+        .maximum_start_velocity_revolutions_per_second = 0.1f,
+        .maximum_following_error_revolutions = 0.25f,
+        .position_gain_per_second = 4.0f,
+        .position_tolerance_revolutions = 0.002f,
+        .velocity_tolerance_revolutions_per_second = 0.02f,
+        .maximum_current_counts = 100u,
+        .required_settle_samples = 5u,
+        .maximum_feedback_interval_us = 2000u,
+        .minimum_duration_millis = 100u,
         .maximum_duration_millis = INT32_MAX,
     };
 
@@ -622,6 +653,39 @@ static command_status_t mock_velocity_get_status(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_position_start_relative(
+    void* context,
+    int32_t displacement_revolutions_q16_16,
+    int32_t maximum_velocity_revolutions_per_second_q16_16,
+    int32_t maximum_acceleration_revolutions_per_second2_q16_16,
+    uint16_t current_limit_counts,
+    uint32_t duration_millis)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->position_start_calls;
+    mock->requested_position_displacement_revolutions_q16_16 =
+        displacement_revolutions_q16_16;
+    mock->requested_position_maximum_velocity_q16_16 =
+        maximum_velocity_revolutions_per_second_q16_16;
+    mock->requested_position_maximum_acceleration_q16_16 =
+        maximum_acceleration_revolutions_per_second2_q16_16;
+    mock->requested_position_current_limit_counts = current_limit_counts;
+    mock->requested_position_duration_millis = duration_millis;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_position_get_status(
+    void* context,
+    command_position_status_t* status)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->position_status_calls;
+    *status = mock->position_status;
+    return COMMAND_STATUS_OK;
+}
+
 static bool init_native_server(native_protocol_server_t* server,
                                mock_protocol_tx_t* transmit)
 {
@@ -685,6 +749,11 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .context = commissioning,
             .start = mock_velocity_start,
             .get_status = mock_velocity_get_status,
+        },
+        .position = {
+            .context = commissioning,
+            .start_relative = mock_position_start_relative,
+            .get_status = mock_position_get_status,
         },
     };
 
@@ -1502,13 +1571,13 @@ static void test_user_inputs_debounce_each_active_low_signal_independently(void)
     EXPECT_TRUE(user_inputs_debouncer_init(&debouncer, raw));
     EXPECT_TRUE(user_inputs_debounced_levels(&debouncer) == USER_INPUT_MASK);
 
-    raw &= ~((uint32_t)USER_INPUT_KEY_ENTER);
+    raw &= ~((uint32_t)USER_INPUT_BUTTON_CENTER);
     EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
     EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
     EXPECT_TRUE(user_inputs_debounced_levels(&debouncer) == USER_INPUT_MASK);
     EXPECT_TRUE(user_inputs_debouncer_update(&debouncer, raw));
     EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
-                 USER_INPUT_KEY_ENTER) == 0u);
+                 USER_INPUT_BUTTON_CENTER) == 0u);
 
     raw &= ~((uint32_t)USER_INPUT_M_IN1);
     EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
@@ -1521,7 +1590,7 @@ static void test_user_inputs_debounce_each_active_low_signal_independently(void)
     EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
                  USER_INPUT_M_IN1) == 0u);
     EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
-                 USER_INPUT_KEY_MENU) != 0u);
+                 USER_INPUT_BUTTON_RIGHT) != 0u);
 
     raw &= ~((uint32_t)USER_INPUT_STEP);
     EXPECT_TRUE(!user_inputs_debouncer_update(&debouncer, raw));
@@ -2056,6 +2125,32 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .integral_gain_current_counts_per_position_q16_16 =
                 200 * 65536,
             .maximum_duration_millis = INT32_MAX,
+        },
+        .position_status = {
+            .schema_version = 1u,
+            .state = 2u,
+            .result = 0u,
+            .flags = 0xFFu,
+            .fault_flags = 0x01020304u,
+            .target_position_revolutions_q16_16 = 0x00018000,
+            .reference_position_revolutions_q16_16 = 0x00014000,
+            .measured_position_revolutions_q16_16 = -0x00008000,
+            .reference_velocity_revolutions_per_second_q16_16 =
+                0x00004000,
+            .target_velocity_revolutions_per_second_q16_16 =
+                -0x00004000,
+            .measured_velocity_revolutions_per_second_q16_16 =
+                0x00002000,
+            .requested_q_current_counts = -25,
+            .applied_q_current_counts = -24,
+            .current_limit_counts = 100u,
+            .elapsed_millis = 0x01020304u,
+            .remaining_millis = 0x05060708u,
+            .maximum_relative_travel_revolutions_q16_16 = 100 * 65536,
+            .maximum_velocity_revolutions_per_second_q16_16 = 4 * 65536,
+            .maximum_acceleration_revolutions_per_second2_q16_16 =
+                4 * 65536,
+            .maximum_following_error_revolutions_q16_16 = 1 * 65536 / 4,
         },
     };
     native_protocol_frame_t response;
@@ -2599,6 +2694,86 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[56] == 0xC8u);
     EXPECT_TRUE(response.payload[59] == 0x7Fu);
     EXPECT_TRUE(response.payload[62] == 0xFFu);
+
+    {
+        static const uint8_t position_payload[] = {
+            0xFFu, 0xFFu, 0x80u, 0x00u,
+            0x00u, 0x02u, 0x00u, 0x00u,
+            0x00u, 0x03u, 0x00u, 0x00u,
+            0x00u, 0x64u,
+            0x00u, 0x00u, 0x13u, 0x88u};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            37u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_START_POSITION_RELATIVE,
+            position_payload,
+            sizeof(position_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.position_start_calls == 1u);
+        EXPECT_TRUE(
+            commissioning.requested_position_displacement_revolutions_q16_16 ==
+            -32768);
+        EXPECT_TRUE(
+            commissioning.requested_position_maximum_velocity_q16_16 ==
+            2 * 65536);
+        EXPECT_TRUE(
+            commissioning.requested_position_maximum_acceleration_q16_16 ==
+            3 * 65536);
+        EXPECT_TRUE(
+            commissioning.requested_position_current_limit_counts == 100u);
+        EXPECT_TRUE(
+            commissioning.requested_position_duration_millis == 5000u);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
+
+    {
+        static const uint8_t expected_position_response[] = {
+            0x00u, 0x01u, 0x02u, 0x00u, 0xFFu,
+            0x01u, 0x02u, 0x03u, 0x04u,
+            0x00u, 0x01u, 0x80u, 0x00u,
+            0x00u, 0x01u, 0x40u, 0x00u,
+            0xFFu, 0xFFu, 0x80u, 0x00u,
+            0x00u, 0x00u, 0x40u, 0x00u,
+            0xFFu, 0xFFu, 0xC0u, 0x00u,
+            0x00u, 0x00u, 0x20u, 0x00u,
+            0xFFu, 0xE7u, 0xFFu, 0xE8u, 0x00u, 0x64u,
+            0x01u, 0x02u, 0x03u, 0x04u,
+            0x05u, 0x06u, 0x07u, 0x08u,
+            0x00u, 0x64u, 0x00u, 0x00u,
+            0x00u, 0x04u, 0x00u, 0x00u,
+            0x00u, 0x04u, 0x00u, 0x00u,
+            0x00u, 0x00u, 0x40u, 0x00u};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            38u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_GET_POSITION_STATUS,
+            NULL,
+            0u,
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.position_status_calls == 1u);
+        EXPECT_TRUE(response.payload_length ==
+                    sizeof(expected_position_response));
+        EXPECT_TRUE(memcmp(response.payload,
+                           expected_position_response,
+                           sizeof(expected_position_response)) == 0);
+    }
 }
 
 static void test_native_protocol_rejects_bad_crc_and_resynchronizes(void)
@@ -3796,6 +3971,169 @@ static void test_velocity_controller_applies_alignment_direction(void)
     EXPECT_TRUE(requested_current < 0);
     EXPECT_TRUE(status.requested_q_current_counts == requested_current);
     EXPECT_TRUE(velocity_controller_stop(&controller, 21u));
+}
+
+static void test_velocity_controller_accepts_dynamic_tracking_targets(void)
+{
+    const velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int16_t requested_current = 0;
+    uint32_t step;
+
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(velocity_controller_start_tracking(
+        &controller, 0, 25u, 1000u, 1, 0u, &observation));
+    EXPECT_TRUE(velocity_controller_set_target(&controller, 1 << 15));
+    EXPECT_TRUE(!velocity_controller_set_target(
+        &controller, (1 << 16) + 1));
+    observation.timestamp_us = 1000u;
+    EXPECT_TRUE(velocity_controller_update(
+        &controller, 1u, &observation, &requested_current) ==
+        VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.target_velocity_revolutions_per_second_q16_16 ==
+                1 << 15);
+    EXPECT_TRUE(status.reference_velocity_revolutions_per_second_q16_16 >=
+                65);
+    EXPECT_TRUE(status.reference_velocity_revolutions_per_second_q16_16 <=
+                66);
+    for (step = 2u; step <= 20u; ++step)
+    {
+        observation.timestamp_us = step * 1000u;
+        EXPECT_TRUE(velocity_controller_update(
+            &controller, step, &observation, &requested_current) ==
+            VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    }
+    EXPECT_TRUE(requested_current > 0);
+}
+
+static void test_position_controller_profiles_and_settles(void)
+{
+    const position_controller_config_t config =
+        test_position_controller_config();
+    position_controller_t controller;
+    position_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int32_t target_velocity = 0;
+    position_control_event_t event = POSITION_CONTROL_EVENT_NONE;
+    uint32_t step;
+
+    EXPECT_TRUE(position_controller_config_is_valid(&config));
+    EXPECT_TRUE(position_controller_init(&controller, &config));
+    EXPECT_TRUE(position_controller_start_relative(
+        &controller,
+        1 << 14,
+        1 << 16,
+        2 << 16,
+        50u,
+        5000u,
+        0u,
+        &observation));
+
+    for (step = 1u; step <= 3000u; ++step)
+    {
+        observation.position_revolutions =
+            controller.profile.position_revolutions;
+        observation.velocity_revolutions_per_second =
+            controller.profile.velocity_revolutions_per_second;
+        observation.timestamp_us = step * 1000u;
+        event = position_controller_update(
+            &controller, step, &observation, &target_velocity);
+        EXPECT_TRUE((target_velocity >= -(1 << 16)) &&
+                    (target_velocity <= (1 << 16)));
+        if (event == POSITION_CONTROL_EVENT_COMPLETED)
+        {
+            break;
+        }
+        EXPECT_TRUE(event == POSITION_CONTROL_EVENT_VELOCITY_CHANGED);
+    }
+
+    position_controller_get_status(&controller, &status);
+    EXPECT_TRUE(event == POSITION_CONTROL_EVENT_COMPLETED);
+    EXPECT_TRUE(status.state == POSITION_CONTROL_STATE_COMPLETE);
+    EXPECT_TRUE(status.result == POSITION_CONTROL_RESULT_SETTLED);
+    EXPECT_TRUE(status.target_position_revolutions_q16_16 == 1 << 14);
+    EXPECT_TRUE(status.current_limit_counts == 50u);
+    EXPECT_TRUE(!position_controller_is_active(&controller));
+}
+
+static void test_position_controller_enforces_following_error_and_deadline(void)
+{
+    position_controller_config_t config =
+        test_position_controller_config();
+    position_controller_t controller;
+    position_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int32_t target_velocity = 123;
+    position_control_event_t event = POSITION_CONTROL_EVENT_NONE;
+    uint32_t step;
+
+    config.maximum_following_error_revolutions = 0.01f;
+    EXPECT_TRUE(position_controller_init(&controller, &config));
+    EXPECT_TRUE(position_controller_start_relative(
+        &controller,
+        1 << 16,
+        1 << 16,
+        4 << 16,
+        50u,
+        1000u,
+        0u,
+        &observation));
+    for (step = 1u; step <= 200u; ++step)
+    {
+        observation.timestamp_us = step * 1000u;
+        event = position_controller_update(
+            &controller, step, &observation, &target_velocity);
+        if (event == POSITION_CONTROL_EVENT_FAILED)
+        {
+            break;
+        }
+    }
+    position_controller_get_status(&controller, &status);
+    EXPECT_TRUE(event == POSITION_CONTROL_EVENT_FAILED);
+    EXPECT_TRUE(status.result == POSITION_CONTROL_RESULT_FOLLOWING_ERROR);
+    EXPECT_TRUE((status.fault_flags &
+                 POSITION_CONTROL_FAULT_FOLLOWING_ERROR) != 0u);
+    EXPECT_TRUE(target_velocity == 0);
+
+    config = test_position_controller_config();
+    EXPECT_TRUE(position_controller_init(&controller, &config));
+    observation.timestamp_us = 0u;
+    EXPECT_TRUE(position_controller_start_relative(
+        &controller,
+        1 << 16,
+        1 << 16,
+        1 << 16,
+        50u,
+        100u,
+        0u,
+        &observation));
+    observation.timestamp_us = 1000u;
+    target_velocity = 123;
+    EXPECT_TRUE(position_controller_update(
+        &controller, 100u, &observation, &target_velocity) ==
+        POSITION_CONTROL_EVENT_COMPLETED);
+    position_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.result == POSITION_CONTROL_RESULT_DEADLINE);
+    EXPECT_TRUE(target_velocity == 0);
 }
 
 static current_controller_config_t test_current_controller_config(void)
@@ -5302,6 +5640,9 @@ int main(void)
     test_velocity_controller_deadline_clears_current();
     test_velocity_controller_limits_current_and_recovers();
     test_velocity_controller_applies_alignment_direction();
+    test_velocity_controller_accepts_dynamic_tracking_targets();
+    test_position_controller_profiles_and_settles();
+    test_position_controller_enforces_following_error_and_deadline();
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();
