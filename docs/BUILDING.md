@@ -144,10 +144,10 @@ launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
 
 ## Current image behavior
 
-Firmware 0.24.15 / protocol 1.7 is the current flashed product build and passed
-its ordinary hardware smoke check. Firmware 0.25.0 / protocol 1.8 is the current
-host/Arm candidate and adds the first bounded velocity product service on the
-single-estimator rotor-observation boundary. It:
+Firmware 0.25.1 / protocol 1.8 is the current flashed product build. It corrects
+the controller-to-actuator polarity omission exposed by the first 0.25.0 run
+and provides the first bounded velocity product service on the single-estimator
+rotor-observation boundary. It:
 
 1. Verifies the reset-default 4 MHz MSI, then starts the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK with one Flash wait state, PCLK2 32 MHz, PCLK1 16 MHz, and bounded readiness/source/readback checks.
 2. Initializes and verifies four NVIC preemption bits with no subpriorities.
@@ -184,7 +184,7 @@ single-estimator rotor-observation boundary. It:
     updates only the bounded aligned-q-current actuator. Target speed, observed
     speed, per-command current, reference acceleration, feedback age, deadline,
     actuator health, and common STOP/fault paths remain independently enforced.
-21. Publishes firmware `0.25.0`, authoritative drive state, reset cause,
+21. Publishes firmware `0.25.1`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -201,10 +201,13 @@ reset, or panic faults. Earlier automatic-alignment and persistent-configuration
 power-cycle gates remain accepted.
 
 Firmware 0.24.15 was flashed and passed its ordinary hardware smoke check.
-Firmware 0.25.0 passes native tests plus clean Debug and Release Arm builds.
-Debug uses 47,704 bytes of the 124 KiB application region and 6,796 bytes of
-SRAM1; Release uses 42,792 bytes and the same SRAM1, with no allocation in the
-configuration slots or SRAM2. Its hardware gate must confirm READY boot,
-passive velocity status, positive/negative low-speed deadline completion,
-explicit STOP, raw-Menu stop, current saturation recovery, and common fault/ZERO
+Firmware 0.25.1 passes native tests plus clean Debug and Release Arm builds.
+Mirrored ±0.1 rev/s, 25-count, two-second COM14 commands moved in the requested
+encoder coordinate and completed with clean deadline release and no faults.
+Debug uses 47,764
+bytes of the 124 KiB application region and 6,796 bytes of SRAM1; Release uses
+42,848 bytes and the same SRAM1, with no allocation in the configuration slots
+or SRAM2. READY boot, passive velocity status, and positive/negative low-speed
+deadline completion have passed. The remaining hardware gate covers explicit
+STOP, raw-Menu stop, current saturation recovery, and common fault/ZERO
 behavior on induced encoder/readiness loss.

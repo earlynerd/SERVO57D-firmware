@@ -3583,7 +3583,7 @@ static void test_velocity_controller_tracks_bounded_simple_plant(void)
     EXPECT_TRUE(velocity_controller_config_is_valid(&config));
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 14, 50u, 5000u, 0u, &observation));
+        &controller, 1 << 14, 50u, 5000u, 1, 0u, &observation));
 
     for (step = 1u; step <= 3000u; ++step)
     {
@@ -3635,13 +3635,15 @@ static void test_velocity_controller_rejects_bounds_and_faults_feedback(void)
     config = test_velocity_controller_config();
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, 0, 25u, 100u, 0u, &observation));
+        &controller, 0, 25u, 100u, 1, 0u, &observation));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, (1 << 16) + 1, 25u, 100u, 0u, &observation));
+        &controller, (1 << 16) + 1, 25u, 100u, 1, 0u, &observation));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, 1 << 15, 101u, 100u, 0u, &observation));
+        &controller, 1 << 15, 101u, 100u, 1, 0u, &observation));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, 1 << 15, 25u, 100u, 0, 0u, &observation));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 15, 25u, 100u, 0u, &observation));
+        &controller, 1 << 15, 25u, 100u, 1, 0u, &observation));
     EXPECT_TRUE(velocity_controller_update(
         &controller, 1u, &observation, &requested_current) ==
         VELOCITY_CONTROL_EVENT_FAILED);
@@ -3652,7 +3654,7 @@ static void test_velocity_controller_rejects_bounds_and_faults_feedback(void)
                  VELOCITY_CONTROL_FAULT_FEEDBACK_TIMING) != 0u);
 
     EXPECT_TRUE(velocity_controller_start(
-        &controller, -(1 << 15), 25u, 100u, 10u, &observation));
+        &controller, -(1 << 15), 25u, 100u, 1, 10u, &observation));
     observation.timestamp_us = 2000u;
     observation.velocity_revolutions_per_second = 5.01f;
     EXPECT_TRUE(velocity_controller_update(
@@ -3678,7 +3680,7 @@ static void test_velocity_controller_deadline_clears_current(void)
 
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 14, 25u, 3u, 100u, &observation));
+        &controller, 1 << 14, 25u, 3u, 1, 100u, &observation));
     observation.timestamp_us = 1000u;
     EXPECT_TRUE(velocity_controller_update(
         &controller, 101u, &observation, &requested_current) ==
@@ -3715,7 +3717,7 @@ static void test_velocity_controller_limits_current_and_recovers(void)
 
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 16, 10u, 1000u, 0u, &observation));
+        &controller, 1 << 16, 10u, 1000u, 1, 0u, &observation));
     for (step = 1u; step <= 100u; ++step)
     {
         observation.timestamp_us = 1000u + step * 1000u;
@@ -3748,7 +3750,7 @@ static void test_velocity_controller_limits_current_and_recovers(void)
     observation.velocity_revolutions_per_second = 0.0f;
     observation.timestamp_us += 1000u;
     EXPECT_TRUE(velocity_controller_start(
-        &controller, -(1 << 15), 10u, 1000u, 200u, &observation));
+        &controller, -(1 << 15), 10u, 1000u, 1, 200u, &observation));
     for (step = 1u; step <= 10u; ++step)
     {
         observation.timestamp_us += 1000u;
@@ -3760,6 +3762,40 @@ static void test_velocity_controller_limits_current_and_recovers(void)
     }
     EXPECT_TRUE(requested_current < 0);
     EXPECT_TRUE(requested_current >= -10);
+}
+
+static void test_velocity_controller_applies_alignment_direction(void)
+{
+    const velocity_controller_config_t config =
+        test_velocity_controller_config();
+    velocity_controller_t controller;
+    velocity_controller_status_t status;
+    rotor_observation_t observation = {
+        .position_revolutions = 0.0f,
+        .velocity_revolutions_per_second = 0.0f,
+        .timestamp_us = 0u,
+        .valid = true,
+    };
+    int16_t requested_current = 0;
+    uint32_t step;
+
+    EXPECT_TRUE(velocity_controller_init(&controller, &config));
+    EXPECT_TRUE(velocity_controller_start(
+        &controller, 1 << 16, 25u, 1000u, -1, 0u, &observation));
+    for (step = 1u; step <= 20u; ++step)
+    {
+        observation.timestamp_us = step * 1000u;
+        EXPECT_TRUE(velocity_controller_update(
+            &controller,
+            step,
+            &observation,
+            &requested_current) ==
+            VELOCITY_CONTROL_EVENT_CURRENT_CHANGED);
+    }
+    velocity_controller_get_status(&controller, &status);
+    EXPECT_TRUE(requested_current < 0);
+    EXPECT_TRUE(status.requested_q_current_counts == requested_current);
+    EXPECT_TRUE(velocity_controller_stop(&controller, 21u));
 }
 
 static current_controller_config_t test_current_controller_config(void)
@@ -5265,6 +5301,7 @@ int main(void)
     test_velocity_controller_rejects_bounds_and_faults_feedback();
     test_velocity_controller_deadline_clears_current();
     test_velocity_controller_limits_current_and_recovers();
+    test_velocity_controller_applies_alignment_direction();
     test_park_transform_round_trip();
     test_current_controller_limits_voltage_vector();
     test_current_controller_regulates_simple_rl_plant();

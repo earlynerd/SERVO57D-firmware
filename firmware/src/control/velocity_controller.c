@@ -117,6 +117,7 @@ bool velocity_controller_start(
     int32_t target_velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
+    int8_t actuator_direction,
     uint32_t now_millis,
     const rotor_observation_t* observation)
 {
@@ -132,6 +133,7 @@ bool velocity_controller_start(
         (current_limit_counts > controller->config.maximum_current_counts) ||
         (duration_millis < controller->config.minimum_duration_millis) ||
         (duration_millis > controller->config.maximum_duration_millis) ||
+        ((actuator_direction != 1) && (actuator_direction != -1)) ||
         (fabsf(observation->velocity_revolutions_per_second) >
          controller->config.maximum_feedback_velocity_revolutions_per_second))
     {
@@ -162,6 +164,7 @@ bool velocity_controller_start(
     controller->start_millis = now_millis;
     controller->deadline_millis = now_millis + duration_millis;
     controller->last_feedback_timestamp_us = observation->timestamp_us;
+    controller->actuator_direction = actuator_direction;
     pi_controller_reset(&controller->current_controller);
     return true;
 }
@@ -286,7 +289,8 @@ velocity_control_event_t velocity_controller_update(
     controller->status.velocity_error_revolutions_per_second_q16_16 =
         float_to_q16_16(velocity_error);
     controller->status.requested_q_current_counts =
-        round_to_i16(current_request);
+        round_to_i16(
+            current_request * (float)controller->actuator_direction);
     controller->last_feedback_timestamp_us = observation->timestamp_us;
     *requested_q_current_counts =
         controller->status.requested_q_current_counts;

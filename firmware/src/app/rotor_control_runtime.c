@@ -318,6 +318,7 @@ static bool start_velocity(rotor_control_runtime_t* runtime,
             runtime->requested_velocity_revolutions_per_second_q16_16,
             runtime->requested_velocity_current_limit_counts,
             runtime->requested_velocity_duration_millis,
+            runtime->motor_alignment.status.encoder_direction,
             now_millis,
             &observation) ||
         !aligned_torque_controller_start_tracking(

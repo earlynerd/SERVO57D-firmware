@@ -354,9 +354,11 @@ the latter must enter the common fault/ZERO path.
 
 ### Low-speed velocity hardware gate
 
-Firmware 0.25.0 / protocol 1.8 closes the first product velocity loop on the
+Firmware 0.25.1 / protocol 1.8 closes the first product velocity loop on the
 authoritative 1 kHz rotor observation. It commands only the existing bounded
-aligned-q-current actuator; it does not add a PWM or bridge-authority path.
+aligned-q-current actuator and applies the direction already measured and
+persisted by alignment; it does not add a PWM or bridge-authority path. No new
+alignment is required when upgrading from a valid stored configuration.
 The candidate permits targets through ±1 rev/s, slews the reference at
 1 rev/s², and requires each command to state a positive current limit no higher
 than 100 counts (about 606 mA). Use a free, observable shaft initially; keep
@@ -402,6 +404,13 @@ an intentional test: confirm `current_at_limit`, bounded recovery, and no
 integrator-driven overshoot before raising the 100-count candidate ceiling.
 Induced encoder/readiness loss is last and must enter common fault/ZERO with an
 immediate supply cutoff available.
+
+Bench status on 2026-08-21: firmware 0.25.1 passed the mirrored ±0.1 rev/s,
+25-count, two-second deadline gates. Both directions followed the requested raw
+encoder coordinate, stayed below 25 counts, held sampled encoder intervals to
+1,000 us, reported no faults, and released all current references and bridge
+duties at deadline. Explicit STOP, raw Menu, saturation/recovery, and induced
+encoder/readiness-loss tests remain pending.
 
 After that gate, the next implementation sequence is:
 

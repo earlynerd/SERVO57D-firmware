@@ -4,7 +4,7 @@ Status: firmware 0.24.13 releases encoder reads at 1 kHz from TIM6, performs
 bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
 through DMA channels 2/3, and defers decode/runtime publication through PendSV.
 Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
-automatic-alignment and aligned-torque controllers, and firmware 0.25.0's
+automatic-alignment and aligned-torque controllers, and firmware 0.25.1's
 bounded velocity controller. Native protocol 1.8 exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy

@@ -134,10 +134,12 @@ its host, target, reset, power-cycle, persistent-clear, and wear-avoidance gates
 pass. Firmware 0.23.2 / protocol 1.7 provides the first production motion
 interface: signed encoder-aligned q-current through the proven A/B current
 backend with independent current, slew, velocity, acceleration, feedback-age,
-and duration contracts. Firmware 0.25.0 / protocol 1.8 adds signed bounded
+and duration contracts. Firmware 0.25.1 / protocol 1.8 provides signed bounded
 velocity with an acceleration-limited reference, PI-generated q-current,
 per-command current limit, finite deadline, status, and generic STOP through
-that same actuator. It is host- and Arm-build validated and awaits its staged
+that same actuator. Positive velocity uses the same mechanical coordinate as
+encoder telemetry; the persisted alignment direction maps controller effort to
+q-current without changing the protocol. It is host- and Arm-build validated and awaits its staged
 hardware gate. Protocol 1.3 added the bounded current trace validated
 through complete 256-sample, fault-free 20 kHz captures and the Kp=2 tuning sweep. The
 capability bitmap uses the same stable bit definitions as the debugger
@@ -256,7 +258,7 @@ overspeed, numeric failure, actuator failure, current-backend failure, or
 readiness loss converges on fault/ZERO. Generic STOP and raw Menu perform the
 ordinary stopped release path.
 
-The initial 0.25.0 evaluation policy accepts a nonzero target through ±1 rev/s,
+The initial 0.25.1 evaluation policy accepts a nonzero target through ±1 rev/s,
 a positive per-command limit through 100 current counts (about 606 mA nominal),
 and a 3 through 2,147,483,647 ms finite duration. The reference is limited to
 1 rev/s². Observed velocity is independently bounded to 5 rev/s, feedback age
@@ -587,7 +589,7 @@ adapters:
 These are application contracts, not new native-v1 wire commands. Command IDs,
 payload encoding, status/event messages, permission configuration, and each
 protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.25.0 links the mechanical estimator, transactional alignment
+target; firmware 0.25.1 links the mechanical estimator, transactional alignment
 controller, persistent configuration, aligned-q-current actuator, and the first
 supervisor-authorized velocity operation. The general position/step-direction
 motion shell remains excluded.

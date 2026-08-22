@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.25.0 closes both winding-current loops at 20 kHz through the
+image. Firmware 0.25.1 closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
@@ -12,11 +12,13 @@ configuration power-cycle gates remain accepted. Firmware 0.24.14 removed the co
 Next/Enter phase-selector and direct fixed-duty PWM bring-up path while retaining
 the RS-485 rotating-current diagnostic through the supervisor/current backend.
 Firmware 0.24.15 establishes a single product-owned rotor estimator and an
-immutable position/velocity observation boundary. Firmware 0.25.0 closes the
+immutable position/velocity observation boundary. Firmware 0.25.1 closes the
 first bounded signed velocity loop on that observation and commands only the
-existing aligned-q-current actuator. The general position/step-direction motion
-candidate remains separately compiled and unlinked. Firmware 0.24.15 is flashed
-and passed its ordinary smoke check; 0.25.0 awaits its velocity gate. Menu and induced readiness-
+existing aligned-q-current actuator, mapping mechanical effort through the
+direction measured and persisted by alignment. The general position/step-direction
+motion candidate remains separately compiled and unlinked. Firmware 0.25.1 is
+flashed and has passed mirrored ±0.1 rev/s deadline/polarity checks with clean
+authority release; explicit STOP, Menu, saturation/recovery, and induced readiness-
 loss shutdown remain hardware regression items.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection

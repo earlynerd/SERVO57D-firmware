@@ -84,6 +84,7 @@ typedef struct
     uint32_t start_millis;
     uint32_t deadline_millis;
     uint32_t last_feedback_timestamp_us;
+    int8_t actuator_direction;
     bool initialized;
 } velocity_controller_t;
 
@@ -97,6 +98,7 @@ bool velocity_controller_start(
     int32_t target_velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
+    int8_t actuator_direction,
     uint32_t now_millis,
     const rotor_observation_t* observation);
 velocity_control_event_t velocity_controller_update(

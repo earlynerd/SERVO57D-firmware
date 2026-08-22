@@ -40,7 +40,7 @@ without opening a browser or `--replot RUN_DIRECTORY` to reopen a saved run.
 This interface currently commands a positive-frequency rotating current vector;
 `--rpm` is a speed magnitude derived from the tested motor geometry, not yet a
 closed-loop shaft-speed, signed-direction, or position command. Those controls
-remain separate from this diagnostic: firmware 0.25.0 provides signed closed-
+remain separate from this diagnostic: firmware 0.25.1 provides signed closed-
 loop speed through the dedicated `velocity` service, while position remains the
 next motion milestone.
 
@@ -59,7 +59,7 @@ it is torque-producing current, not a velocity request, so keep clear of the
 shaft and use the current-limited supply procedure in
 [the bring-up guide](docs/BRINGUP.md).
 
-Firmware 0.25.0 adds the first signed closed-loop velocity product service on
+Firmware 0.25.1 provides the first signed closed-loop velocity product service on
 top of that actuator. Inspect the live policy before starting; the initial
 candidate is intentionally bounded to ±1 rev/s, 1 rev/s² reference slew, and
 100 current counts (about 606 mA):
@@ -78,16 +78,21 @@ saturation, and induced-feedback-loss tests pass.
 
 ## Current operating envelope
 
-Firmware 0.25.0 / protocol 1.8 is the current flashed product build and has run
-its first bounded velocity command; capture analysis and the complete velocity
-hardware gate remain pending. Firmware 0.24.15 passed its ordinary hardware
+Firmware 0.25.1 / protocol 1.8 is the current flashed product build. Mirrored
+±0.1 rev/s, 25-count, two-second commands moved in the requested encoder
+coordinate, completed at their deadlines, and returned to `ZERO` with no
+control, encoder, current-loop, reset, or watchdog faults. The correction maps
+velocity effort through the already persisted alignment direction without
+changing the configuration schema or wire protocol. Explicit STOP, raw Menu,
+saturation/recovery, and induced-fault velocity gates remain pending. Firmware
+0.24.15 passed its ordinary hardware
 smoke check. Firmware 0.24.14 retired
 the local Next/Enter phase selector and its direct fixed-duty PWM helper while
 retaining the RS-485 rotating-current diagnostic through the product supervisor
 and current backend. Firmware 0.24.15 makes the deterministic rotor runtime the
 sole estimator owner and gives the not-yet-linked motion candidate an immutable,
 timestamped position/velocity observation instead of raw encoder samples. The
-0.25.0 / protocol 1.8 candidate is host- and build-validated and closes the
+0.25.1 / protocol 1.8 candidate is host- and build-validated and closes the
 first bounded signed mechanical-velocity loop on that observation. It applies
 an acceleration-limited reference and PI current request, then commands only
 the existing aligned-q-current actuator; position and step/direction remain
@@ -155,7 +160,7 @@ A separate general-motion candidate still exercises remote lease expiry,
 step/direction behavior, bounded position trajectories, and fault recovery
 against host-side deterministic plants. The hardware image owns the only angle
 tracker and publishes validated mechanical position/velocity observations.
-Firmware 0.25.0 links only the focused low-speed velocity controller described
+Firmware 0.25.1 links only the focused low-speed velocity controller described
 above; position, step/direction, and the candidate's broader motion limits have
 not been promoted into the product.
 

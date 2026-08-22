@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.25.0 implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.25.1 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -12,8 +12,9 @@ operation as a supervisor-authorized RS-485 production diagnostic. Firmware
 0.24.15 makes
 `rotor_control_runtime` the sole owner of raw encoder interpretation and angle
 unwrapping; slower control receives only an immutable rotor observation.
-Firmware 0.25.0 closes the first bounded velocity loop on that observation and
-routes its output through the aligned-q-current actuator. Position control
+Firmware 0.25.1 closes the first bounded velocity loop on that observation and
+routes its mechanical effort through the persisted alignment direction into
+the aligned-q-current actuator. Position control
 remains the next product layer.
 
 ## Design priorities

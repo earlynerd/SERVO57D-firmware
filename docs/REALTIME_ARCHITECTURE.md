@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.25.0 implements the fast current path, production alignment,
+Status: firmware 0.25.1 implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -8,8 +8,9 @@ current control, and the carrier deadline guardian remain the project-owned
 backend. Firmware 0.24.14 removes the local fixed-duty characterization path;
 all retained motor operations use the supervisor and current backend. Firmware
 0.24.15 makes the rotor runtime the sole estimator owner and defines the
-immutable observation boundary used by slower loops. Firmware 0.25.0 runs the
-first bounded velocity PI once per accepted rotor observation and routes it
+immutable observation boundary used by slower loops. Firmware 0.25.1 runs the
+first bounded velocity PI once per accepted rotor observation and maps its
+mechanical effort through the persisted alignment direction before routing it
 through the existing aligned-q-current actuator. This document defines that
 boundary and the next position layer.
 
@@ -188,7 +189,7 @@ accepted sample in microseconds, and reports the latest and maximum observed
 interval. The deterministic hardware regression accepted this schedule: idle
 operation held the latest/worst interval to 1000/1001 us with zero errors, and
 a 606 mA five-second aligned-torque run completed 100,000 current-loop updates
-with zero encoder, estimator, DMA, backend, or control faults. Firmware 0.25.0
+with zero encoder, estimator, DMA, backend, or control faults. Firmware 0.25.1
 adds software-floating-point PI and reference-slew work to the same PendSV
 release; encoder interval and worst-case PendSV execution must be remeasured on
 hardware before increasing target speed or adding position compute.
@@ -277,7 +278,7 @@ The hardware-independent portion is implemented under `firmware/src/control/`
 and `firmware/src/app/`. Product modules are linked into `mks57d`; the general
 application/trajectory/position, step-direction, and d/q voltage modules are
 instead compiled as the explicitly non-product `mks57d_motion_candidate` target
-and in host tests. Firmware 0.25.0 integrates the authoritative drive
+and in host tests. Firmware 0.25.1 integrates the authoritative drive
 supervisor, mechanical angle tracker, measured stepper-alignment geometry,
 signed q-current actuator, and a focused bounded velocity controller; the
 general position shell remains excluded while the proven phase-current backend

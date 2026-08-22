@@ -122,7 +122,7 @@ regulate velocity. The evaluation shutdown policy permits 5 rev/s (300 RPM),
 tracking and phase-refresh boundaries can be measured instead of preflighted
 away.
 
-Firmware 0.25.0 / protocol 1.8 adds the first product velocity service.
+Firmware 0.25.1 / protocol 1.8 provides the first product velocity service.
 `velocity-status` is passive and reports target, acceleration, feedback-speed,
 current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
 signed mechanical target in revolutions per second plus an explicit positive

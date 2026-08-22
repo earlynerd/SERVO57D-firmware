@@ -310,3 +310,13 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** telemetry-output-amplification
 - **Recently-touched?** yes — the initial velocity CLI was added in the same development session.
 - **Time to fix:** approximately 25 minutes.
+
+## 2026-08-21 — Persisted encoder direction was omitted from velocity actuation polarity
+
+- **Observation:** On flashed firmware 0.25.0, a +0.1 rev/s, 25-count, two-second velocity command completed its deadline and returned safely to `READY`/`ZERO`, but measured velocity moved negative and ended near -0.247 rev/s while requested q-current saturated at +25 counts. An earlier +1 rev/s run had similarly retained about -0.951 rev/s. The normalized evidence is in `scratch/velocity-runs/20260821-200348-p0p100rps-00025cnt-2000ms/`.
+- **Root cause:** `firmware/src/control/angle_tracker.c:64-107` intentionally publishes increasing raw encoder counts as positive mechanical motion. Alignment correctly derives direction at `firmware/src/control/motor_alignment.c:82-124`, and `firmware/src/services/configuration_store.c:101-114,147-155,204-213` validates, packs, and restores it with the zero offset. Electrical phase already consumes it at `firmware/src/control/motor_alignment.c:186-220`, but pre-fix `firmware/src/control/velocity_controller.c:289-295` emitted the mechanical PI effort directly as q-current. On this motor's stored direction of -1, positive q-current produces negative motion in the telemetry coordinate.
+- **Fix:** Firmware 0.25.1 passes the persisted alignment direction from `rotor_control_runtime` into `velocity_controller_start`, rejects invalid direction values, and transforms the bounded mechanical PI effort at the q-current output seam. Direct torque polarity, encoder telemetry, phase reconstruction, Flash schema, and protocol remain unchanged; no re-alignment is required.
+- **Class:** calibration-direction-not-consumed
+- **Recently-touched?** yes — firmware 0.25.0 introduced the velocity-to-q-current seam.
+- **Status:** Resolved and bench-confirmed on firmware 0.25.1. Mirrored ±0.1 rev/s, 25-count, two-second COM14 runs moved +0.108/-0.109 revolution in the requested raw-encoder coordinate, completed at deadline with no faults, and returned all references/duties to zero without changing calibration.
+- **Time to fix:** approximately 30 minutes.
