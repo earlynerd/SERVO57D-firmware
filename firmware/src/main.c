@@ -66,6 +66,7 @@ enum
 static uint8_t s_display_frame[DISPLAY_FRAME_BYTES];
 static rotor_control_runtime_t rotor_control_runtime;
 static rotor_control_snapshot_t rotor_control_snapshot;
+static rotor_control_progress_snapshot_t rotor_control_progress_snapshot;
 
 enum
 {
@@ -2204,6 +2205,8 @@ int main(void)
         ALIGNMENT_MAXIMUM_CURRENT_ERROR_COUNTS = 8u,
         ADC_SNAPSHOT_PERIOD_MS = 10u,
         INPUT_SAMPLE_PERIOD_MS = 10u,
+        /* Bound safety-service latency without following every ADC wakeup. */
+        FOREGROUND_SAFETY_PERIOD_MS = 1u,
         CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
         DISPLAY_REFRESH_PERIOD_MS = 200u,
         RS485_FOREGROUND_DRAIN_BYTES = 64u,
@@ -2233,8 +2236,8 @@ int main(void)
         /*
          * Independent observed-motion shutdown with twofold headroom over
          * the fastest permitted velocity-reference slew. This remains well
-         * above the approximately 7.6 rev/s^2 single-count estimator step at
-         * the nominal 1 kHz sample rate.
+         * above the approximately 32.1 rev/s^2 single-count filtered-estimator
+         * step at the nominal 4 kHz sample rate.
          */
         ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 512u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
@@ -2246,15 +2249,16 @@ int main(void)
          */
         CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US = 55u,
         /*
-         * Prediction is allowed one nominal encoder period of dispatch
-         * margin beyond the controllers' timestamp-to-timestamp feedback
-         * interval, but never beyond the independent total-production guard.
+         * Prediction is allowed one millisecond, or four nominal encoder
+         * periods, of dispatch margin beyond the controllers' timestamp-to-
+         * timestamp feedback interval, but never beyond the independent
+         * total-production guard.
          */
         CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US = 3000u,
         /*
          * Three milliseconds allows one reference update before the deadline
-         * even when the first accepted 1 kHz feedback sample arrives at the
-         * full two-millisecond feedback-age limit.
+         * even when the first accepted feedback sample arrives at the full
+         * two-millisecond feedback-age limit.
          */
         ALIGNED_TORQUE_MINIMUM_DURATION_MS = 3u,
         /*
@@ -2284,7 +2288,8 @@ int main(void)
         POSITION_MAXIMUM_VELOCITY_TARGET_Q16_16 = 17u << 16,
         POSITION_MAXIMUM_ACCELERATION_Q16_16 = 64u << 16,
         POSITION_MAXIMUM_CURRENT_COUNTS = 495u,
-        POSITION_REQUIRED_SETTLE_SAMPLES = 50u,
+        /* Preserve the established 50 ms settling duration at 4 kHz. */
+        POSITION_REQUIRED_SETTLE_SAMPLES = 200u,
         POSITION_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         POSITION_MINIMUM_DURATION_MS = 100u,
         POSITION_MAXIMUM_DURATION_MS = INT32_MAX,
@@ -2379,7 +2384,8 @@ int main(void)
         .maximum_sample_interval_us =
             ENCODER_MAXIMUM_SAMPLE_INTERVAL_US,
         .maximum_velocity_revolutions_per_second = 20.0f,
-        .velocity_filter_alpha = 0.125f,
+        /* Preserve the 1 kHz alpha=0.125 filter pole at the 4 kHz release. */
+        .velocity_filter_alpha = 0.03283179f,
     };
     motor_alignment_t motor_alignment;
     configuration_store_backend_t configuration_backend;
@@ -2530,7 +2536,9 @@ int main(void)
     uint32_t next_heartbeat;
     uint32_t last_encoder_diagnostics_sample_count = 0u;
     uint32_t last_encoder_diagnostics_error_count = 0u;
-    uint32_t last_rotor_snapshot_millis = UINT32_MAX;
+    uint32_t rotor_active_control_flags = ROTOR_CONTROL_ACTIVE_NONE;
+    uint32_t last_rotor_full_snapshot_sequence = 0u;
+    uint32_t next_safety_housekeeping;
     uint32_t next_adc_sample;
     uint32_t next_input_sample;
     uint32_t next_current_reference;
@@ -2724,7 +2732,9 @@ int main(void)
             &velocity_controller,
             &position_controller) ||
         !rotor_control_runtime_get_snapshot(
-            &rotor_control_runtime, &rotor_control_snapshot))
+            &rotor_control_runtime, &rotor_control_snapshot) ||
+        !rotor_control_runtime_get_progress_snapshot(
+            &rotor_control_runtime, &rotor_control_progress_snapshot))
     {
         platform_panic(PANIC_INTERNAL_INVARIANT);
     }
@@ -2865,8 +2875,10 @@ int main(void)
             timebase_micros());
         (void)rotor_control_runtime_get_snapshot(
             &rotor_control_runtime, &rotor_control_snapshot);
+        (void)rotor_control_runtime_get_progress_snapshot(
+            &rotor_control_runtime, &rotor_control_progress_snapshot);
         encoder_diagnostics =
-            rotor_control_snapshot.encoder_diagnostics;
+            rotor_control_progress_snapshot.encoder_diagnostics;
     }
     diagnostics_publish_encoder(&encoder_diagnostics);
 
@@ -2941,6 +2953,7 @@ int main(void)
                         (uint32_t)watchdog_status,
                         &self_test);
     next_heartbeat = timebase_millis() + 250u;
+    next_safety_housekeeping = timebase_millis();
     next_adc_sample = timebase_millis();
     next_input_sample = timebase_millis();
     next_current_reference = timebase_millis();
@@ -2950,38 +2963,54 @@ int main(void)
     for (;;)
     {
         bool diagnostics_due = false;
+        bool rotor_full_snapshot_due = false;
         const uint32_t now = timebase_millis();
+        const bool safety_housekeeping_due =
+            (int32_t)(now - next_safety_housekeeping) >= 0;
         const uint32_t rotor_events =
-            rotor_control_runtime_take_events(&rotor_control_runtime);
-        if ((now != last_rotor_snapshot_millis) ||
+            safety_housekeeping_due ?
+                rotor_control_runtime_take_events(
+                    &rotor_control_runtime) :
+                ROTOR_CONTROL_EVENT_NONE;
+        rotor_full_snapshot_due =
+            rotor_events != ROTOR_CONTROL_EVENT_NONE;
+        if (safety_housekeeping_due)
+        {
+            next_safety_housekeeping =
+                now + FOREGROUND_SAFETY_PERIOD_MS;
+        }
+        if (safety_housekeeping_due ||
             (rotor_events != ROTOR_CONTROL_EVENT_NONE))
         {
-            if (!rotor_control_runtime_get_snapshot(
-                    &rotor_control_runtime, &rotor_control_snapshot))
+            if (!rotor_control_runtime_get_progress_snapshot(
+                    &rotor_control_runtime,
+                    &rotor_control_progress_snapshot))
             {
                 board_bridge_force_low_zero();
                 platform_panic(PANIC_INTERNAL_INVARIANT);
             }
             encoder_diagnostics =
-                rotor_control_snapshot.encoder_diagnostics;
-            angle_tracker = rotor_control_snapshot.angle_tracker;
-            motor_alignment = rotor_control_snapshot.motor_alignment;
-            alignment_controller =
-                rotor_control_snapshot.alignment_controller;
-            aligned_torque_controller =
-                rotor_control_snapshot.torque_controller;
-            velocity_controller =
-                rotor_control_snapshot.velocity_controller;
-            position_controller =
-                rotor_control_snapshot.position_controller;
+                rotor_control_progress_snapshot.encoder_diagnostics;
+            angle_tracker.position_revolutions =
+                rotor_control_progress_snapshot.
+                    estimator_position_revolutions;
+            angle_tracker.velocity_revolutions_per_second =
+                rotor_control_progress_snapshot.
+                    estimator_velocity_revolutions_per_second;
+            angle_tracker.initialized =
+                rotor_control_progress_snapshot.estimator_initialized != 0u;
+            angle_tracker.last_timestamp_us =
+                rotor_control_progress_snapshot.estimator_timestamp_us;
             estimator_fault_flags =
-                rotor_control_snapshot.estimator_fault_flags;
-            estimator_sample_interval_us =
-                rotor_control_snapshot.estimator_sample_interval_us;
-            estimator_maximum_sample_interval_us =
-                rotor_control_snapshot.
-                    estimator_maximum_sample_interval_us;
-            last_rotor_snapshot_millis = now;
+                rotor_control_progress_snapshot.estimator_fault_flags;
+            rotor_active_control_flags =
+                rotor_control_progress_snapshot.active_control_flags;
+            if (rotor_control_progress_snapshot.full_snapshot_sequence !=
+                last_rotor_full_snapshot_sequence)
+            {
+                /* Pull each decimated or transition-forced full publication. */
+                rotor_full_snapshot_due = true;
+            }
             if (encoder_diagnostics.sample_count !=
                     last_encoder_diagnostics_sample_count ||
                 encoder_diagnostics.error_count !=
@@ -2994,22 +3023,60 @@ int main(void)
                 diagnostics_publish_encoder(&encoder_diagnostics);
                 diagnostics_due = true;
             }
+            {
+                const bool encoder_feedback_was_live =
+                    encoder_feedback_live;
+                const uint32_t encoder_liveness_now_us =
+                    timebase_micros();
+
+                encoder_feedback_live = encoder_liveness_monitor_update(
+                    &encoder_liveness,
+                    angle_tracker.initialized,
+                    encoder_diagnostics.sample_count,
+                    angle_tracker.last_timestamp_us,
+                    encoder_liveness_now_us);
+                if (encoder_feedback_live != encoder_feedback_was_live)
+                {
+                    diagnostics_due = true;
+                }
+            }
         }
 
+        if (rotor_full_snapshot_due)
         {
-            const bool encoder_feedback_was_live = encoder_feedback_live;
-            const uint32_t encoder_liveness_now_us = timebase_micros();
-
-            encoder_feedback_live = encoder_liveness_monitor_update(
-                &encoder_liveness,
-                angle_tracker.initialized,
-                encoder_diagnostics.sample_count,
-                angle_tracker.last_timestamp_us,
-                encoder_liveness_now_us);
-            if (encoder_feedback_live != encoder_feedback_was_live)
+            if (!rotor_control_runtime_get_snapshot(
+                    &rotor_control_runtime, &rotor_control_snapshot))
             {
-                diagnostics_due = true;
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
             }
+            angle_tracker = rotor_control_snapshot.angle_tracker;
+            motor_alignment = rotor_control_snapshot.motor_alignment;
+            alignment_controller =
+                rotor_control_snapshot.alignment_controller;
+            aligned_torque_controller =
+                rotor_control_snapshot.torque_controller;
+            velocity_controller =
+                rotor_control_snapshot.velocity_controller;
+            position_controller =
+                rotor_control_snapshot.position_controller;
+            estimator_sample_interval_us =
+                rotor_control_snapshot.estimator_sample_interval_us;
+            estimator_maximum_sample_interval_us =
+                rotor_control_snapshot.
+                    estimator_maximum_sample_interval_us;
+            last_rotor_full_snapshot_sequence =
+                rotor_control_progress_snapshot.full_snapshot_sequence;
+            angle_tracker.position_revolutions =
+                rotor_control_progress_snapshot.
+                    estimator_position_revolutions;
+            angle_tracker.velocity_revolutions_per_second =
+                rotor_control_progress_snapshot.
+                    estimator_velocity_revolutions_per_second;
+            angle_tracker.initialized =
+                rotor_control_progress_snapshot.estimator_initialized != 0u;
+            angle_tracker.last_timestamp_us =
+                rotor_control_progress_snapshot.estimator_timestamp_us;
         }
 
         if ((rotor_events & ROTOR_CONTROL_EVENT_FAULT) != 0u)
@@ -3103,40 +3170,48 @@ int main(void)
                                             &protocol_diagnostics);
                 diagnostics_due = true;
             }
-            update_rs485_diagnostics(&rs485_diagnostics);
-            if (rs485_diagnostics.status != (uint32_t)RS485_STATUS_OK)
+            if ((received != 0u) || safety_housekeeping_due)
             {
-                rs485_ready = false;
-                commissioning_context.remote_stop_requested = true;
-                commissioning_context.alignment_stop_requested = true;
-                commissioning_context.torque_stop_requested = true;
-                velocity_commands.stop_requested = true;
-                position_commands.stop_requested = true;
-                diagnostics_due = true;
+                update_rs485_diagnostics(&rs485_diagnostics);
+                if (rs485_diagnostics.status !=
+                    (uint32_t)RS485_STATUS_OK)
+                {
+                    rs485_ready = false;
+                    commissioning_context.remote_stop_requested = true;
+                    commissioning_context.alignment_stop_requested = true;
+                    commissioning_context.torque_stop_requested = true;
+                    velocity_commands.stop_requested = true;
+                    position_commands.stop_requested = true;
+                    diagnostics_due = true;
+                }
             }
         }
 
-        if (alignment_controller_is_active(&alignment_controller) &&
+        if (((rotor_active_control_flags &
+              ROTOR_CONTROL_ACTIVE_ALIGNMENT) != 0u) &&
             ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             commissioning_context.alignment_stop_requested = true;
         }
         if ((commissioning_context.torque_start_requested ||
-             aligned_torque_controller_is_active(
-                  &aligned_torque_controller)) &&
+             ((rotor_active_control_flags &
+               ROTOR_CONTROL_ACTIVE_ALIGNED_TORQUE) != 0u)) &&
             ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             commissioning_context.torque_stop_requested = true;
         }
         if ((velocity_commands.start_requested ||
-             velocity_controller_is_active(&velocity_controller)) &&
-            !position_controller_is_active(&position_controller) &&
+             ((rotor_active_control_flags &
+               ROTOR_CONTROL_ACTIVE_VELOCITY) != 0u)) &&
+            ((rotor_active_control_flags &
+              ROTOR_CONTROL_ACTIVE_POSITION) == 0u) &&
             ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             velocity_commands.stop_requested = true;
         }
         if ((position_commands.start_requested ||
-             position_controller_is_active(&position_controller)) &&
+             ((rotor_active_control_flags &
+               ROTOR_CONTROL_ACTIVE_POSITION) != 0u)) &&
             ((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
         {
             position_commands.stop_requested = true;
@@ -3300,8 +3375,9 @@ int main(void)
 
         if (commissioning_context.remote_authority_active &&
             (((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u) ||
-             ((int32_t)(now - commissioning_context.
-                                  remote_run_deadline_millis) >= 0)))
+             (safety_housekeeping_due &&
+              ((int32_t)(now - commissioning_context.
+                                   remote_run_deadline_millis) >= 0))))
         {
             commissioning_context.remote_stop_requested = true;
         }
@@ -3400,59 +3476,64 @@ int main(void)
             diagnostics_due = true;
         }
 
-        if (commissioning_context.remote_authority_active &&
-            !app_supervisor_bridge_authorized(&drive_supervisor))
+        if (safety_housekeeping_due)
         {
-            commissioning_context.remote_authority_active = false;
-            (void)app_supervisor_handle_event(
-                &drive_supervisor,
-                APP_EVENT_FAULT_DETECTED,
-                (app_transition_context_t){0});
-            board_bridge_force_low_zero();
-            platform_panic(PANIC_INTERNAL_INVARIANT);
-        }
-        if (alignment_controller_is_active(&alignment_controller) &&
-            ((drive_supervisor.state != APP_STATE_ALIGN) ||
-             (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
-             !app_supervisor_bridge_authorized(&drive_supervisor)))
-        {
-            rotor_control_runtime_force_fault(
-                &rotor_control_runtime, timebase_micros());
-            (void)app_supervisor_handle_event(
-                &drive_supervisor,
-                APP_EVENT_FAULT_DETECTED,
-                (app_transition_context_t){0});
-            board_bridge_force_low_zero();
-            platform_panic(PANIC_INTERNAL_INVARIANT);
-        }
-        if (aligned_torque_controller_is_active(
-                &aligned_torque_controller) &&
-            ((drive_supervisor.state != APP_STATE_RUN) ||
-             (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
-             !app_supervisor_bridge_authorized(&drive_supervisor)))
-        {
-            rotor_control_runtime_force_fault(
-                &rotor_control_runtime, timebase_micros());
-            (void)app_supervisor_handle_event(
-                &drive_supervisor,
-                APP_EVENT_FAULT_DETECTED,
-                (app_transition_context_t){0});
-            board_bridge_force_low_zero();
-            platform_panic(PANIC_INTERNAL_INVARIANT);
-        }
-        if (velocity_controller_is_active(&velocity_controller) &&
-            ((drive_supervisor.state != APP_STATE_RUN) ||
-             (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
-             !app_supervisor_bridge_authorized(&drive_supervisor)))
-        {
-            rotor_control_runtime_force_fault(
-                &rotor_control_runtime, timebase_micros());
-            (void)app_supervisor_handle_event(
-                &drive_supervisor,
-                APP_EVENT_FAULT_DETECTED,
-                (app_transition_context_t){0});
-            board_bridge_force_low_zero();
-            platform_panic(PANIC_INTERNAL_INVARIANT);
+            if (commissioning_context.remote_authority_active &&
+                !app_supervisor_bridge_authorized(&drive_supervisor))
+            {
+                commissioning_context.remote_authority_active = false;
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            if (((rotor_active_control_flags &
+                  ROTOR_CONTROL_ACTIVE_ALIGNMENT) != 0u) &&
+                ((drive_supervisor.state != APP_STATE_ALIGN) ||
+                 (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
+                 !app_supervisor_bridge_authorized(&drive_supervisor)))
+            {
+                rotor_control_runtime_force_fault(
+                    &rotor_control_runtime, timebase_micros());
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            if (((rotor_active_control_flags &
+                  ROTOR_CONTROL_ACTIVE_ALIGNED_TORQUE) != 0u) &&
+                ((drive_supervisor.state != APP_STATE_RUN) ||
+                 (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
+                 !app_supervisor_bridge_authorized(&drive_supervisor)))
+            {
+                rotor_control_runtime_force_fault(
+                    &rotor_control_runtime, timebase_micros());
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
+            if (((rotor_active_control_flags &
+                  ROTOR_CONTROL_ACTIVE_VELOCITY) != 0u) &&
+                ((drive_supervisor.state != APP_STATE_RUN) ||
+                 (drive_supervisor.authority != APP_AUTHORITY_MOTION) ||
+                 !app_supervisor_bridge_authorized(&drive_supervisor)))
+            {
+                rotor_control_runtime_force_fault(
+                    &rotor_control_runtime, timebase_micros());
+                (void)app_supervisor_handle_event(
+                    &drive_supervisor,
+                    APP_EVENT_FAULT_DETECTED,
+                    (app_transition_context_t){0});
+                board_bridge_force_low_zero();
+                platform_panic(PANIC_INTERNAL_INVARIANT);
+            }
         }
 
         if (app_supervisor_bridge_authorized(&drive_supervisor) &&
@@ -3660,6 +3741,7 @@ int main(void)
             next_adc_sample = now + ADC_SNAPSHOT_PERIOD_MS;
         }
 
+        if (safety_housekeeping_due)
         {
             const bool drive_prerequisites_ready =
                 bridge_ready && current_loop_initialized &&
@@ -3690,10 +3772,10 @@ int main(void)
                      !drive_prerequisites_ready)
             {
                 const bool motion_was_active =
-                    aligned_torque_controller_is_active(
-                        &aligned_torque_controller) ||
-                    velocity_controller_is_active(&velocity_controller) ||
-                    position_controller_is_active(&position_controller);
+                    (rotor_active_control_flags &
+                     (ROTOR_CONTROL_ACTIVE_ALIGNED_TORQUE |
+                      ROTOR_CONTROL_ACTIVE_VELOCITY |
+                      ROTOR_CONTROL_ACTIVE_POSITION)) != 0u;
 
                 if (app_supervisor_bridge_authorized(&drive_supervisor))
                 {
@@ -3733,19 +3815,23 @@ int main(void)
             diagnostics_due = true;
         }
 
-        watchdog_status = watchdog_supervisor_poll(
-            &watchdog,
-            now,
-            app_supervisor_foreground_service_allowed(&drive_supervisor) &&
-                boot_self_test_ready(&self_test));
-        if (watchdog_status != WATCHDOG_STATUS_READY)
+        if (safety_housekeeping_due)
         {
-            diagnostics_publish((uint32_t)drive_supervisor.state,
-                                now,
-                                heartbeat_count,
-                                (uint32_t)watchdog_status,
-                                &self_test);
-            platform_panic(PANIC_WATCHDOG_LIVENESS);
+            watchdog_status = watchdog_supervisor_poll(
+                &watchdog,
+                now,
+                app_supervisor_foreground_service_allowed(
+                    &drive_supervisor) &&
+                    boot_self_test_ready(&self_test));
+            if (watchdog_status != WATCHDOG_STATUS_READY)
+            {
+                diagnostics_publish((uint32_t)drive_supervisor.state,
+                                    now,
+                                    heartbeat_count,
+                                    (uint32_t)watchdog_status,
+                                    &self_test);
+                platform_panic(PANIC_WATCHDOG_LIVENESS);
+            }
         }
 
         if (diagnostics_due)

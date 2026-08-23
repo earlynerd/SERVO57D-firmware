@@ -1,15 +1,19 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.29.2 source releases encoder reads at 1 kHz from TIM6, performs
-bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
-through DMA channels 2/3, and defers decode/runtime publication through PendSV.
-Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
+Status: firmware 0.32.2 releases encoder reads at 4 kHz from TIM6,
+clocks SPI1 at 8 MHz, performs bounded CS setup/hold timing with TIM7, transfers
+the unchanged four-byte frame through DMA channels 2/3, and defers decode/runtime
+publication through PendSV. The flashed and bench-proven baseline remains the
+500 kHz / 1 kHz transport and release schedule.
+Each candidate acquisition is timestamped when CS is asserted, at the start of
+its coherent four-byte window, and accepted samples feed the shared mechanical
+angle/velocity estimator,
 automatic-alignment and aligned-torque controllers, firmware 0.25.1's bounded
 velocity controller, and firmware 0.26.0's relative-position controller. Native
-protocol 1.12 retains encoder schema 2 and exposes raw health,
+protocol retains encoder schema 2 and exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy
-evidence. The 1 kHz schedule passed its
+evidence. The flashed 1 kHz schedule passed its
 initial idle and active hardware regression; two automatic alignments reproduced
 the accepted geometry and zero exactly, and STOP preserved the valid calibration.
 Aligned torque acquires authority only in the successful-sample path: that
@@ -44,11 +48,12 @@ warning in register `0x05`. Typical sensor power-up time is 16 ms.
 
 ## Implemented transaction
 
-`spi1_init()` configures a conservative 500 kHz-or-lower SPI1 clock. SCK is
+`spi1_init()` configures the staged source candidate for an 8 MHz SPI1 clock;
+the flashed and bench-proven baseline uses a conservative 500 kHz clock. SCK is
 held at its mode-3 high idle level before SPI is enabled. After the MT6816's
 20 ms power-up allowance, the scheduler performs and discards one bounded DMA
-exchange as transport priming, then releases one production sample every 1 ms.
-Every exchange is a single coherent four-byte burst:
+exchange as transport priming, then the candidate releases one production
+sample every 250 us. Every exchange remains a single coherent four-byte burst:
 
 ```text
 MOSI:  0x83  0x00  0x00  0x00
@@ -58,7 +63,12 @@ MISO:  ----  reg03 reg04 reg05
 PB6 remains low for the entire burst. TIM7 provides two-microsecond chip-select
 setup and hold intervals. SPI1 RX/TX DMA channels are armed before their
 requests are exposed; completion and error paths return CS high and the
-scheduler to an explicit idle state.
+scheduler to an explicit idle state. The transaction timestamp is captured at
+CS assertion rather than after DMA completion and the hold guard. At 8 MHz the
+retained 2 us setup, 4 us wire transfer, and 2 us hold put that timestamp about
+8 us earlier than post-hold publication. The exact instant at which the MT6816
+internally latches its angle remains a sensor/hardware detail rather than a
+software timing claim.
 
 The decoder accepts a sample only when the combined 16 bits from registers
 `0x03` and `0x04` have even parity. The published raw angle is:
@@ -78,9 +88,10 @@ is compiled into the product.
 ## Runtime behavior
 
 Encoder initialization and acquisition are active in normal boot. TIM6/TIM7
-and DMA ISRs perform only bounded transport/state work. PendSV validates and
-publishes the frame through `rotor_control_runtime`; foreground consumes
-sequence-protected snapshots and command mailboxes. An SPI or
+and DMA ISRs perform only bounded transport/state work. PendSV validates the
+frame through `rotor_control_runtime`, publishes a compact progress record on
+every release, and publishes full controller state at 100 Hz or on transitions;
+foreground consumes sequence-protected snapshots and command mailboxes. An SPI or
 parity failure does not fail the boot ledger or stop watchdog service, but it
 removes drive readiness and is a fault if authority is active. The foreground
 records the failure and retries at the next sampling period. A
@@ -90,22 +101,28 @@ decoded raw word; consumers must not treat a flagged angle as control-valid.
 The callback-driven controllers already reject individual bad or older-than-2
 ms observations. The separate foreground `encoder_liveness` monitor closes the
 total-silence case in which no callback arrives to perform that check. It tracks
-the sequence-protected snapshot's accepted count and estimator timestamp using
-wrap-safe microsecond arithmetic. No progress for more than 3 ms removes
-`READY`; if diagnostic or motion authority is energized, the supervisor forces
+the sequence-protected progress record's accepted count and estimator timestamp
+using wrap-safe microsecond arithmetic. No progress for more than 3 ms removes
+`READY`; the 1 ms foreground cadence can observe threshold expiry on the next
+poll. If diagnostic or motion authority is energized, the supervisor forces
 the common fault/`ZERO` path. Once stale, the monitor stays not-live until a
 genuinely advanced sample is observed.
 
-Aligned torque, velocity, and position still update their demands from accepted
-1 kHz observations. The current backend independently advances electrical phase
-at each 20 kHz current event, using the filtered mechanical velocity and measured
+Aligned torque, velocity, and position in the source candidate update their
+demands from accepted 4 kHz observations. The velocity-filter alpha changes from
+0.125 at 1 kHz to 0.03283179 at 4 kHz, preserving the existing filter pole over
+elapsed time rather than quadrupling its bandwidth. The position settle
+requirement scales from 50 to 200 accepted samples, retaining its 50 ms duration.
+The current backend independently advances electrical phase at each
+20 kHz current event, using the filtered mechanical velocity and measured
 alignment direction. Controllers refuse feedback timestamp intervals over 2 ms;
 the predictor permits observation age through 3 ms so the completed sample can
-cross bounded PendSV dispatch, but it may not outlive the independent 3 ms
+cross bounded PendSV dispatch. The retained 1 ms difference is four nominal
+250 us releases, and the predictor may not outlive the independent 3 ms
 production guard. Invalid or stale prediction routes through the common fault/
 `ZERO` path; firmware 0.30.1 uses the measured 55 us DMA-to-PWM-application lead.
 
-The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
+The reader reports its latest and maximum accepted-sample intervals. The
 estimator's 20 ms accepted-sample interval threshold
 is a scheduling/feedback validity check, not a motor speed command limit. Its
 20 revolutions/second plausibility threshold is 20 times the current diagnostic
@@ -125,10 +142,24 @@ last accepted raw angle, sensor flags, accepted-sample count, error count, and
 last-attempt timestamp. Native protocol encoder schema 2 appends estimator
 validity/faults, Q16.16 position and velocity, microsecond timestamp, alignment
 zero/direction, Q0.32 electrical phase, and current/maximum sample intervals.
+The estimator timestamp denotes CS assertion/acquisition-window start, not the
+later DMA/hold completion or PendSV publication instant.
 Status values are defined in `mks57d/mt6816.h`; SPI transport values are defined
 in `mks57d/spi_status.h`.
 
 ## Bench result and remaining validation
+
+All qualified hardware results below belong to the flashed 500 kHz / 1 kHz
+baseline. The staged 8 MHz / 4 kHz source candidate has not yet completed
+hardware qualification.
+SPI signal timing and integrity, accepted-sample intervals, stationary and
+low-speed velocity noise, preservation of the filter response, and normal/fault
+behavior under the higher release rate remain pending; no result below is
+evidence for that candidate.
+
+The user's initial 4 kHz observation is encouraging informal bench evidence,
+but it was not a captured qualification run and does not establish interval
+WCET, SPI integrity, estimator noise, preemption margin, or fault behavior.
 
 The displayed and native-protocol raw position tracks shaft motion, remains
 stationary when the shaft is still, and rolls over repeatably at one mechanical
@@ -171,5 +202,5 @@ establishes the per-motor electrical zero transactionally before motion can use
 electrical phase; accepted calibration persists through the dual-slot production
 configuration service. Scheduler latency remains subject to revalidation as
 velocity and position scheduling advance toward the active loop-rate and speed
-requirements; the phase predictor now runs at 20 kHz while its observation
-source remains 1 kHz.
+requirements; the phase predictor runs at 20 kHz while the staged observation
+source is 4 kHz, versus 1 kHz in the flashed and bench-proven baseline.

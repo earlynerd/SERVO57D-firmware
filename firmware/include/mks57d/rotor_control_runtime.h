@@ -32,6 +32,28 @@ enum
     ROTOR_CONTROL_FAULT_SOURCE_POSITION = 1u << 4
 };
 
+enum
+{
+    ROTOR_CONTROL_ACTIVE_NONE = 0u,
+    ROTOR_CONTROL_ACTIVE_ALIGNMENT = 1u << 0,
+    ROTOR_CONTROL_ACTIVE_ALIGNED_TORQUE = 1u << 1,
+    ROTOR_CONTROL_ACTIVE_VELOCITY = 1u << 2,
+    ROTOR_CONTROL_ACTIVE_POSITION = 1u << 3
+};
+
+/* Small coherent publication consumed by the independent foreground guard. */
+typedef struct
+{
+    diagnostics_encoder_t encoder_diagnostics;
+    float estimator_position_revolutions;
+    float estimator_velocity_revolutions_per_second;
+    uint32_t estimator_timestamp_us;
+    uint32_t estimator_fault_flags;
+    uint32_t active_control_flags;
+    uint32_t estimator_initialized;
+    uint32_t full_snapshot_sequence;
+} rotor_control_progress_snapshot_t;
+
 typedef struct
 {
     diagnostics_encoder_t encoder_diagnostics;
@@ -59,8 +81,12 @@ typedef struct
     uint32_t estimator_fault_flags;
     uint32_t estimator_sample_interval_us;
     uint32_t estimator_maximum_sample_interval_us;
+    volatile uint32_t progress_sequence;
+    rotor_control_progress_snapshot_t progress_published;
     volatile uint32_t snapshot_sequence;
     rotor_control_snapshot_t published;
+    uint32_t last_full_snapshot_timestamp_us;
+    bool full_snapshot_timestamp_valid;
     volatile uint32_t request_flags;
     uint16_t requested_alignment_current_counts;
     int16_t requested_q_current_counts;
@@ -117,6 +143,9 @@ uint32_t rotor_control_runtime_take_events(
 bool rotor_control_runtime_get_snapshot(
     const rotor_control_runtime_t* runtime,
     rotor_control_snapshot_t* snapshot);
+bool rotor_control_runtime_get_progress_snapshot(
+    const rotor_control_runtime_t* runtime,
+    rotor_control_progress_snapshot_t* snapshot);
 void rotor_control_runtime_spi_callback(
     void* context,
     spi_status_t transport_status,

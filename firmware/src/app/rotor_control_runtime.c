@@ -21,8 +21,12 @@ enum
     ROTOR_CONTROL_REQUEST_POSITION = 1u << 4,
     ROTOR_CONTROL_ESTIMATOR_FAULT_INVALID_SAMPLE = 1u << 0,
     ROTOR_CONTROL_MT6816_RESPONSE_LENGTH = 4u,
+    ROTOR_CONTROL_FULL_SNAPSHOT_PERIOD_US = 10000u,
     NVIC_PRIORITY_SHIFT = 8u - __NVIC_PRIO_BITS
 };
+
+_Static_assert(sizeof(rotor_control_progress_snapshot_t) <= 64u,
+               "rotor progress publication must remain compact");
 
 static uint32_t runtime_critical_enter(void)
 {
@@ -86,7 +90,55 @@ static rotor_observation_t runtime_observation(
     return observation;
 }
 
-static void publish_snapshot(rotor_control_runtime_t* runtime)
+static uint32_t runtime_active_control_flags(
+    const rotor_control_runtime_t* runtime)
+{
+    uint32_t flags = ROTOR_CONTROL_ACTIVE_NONE;
+
+    if (alignment_controller_is_active(&runtime->alignment_controller))
+    {
+        flags |= ROTOR_CONTROL_ACTIVE_ALIGNMENT;
+    }
+    if (aligned_torque_controller_is_active(&runtime->torque_controller))
+    {
+        flags |= ROTOR_CONTROL_ACTIVE_ALIGNED_TORQUE;
+    }
+    if (velocity_controller_is_active(&runtime->velocity_controller))
+    {
+        flags |= ROTOR_CONTROL_ACTIVE_VELOCITY;
+    }
+    if (position_controller_is_active(&runtime->position_controller))
+    {
+        flags |= ROTOR_CONTROL_ACTIVE_POSITION;
+    }
+    return flags;
+}
+
+static void publish_progress_snapshot(rotor_control_runtime_t* runtime)
+{
+    ++runtime->progress_sequence;
+    __DMB();
+    runtime->progress_published.encoder_diagnostics =
+        runtime->encoder_diagnostics;
+    runtime->progress_published.estimator_position_revolutions =
+        runtime->angle_tracker.position_revolutions;
+    runtime->progress_published.estimator_velocity_revolutions_per_second =
+        runtime->angle_tracker.velocity_revolutions_per_second;
+    runtime->progress_published.estimator_timestamp_us =
+        runtime->angle_tracker.last_timestamp_us;
+    runtime->progress_published.estimator_fault_flags =
+        runtime->estimator_fault_flags;
+    runtime->progress_published.active_control_flags =
+        runtime_active_control_flags(runtime);
+    runtime->progress_published.estimator_initialized =
+        runtime->angle_tracker.initialized ? 1u : 0u;
+    runtime->progress_published.full_snapshot_sequence =
+        runtime->snapshot_sequence;
+    __DMB();
+    ++runtime->progress_sequence;
+}
+
+static void publish_full_snapshot(rotor_control_runtime_t* runtime)
 {
     ++runtime->snapshot_sequence;
     __DMB();
@@ -106,6 +158,23 @@ static void publish_snapshot(rotor_control_runtime_t* runtime)
         runtime->estimator_maximum_sample_interval_us;
     __DMB();
     ++runtime->snapshot_sequence;
+}
+
+static void publish_callback_state(rotor_control_runtime_t* runtime,
+                                   uint32_t timestamp_us,
+                                   bool force_full_snapshot)
+{
+    /* Full controller state is telemetry; progress remains per acquisition. */
+    if (force_full_snapshot ||
+        !runtime->full_snapshot_timestamp_valid ||
+        ((timestamp_us - runtime->last_full_snapshot_timestamp_us) >=
+         ROTOR_CONTROL_FULL_SNAPSHOT_PERIOD_US))
+    {
+        publish_full_snapshot(runtime);
+        runtime->last_full_snapshot_timestamp_us = timestamp_us;
+        runtime->full_snapshot_timestamp_valid = true;
+    }
+    publish_progress_snapshot(runtime);
 }
 
 static bool stop_backend(rotor_control_runtime_t* runtime,
@@ -774,7 +843,10 @@ bool rotor_control_runtime_init(
     runtime->estimator_fault_flags = 0u;
     runtime->estimator_sample_interval_us = 0u;
     runtime->estimator_maximum_sample_interval_us = 0u;
+    runtime->progress_sequence = 0u;
     runtime->snapshot_sequence = 0u;
+    runtime->last_full_snapshot_timestamp_us = 0u;
+    runtime->full_snapshot_timestamp_valid = false;
     runtime->request_flags = 0u;
     runtime->requested_alignment_current_counts = 0u;
     runtime->requested_q_current_counts = 0;
@@ -789,7 +861,8 @@ bool rotor_control_runtime_init(
     runtime->requested_position_duration_millis = 0u;
     runtime->event_flags = 0u;
     runtime->initialized = true;
-    publish_snapshot(runtime);
+    publish_full_snapshot(runtime);
+    publish_progress_snapshot(runtime);
     return true;
 }
 
@@ -948,7 +1021,8 @@ void rotor_control_runtime_force_fault(rotor_control_runtime_t* runtime,
         board_bridge_force_low_zero();
         runtime->event_flags |= ROTOR_CONTROL_EVENT_FAULT;
     }
-    publish_snapshot(runtime);
+    publish_full_snapshot(runtime);
+    publish_progress_snapshot(runtime);
     runtime_critical_exit(previous);
 }
 
@@ -1050,7 +1124,8 @@ bool rotor_control_runtime_clear_faults(
     runtime->requested_position_current_limit_counts = 0u;
     runtime->requested_position_duration_millis = 0u;
     runtime->event_flags = ROTOR_CONTROL_EVENT_NONE;
-    publish_snapshot(runtime);
+    publish_full_snapshot(runtime);
+    publish_progress_snapshot(runtime);
     runtime_critical_exit(previous);
 
     if (cleared_fault_sources != NULL)
@@ -1076,7 +1151,8 @@ bool rotor_control_runtime_clear_alignment(
         return false;
     }
     motor_alignment_clear(&runtime->motor_alignment);
-    publish_snapshot(runtime);
+    publish_full_snapshot(runtime);
+    publish_progress_snapshot(runtime);
     runtime_critical_exit(previous);
     return true;
 }
@@ -1125,6 +1201,33 @@ bool rotor_control_runtime_get_snapshot(
     return true;
 }
 
+bool rotor_control_runtime_get_progress_snapshot(
+    const rotor_control_runtime_t* runtime,
+    rotor_control_progress_snapshot_t* snapshot)
+{
+    uint32_t before;
+    uint32_t after = 0u;
+
+    if ((runtime == NULL) || (snapshot == NULL) ||
+        !runtime->initialized)
+    {
+        return false;
+    }
+    do
+    {
+        before = runtime->progress_sequence;
+        if ((before & 1u) != 0u)
+        {
+            continue;
+        }
+        __DMB();
+        *snapshot = runtime->progress_published;
+        __DMB();
+        after = runtime->progress_sequence;
+    } while ((before != after) || ((after & 1u) != 0u));
+    return true;
+}
+
 void rotor_control_runtime_spi_callback(
     void* context,
     spi_status_t transport_status,
@@ -1136,6 +1239,7 @@ void rotor_control_runtime_spi_callback(
     mt6816_sample_t sample = {0};
     mt6816_status_t encoder_status;
     uint32_t requests;
+    uint32_t events_before;
     uint32_t now_millis;
     bool started = false;
 
@@ -1144,6 +1248,7 @@ void rotor_control_runtime_spi_callback(
         board_bridge_force_low_zero();
         return;
     }
+    events_before = runtime->event_flags;
     now_millis = timebase_millis();
     runtime->encoder_diagnostics.last_attempt_millis = now_millis;
     runtime->encoder_diagnostics.transport_status = transport_status;
@@ -1163,7 +1268,10 @@ void rotor_control_runtime_spi_callback(
         ++runtime->encoder_diagnostics.error_count;
         reject_requests_without_feedback(
             runtime, now_millis, timestamp_us);
-        publish_snapshot(runtime);
+        publish_callback_state(
+            runtime,
+            timestamp_us,
+            runtime->event_flags != events_before);
         return;
     }
 
@@ -1195,7 +1303,10 @@ void rotor_control_runtime_spi_callback(
             ROTOR_CONTROL_ESTIMATOR_FAULT_INVALID_SAMPLE;
         reject_requests_without_feedback(
             runtime, now_millis, timestamp_us);
-        publish_snapshot(runtime);
+        publish_callback_state(
+            runtime,
+            timestamp_us,
+            runtime->event_flags != events_before);
         return;
     }
 
@@ -1204,7 +1315,7 @@ void rotor_control_runtime_spi_callback(
     if ((requests & ROTOR_CONTROL_REQUEST_STOP) != 0u)
     {
         process_stop_request(runtime, now_millis);
-        publish_snapshot(runtime);
+        publish_callback_state(runtime, timestamp_us, true);
         return;
     }
     if ((requests & ROTOR_CONTROL_REQUEST_ALIGNMENT) != 0u)
@@ -1249,5 +1360,8 @@ void rotor_control_runtime_spi_callback(
             update_torque(runtime, &sample, now_millis, timestamp_us);
         }
     }
-    publish_snapshot(runtime);
+    publish_callback_state(
+        runtime,
+        timestamp_us,
+        (requests != 0u) || (runtime->event_flags != events_before));
 }

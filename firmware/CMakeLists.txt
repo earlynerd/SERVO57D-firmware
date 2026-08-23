@@ -13,7 +13,8 @@ target_compile_features(mks57d_future_control PRIVATE c_std_11)
 target_compile_options(mks57d_future_control PRIVATE
     -mcpu=cortex-m4
     -mthumb
-    -mfloat-abi=soft
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=softfp
     -ffunction-sections
     -fdata-sections
     -fno-common
@@ -103,7 +104,8 @@ target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)
 target_compile_options(${FIRMWARE_TARGET} PRIVATE
     -mcpu=cortex-m4
     -mthumb
-    -mfloat-abi=soft
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=softfp
     $<$<COMPILE_LANGUAGE:C>:-ffunction-sections>
     $<$<COMPILE_LANGUAGE:C>:-fdata-sections>
     $<$<COMPILE_LANGUAGE:C>:-fno-common>
@@ -116,14 +118,24 @@ target_compile_options(${FIRMWARE_TARGET} PRIVATE
     $<$<CONFIG:Release>:-Os>
 )
 
-# The ADC/DMA current-control chain has a hard 20 kHz deadline. Keep that
-# interrupt path optimized in diagnostic builds; -O2 appears after the
+# The ADC/DMA current-control path has a hard 20 kHz deadline, and each
+# accepted encoder sample releases the complete PendSV estimator/controller
+# chain. Keep both paths optimized in diagnostic builds; -O2 appears after the
 # target-wide -Og and therefore governs these translation units.
 set_source_files_properties(
     src/app/rotor_control_runtime.c
+    src/control/aligned_torque_controller.c
+    src/control/alignment_controller.c
+    src/control/angle_tracker.c
     src/control/electrical_phase_predictor.c
+    src/control/motor_alignment.c
+    src/control/motion_profile.c
     src/control/phase_current_loop.c
     src/control/phase_current_reference.c
+    src/control/pi_controller.c
+    src/control/position_controller.c
+    src/control/velocity_controller.c
+    src/drivers/mt6816.c
     src/platform/adc1.c
     src/platform/current_loop_backend.c
     src/platform/spi1.c
@@ -137,7 +149,8 @@ set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/n32l406cbl7.ld)
 target_link_options(${FIRMWARE_TARGET} PRIVATE
     -mcpu=cortex-m4
     -mthumb
-    -mfloat-abi=soft
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=softfp
     -nostartfiles
     --specs=nano.specs
     --specs=nosys.specs

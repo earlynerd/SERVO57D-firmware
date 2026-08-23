@@ -3,7 +3,7 @@
 This directory contains the buildable N32L406CBL7 current-regulated product
 image. The current source closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
-1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
+4 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
 motion operation. Firmware 0.30.0 / protocol 1.13 also provides a re-armable
 256-sample SRAM current/timing burst that transfers only after authority ends.
@@ -12,6 +12,16 @@ Firmware 0.30.1 uses its first +8 rev/s timing evidence to replace the nominal
 interval. Firmware 0.31.0 / protocol 1.14 moves current-loop Kp/Ki into the
 versioned product configuration, supports inactive volatile apply/revert, and
 retains explicit dual-slot save as the only tuning-promotion action.
+Firmware 0.32.2 / protocol 1.14 retains those features, raises the encoder SPI
+target to 8 MHz and rotor release to 4 kHz, timestamps observations at CS
+assertion, preserves filter/settling time,
+optimizes the complete deferred-control chain at `-O2`, and enables the
+Cortex-M4F single-precision unit through the `softfp` ABI. The normal 20 kHz
+path reuses its validated immutable configuration and enables TIM2/DWT/preload
+timing capture only for an explicitly armed trace. Rotor publication uses a
+56-byte 4 kHz progress snapshot plus 100 Hz/event-driven full state, and
+foreground safety housekeeping runs at 1 ms while transport draining and raw
+Right-button sampling remain wake-driven.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -91,7 +101,7 @@ expanded-current hardware gates remain pending.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
 - PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.13 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy and predictor evidence, velocity state/policy, position state/policy, VBUS telemetry, and the post-authority timing burst; its existing estimator-ready flag is asserted only while this progress evidence is live.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads at an 8 MHz target on a deterministic 4 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; CS assertion timestamps the start of each coherent four-byte window, and PendSV later decodes the completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.14 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy and predictor evidence, velocity state/policy, position state/policy, VBUS telemetry, and the post-authority timing burst; its existing estimator-ready flag is asserted only while this progress evidence is live.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
@@ -141,7 +151,7 @@ expanded-current hardware gates remain pending.
   safe-state production command service.
 - Aligned q-current enters `RUN` motion authority only from a healthy `READY`
   state with valid calibration. It starts the 20 kHz backend at zero, then each
-  accepted 1 kHz encoder sample slews signed q-current and publishes measured
+  accepted 4 kHz encoder sample slews signed q-current and publishes measured
   phase/velocity to the backend. Every 20 kHz current event extrapolates phase,
   adds the q-axis 90 degrees, and regenerates A/B references. Current, slew,
   velocity, acceleration, prediction age, feedback

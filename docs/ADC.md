@@ -1,12 +1,15 @@
 # ADC Bring-up
 
-Status: firmware 0.30.1 retains the TIM2 compare at 80% of each 20 kHz carrier to
+Status: firmware 0.32.2 retains the TIM2 compare at 80% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 16 MHz, 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.
-Its re-armable trace records the 32 MHz TIM2 trigger phase and
+Its explicitly armed trace records the 32 MHz TIM2 trigger phase and
 trigger-to-DMA-entry latency beside 64 MHz DWT current-ISR timing; it does not
-stream from interrupt context.
+stream from interrupt context. Normal disarmed control does not read TIM2 or
+DWT for trace timing and does not query preload margin; capture starts on the
+first complete ADC transaction after arm and stops when the trace fills,
+authority stops, or a fault occurs.
 ADC/DMA configuration and arming still finish before the PWM timers start.
 Firmware averages 32 bridge-zeroed startup snapshots for independent A/B
 offsets, then the OLED shows both signed currents as compact `A+#####mA` and
@@ -195,9 +198,10 @@ Remaining analog work is to characterize temperature and unit-to-unit gain
 tolerance, amplifier settling/bandwidth and clipping, and repeat across bus
 voltage. Switching-correlated offset or noise should be quantified beyond
 the successful current operating point. The 80%-phase trigger should still be
-externally checked for switching-edge contamination. The internal burst now
-quantifies trigger delivery, ISR latency, and conversion/control completion
-relative to the application boundary.
+externally checked for switching-edge contamination. When explicitly armed,
+the internal burst quantifies trigger delivery, ISR latency, and
+conversion/control completion relative to the application boundary. Those
+optional timer/cycle reads are dormant during ordinary control.
 Analog-watchdog thresholds and production calibration/tolerance for the active
 `vBus` measurement remain current/voltage-envelope work.
 

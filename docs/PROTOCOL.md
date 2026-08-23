@@ -1,6 +1,6 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.14 is implemented in firmware 0.31.0 source;
+Status: native protocol 1.14 is implemented in firmware 0.32.2 source;
 firmware 0.30.3 / protocol 1.13 is flashed. Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -270,16 +270,18 @@ inventory; they are not motor speed, current, or physical travel limits.
 persisted or newly accepted alignment, healthy timestamped encoder feedback,
 initialized current control, Right button released, no fault, and no other active or
 pending drive operation. It enters `RUN` with motion authority and starts the
-20 kHz backend at zero reference. Every accepted 1 kHz encoder sample validates
+20 kHz backend at zero reference. Every accepted 4 kHz encoder sample validates
 and slews signed q-current, then publishes measured electrical phase, filtered
-mechanical velocity, direction, and timestamp to the backend. Every 20 kHz
-current event extrapolates phase to the measured PWM application boundary and regenerates
-the A/B phase references through the same bounded current PI and bridge shutdown
-path used by alignment and the production diagnostic. The outer controllers
-still accept at most 2,000 us between feedback timestamps. The 20 kHz predictor
-allows age through 3,000 us so completion-to-PendSV dispatch has one nominal
-encoder period of bounded headroom, but never outlives the independent 3,000 us
-encoder-production guard. Invalid or older prediction faults to `ZERO`.
+mechanical velocity, direction, and the CS-assertion timestamp marking the start
+of the coherent four-byte acquisition window to the backend. Every 20 kHz
+current event extrapolates phase to the measured PWM application boundary and
+regenerates the A/B phase references through the same bounded current PI and
+bridge shutdown path used by alignment and the production diagnostic. The outer
+controllers still accept at most 2,000 us between feedback timestamps. The 20 kHz predictor
+allows age through 3,000 us, leaving four nominal 250 us accepted-sample
+releases of predictor dispatch headroom beyond the controllers' 2,000 us
+limit, but never outliving the independent 3,000 us encoder-production guard.
+Invalid or older prediction faults to `ZERO`.
 Positive q-current maps to `A=-Iq*sin(theta), B=Iq*cos(theta)` under the
 accepted motor convention.
 
@@ -350,7 +352,7 @@ response is 72 bytes.
 `START_VELOCITY` is accepted only from supervisor `READY` under the same
 alignment, encoder, current-backend, Right-button, and exclusivity gates as aligned
 q-current. It enters `RUN`, starts the aligned actuator at zero q-current, and
-then executes once for every newly accepted 1 kHz rotor observation. The
+then executes once for every newly accepted 4 kHz rotor observation. The
 controller slews its velocity reference independently, applies a PI controller
 with anti-windup at the caller's current limit, and updates the existing
 slew-limited aligned-q-current target. It has no direct bridge-register or PWM
@@ -417,7 +419,8 @@ the profile ceiling. Feedback is independently limited to 20 rev/s and
 feedback, numeric failure, actuator/backend failure, or readiness loss faults
 and converges on `ZERO`. Completion requires the reference profile at target,
 measured position within 0.002 revolution, and measured speed within 0.02
-rev/s for 50 consecutive samples. Deadline expiration releases authority
+rev/s for 200 consecutive 4 kHz samples (about 50 ms). Deadline expiration
+releases authority
 normally but reports result `deadline`, not successful `settled`. Generic STOP
 and the physical Right button report `stopped` and release normally.
 
@@ -461,9 +464,16 @@ controlled alignment procedure accepts calibration, alignment/electrical-phase
 flags remain clear and their numeric fields must not be used for control.
 In firmware 0.26.1 and later, estimator-ready also means the foreground has
 observed accepted encoder production advance within the 3 ms liveness deadline.
+Firmware 0.32.1 timestamps each observation at CS assertion, the start of the
+coherent four-byte acquisition window, rather than at post-hold publication;
+sample intervals therefore measure acquisition start to acquisition start.
+Firmware 0.32.2 changes only internal publication cadence: compact progress is
+available to foreground at 4 kHz and full controller state at 100 Hz or on
+transitions. Command replies still take a coherent full snapshot, and no wire
+field, schema, command, or protocol-version change results.
 The raw sample count, last-attempt time, estimator timestamp, and interval
 fields retain their existing encodings; no schema or protocol-version bump is
-needed for the tightened readiness semantics.
+needed for the tightened readiness or acquisition-timestamp semantics.
 
 | Body offset | Type | Encoder schema-2 field |
 | ---: | --- | --- |
@@ -478,7 +488,7 @@ needed for the tightened readiness semantics.
 | 18 | `u8` | Estimator-ready, alignment-valid, and electrical-phase-valid flags |
 | 19 | `i32` | Unwrapped mechanical position, Q16.16 revolutions |
 | 23 | `i32` | Filtered mechanical velocity, Q16.16 revolutions/second |
-| 27 | `u32` | Estimator sample timestamp in microseconds, wrapping naturally |
+| 27 | `u32` | Estimator sample acquisition-start timestamp in microseconds, captured at CS assertion and wrapping naturally |
 | 31 | `u32` | Estimator fault flags |
 | 35 | `u16` | Accepted electrical-zero raw count |
 | 37 | `i8` | Encoder direction for increasing electrical phase: `-1`, `0` unknown, `+1` |

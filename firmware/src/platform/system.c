@@ -6,6 +6,11 @@
 #include "mks57d/panic.h"
 #include "n32l40x.h"
 
+_Static_assert(__FPU_PRESENT == 1u,
+               "the product target requires a Cortex-M4F FPU");
+_Static_assert(__FPU_USED == 1u,
+               "the product target must compile for hardware floating point");
+
 enum
 {
     PLATFORM_MSI_HZ = 4000000u,
@@ -183,6 +188,8 @@ void SystemInit(void)
 {
 #if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
     SCB->CPACR |= (3UL << (10u * 2u)) | (3UL << (11u * 2u));
+    __DSB();
+    __ISB();
 #endif
 
     g_platform_boot_diagnostics.initial_rcc_ctrl = RCC->CTRL;

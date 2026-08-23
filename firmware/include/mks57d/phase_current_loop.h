@@ -69,6 +69,14 @@ bool phase_current_loop_set_reference_counts(
     const phase_current_loop_config_t* config,
     int16_t current_a_reference_counts,
     int16_t current_b_reference_counts);
+/* Current-backend hot-path variant. The caller must have validated config and
+ * must keep it immutable until the loop stops. Runtime state, fault, and
+ * reference-limit checks remain enforced. */
+bool phase_current_loop_set_reference_counts_prevalidated(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    int16_t current_a_reference_counts,
+    int16_t current_b_reference_counts);
 bool phase_current_loop_start(phase_current_loop_t* loop);
 void phase_current_loop_stop(phase_current_loop_t* loop);
 bool phase_current_loop_step(phase_current_loop_t* loop,
@@ -76,5 +84,14 @@ bool phase_current_loop_step(phase_current_loop_t* loop,
                              uint16_t current_a_raw,
                              uint16_t current_b_raw,
                              phase_current_loop_output_t* output);
+/* Current-backend hot-path variant with the same prevalidated-config contract
+ * as phase_current_loop_set_reference_counts_prevalidated(). Raw ADC,
+ * overcurrent, output, runtime-state, and fault checks remain enforced. */
+bool phase_current_loop_step_prevalidated(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    uint16_t current_a_raw,
+    uint16_t current_b_raw,
+    phase_current_loop_output_t* output);
 
 #endif

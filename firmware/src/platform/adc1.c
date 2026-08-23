@@ -98,6 +98,8 @@ static volatile adc1_status_t s_synchronous_status =
     ADC1_STATUS_NOT_READY;
 static volatile adc1_current_snapshot_t s_latest_current_snapshot;
 static volatile uint16_t s_current_trigger_timer_count;
+static volatile bool s_current_timing_capture_enabled;
+static volatile bool s_current_timing_capture_pending;
 static adc1_current_event_handler_t s_current_event_handler;
 static void* s_current_event_context;
 static volatile uint16_t
@@ -189,6 +191,8 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
     s_current_trigger_timer_count = 0u;
+    s_current_timing_capture_enabled = false;
+    s_current_timing_capture_pending = false;
     s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NOT_READY;
     s_current_event_handler = NULL;
@@ -306,6 +310,8 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
     s_current_trigger_timer_count = 0u;
+    s_current_timing_capture_enabled = false;
+    s_current_timing_capture_pending = false;
     s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
     DMA_CH1->PADDR = (uint32_t)(uintptr_t)&ADC->DAT;
@@ -390,6 +396,8 @@ adc1_status_t adc1_restart_pwm_synchronized_current(void)
     ADC->STS = 0u;
     s_synchronous_current_started = false;
     s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
+    s_current_timing_capture_enabled = false;
+    s_current_timing_capture_pending = false;
     __DSB();
 
     return adc1_start_pwm_synchronized_current();
@@ -422,6 +430,7 @@ adc1_status_t adc1_read_synchronized_current(
         uint16_t trigger_timer_count;
         uint16_t trigger_to_dma_timer_ticks;
         uint32_t dma_entry_cycle_count;
+        bool timing_valid;
 
         if ((sequence_before == 0u) ||
             ((sequence_before & 1u) != 0u) ||
@@ -439,6 +448,7 @@ adc1_status_t adc1_read_synchronized_current(
             s_latest_current_snapshot.trigger_to_dma_timer_ticks;
         dma_entry_cycle_count =
             s_latest_current_snapshot.dma_entry_cycle_count;
+        timing_valid = s_latest_current_snapshot.timing_valid;
         __DMB();
         if (sequence_before == s_current_snapshot_sequence)
         {
@@ -454,6 +464,7 @@ adc1_status_t adc1_read_synchronized_current(
             output->trigger_to_dma_timer_ticks =
                 trigger_to_dma_timer_ticks;
             output->dma_entry_cycle_count = dma_entry_cycle_count;
+            output->timing_valid = timing_valid;
             s_last_read_snapshot_sequence = sequence_before;
             return ADC1_STATUS_OK;
         }
@@ -514,33 +525,78 @@ bool adc1_set_current_event_handler(
     return true;
 }
 
+bool adc1_set_current_timing_capture(bool enabled)
+{
+    if (enabled && !s_synchronous_current_started)
+    {
+        return false;
+    }
+
+    if (enabled)
+    {
+        /* A conversion already in flight must not inherit a trigger timestamp
+           from before this arm transaction. Its snapshot remains invalid and
+           the following complete transaction is captured. */
+        s_current_timing_capture_pending = false;
+        __DMB();
+        s_current_timing_capture_enabled = true;
+    }
+    else
+    {
+        s_current_timing_capture_enabled = false;
+        __DMB();
+        s_current_timing_capture_pending = false;
+    }
+    __DMB();
+    return true;
+}
+
 bool adc1_trigger_synchronized_current_from_isr(void)
 {
-    uint16_t trigger_timer_count;
-
     if (!s_synchronous_current_started ||
         ((ADC->STS & ADC_STS_STR) != 0u))
     {
         return false;
     }
 
-    trigger_timer_count = tim2_current_trigger_counter();
+    if (s_current_timing_capture_enabled)
+    {
+        s_current_trigger_timer_count =
+            tim2_current_trigger_counter();
+        s_current_timing_capture_pending = true;
+    }
+    else
+    {
+        s_current_timing_capture_pending = false;
+    }
     ADC->CTRL2 |= ADC_CTRL2_SWSTRRCH;
-    s_current_trigger_timer_count = trigger_timer_count;
     return true;
 }
 
 void DMA_Channel1_IRQHandler(void)
 {
-    const uint16_t dma_entry_timer_count =
-        tim2_current_trigger_counter();
-    const uint32_t dma_entry_cycle_count = cycle_counter_read();
-    const uint32_t flags = DMA->INTSTS;
+    const bool timing_valid = s_current_timing_capture_enabled &&
+                              s_current_timing_capture_pending;
+    uint16_t dma_entry_timer_count = 0u;
+    uint32_t dma_entry_cycle_count = 0u;
+    uint32_t flags;
     adc1_current_event_handler_t handler;
     void* context;
 
+    /* When armed, take the timing marks before ordinary interrupt work so
+       dma_entry retains its diagnostic meaning. The normal path skips both
+       peripheral/cycle-counter reads. */
+    if (timing_valid)
+    {
+        dma_entry_timer_count = tim2_current_trigger_counter();
+        dma_entry_cycle_count = cycle_counter_read();
+    }
+    flags = DMA->INTSTS;
+
     if ((flags & DMA_INTSTS_ERRF1) != 0u)
     {
+        s_current_timing_capture_enabled = false;
+        s_current_timing_capture_pending = false;
         DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
         DMA_CH1->CHCFG &= ~((uint32_t)DMA_CHCFG1_CHEN);
         s_synchronous_status = ADC1_STATUS_DMA_ERROR;
@@ -558,15 +614,19 @@ void DMA_Channel1_IRQHandler(void)
     {
         adc1_current_snapshot_t snapshot;
 
+        s_current_timing_capture_pending = false;
         DMA->INTCLR = DMA_INTCLR_CTXCF1 | DMA_INTCLR_CGLBF1;
         snapshot.current_b_raw = s_current_dma_buffer[0];
         snapshot.current_a_raw = s_current_dma_buffer[1];
-        snapshot.trigger_timer_count = s_current_trigger_timer_count;
-        snapshot.trigger_to_dma_timer_ticks =
+        snapshot.trigger_timer_count = timing_valid ?
+            s_current_trigger_timer_count : 0u;
+        snapshot.trigger_to_dma_timer_ticks = timing_valid ?
             tim2_current_trigger_elapsed_ticks(
                 snapshot.trigger_timer_count,
-                dma_entry_timer_count);
-        snapshot.dma_entry_cycle_count = dma_entry_cycle_count;
+                dma_entry_timer_count) : 0u;
+        snapshot.dma_entry_cycle_count = timing_valid ?
+            dma_entry_cycle_count : 0u;
+        snapshot.timing_valid = timing_valid;
         /* STR records that a regular conversion started; it is not a live
            busy bit. The N32L40x manual requires software to clear it. Clear
            the completed sequence flags here so the next timed software
@@ -579,6 +639,8 @@ void DMA_Channel1_IRQHandler(void)
         if ((snapshot.current_b_raw > ADC_SAMPLE_RAW_MAX) ||
             (snapshot.current_a_raw > ADC_SAMPLE_RAW_MAX))
         {
+            s_current_timing_capture_enabled = false;
+            s_current_timing_capture_pending = false;
             DMA_CH1->CHCFG &= ~((uint32_t)DMA_CHCFG1_CHEN);
             s_synchronous_status = ADC1_STATUS_DATA_OUT_OF_RANGE;
             s_synchronous_current_started = false;

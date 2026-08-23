@@ -1,12 +1,15 @@
 # Firmware Architecture
 
-Status: firmware 0.31.0 source implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.32.2 source implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
-fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
-deterministic 1 kHz encoder/rotor service; a 606 mA five-second aligned-q-current
-run completed with zero encoder, DMA, estimator, backend, control, reset, or
-panic faults. Firmware 0.24.14 removes the completed local phase-selector and
+fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV own the
+deterministic encoder/rotor service; the 0.32.2 source stages it at 8 MHz SPI and
+4 kHz while the flashed 1 kHz baseline remains the formally proven point. Each
+candidate acquisition is timestamped when CS asserts at the start of its
+coherent four-byte window, rather than when post-hold publication completes. A
+606 mA five-second baseline run completed with zero encoder, DMA, estimator,
+backend, control, reset, or panic faults. Firmware 0.24.14 removes the completed local phase-selector and
 direct fixed-duty PWM bring-up path while retaining the rotating-current
 operation as a supervisor-authorized RS-485 production diagnostic. Firmware
 0.24.15 makes
@@ -33,6 +36,12 @@ Firmware 0.30.1 predicts aligned phase to the measured PWM application
 boundary. Firmware 0.31.0 makes current-loop gains a safe-state product
 configuration: trials are volatile, persistence remains a separate foreground
 transaction, and active control still has one immutable configuration.
+Firmware 0.32.2 reuses that validated immutable configuration in the 20 kHz
+step instead of rescanning it, gates TIM2/DWT/preload instrumentation behind an
+explicit trace arm, and replaces the 4 kHz full-controller publication with a
+56-byte progress record plus 100 Hz/event-driven full state. Foreground safety
+housekeeping consumes progress at 1 ms; raw Right-button sampling and RS-485
+draining remain wake-driven.
 
 ## Design priorities
 
@@ -67,15 +76,26 @@ The current image implements:
   reconciliation across nested interrupt priorities and normal uint32 wrap.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder on a
-  timestamped 1 kHz TIM6/TIM7/SPI-DMA schedule with PendSV-deferred decode,
+  4 kHz TIM6/TIM7/SPI-DMA schedule at an 8 MHz SPI target. The observation
+  timestamp is captured at CS assertion, the start of the coherent four-byte
+  acquisition window, before PendSV-deferred decode,
   feeding the shared angle unwrap and
   velocity estimator and reporting current/maximum observed sample intervals.
+- A sequence-protected 56-byte rotor progress publication at 4 kHz containing
+  encoder production, estimator health/timestamp, active-control flags, and
+  full-snapshot generation. The 576-byte full controller snapshot publishes at
+  100 Hz and on requests, faults, events, clears, and initialization.
 - A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
   sustained 50 Hz two-page transactions are proven and the current-loop display uses 5 Hz.
 - A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM2-compare-triggered
   20 kHz `currentB`/`currentA` sequence captured by circular DMA channel 1, with
   a following automatic-injected PA3 VBUS conversion and host-tested schematic-
   derived engineering conversion using runtime reference and zeros.
+- A 20 kHz fixed-point current step that retains raw-range, hard-current,
+  reference, output-duty, PWM readback, and deadline checks while treating the
+  active backend-owned configuration as already validated and immutable.
+  TIM2/DWT/preload timing fields are captured only while the explicit one-shot
+  current trace is armed.
 - A receive-first USART1 transport with circular RX DMA, bounded foreground
   draining, DMA TX, and line-complete PC13 turnaround.
 - A host-tested transport-independent command service and native v1 COBS/CRC
@@ -100,10 +120,11 @@ The current image implements:
   through an inactive, fault-free foreground transaction that first establishes
   `ZERO`; the 20 kHz ISR never observes a partial configuration.
 - A fixed-point electrical-phase predictor owned by the current backend. Each
-  accepted 1 kHz observation supplies measured phase, filtered mechanical
-  velocity, direction, and timestamp; each 20 kHz current event extrapolates to
-  the measured PWM application boundary, regenerates the q-axis A/B references, and
-  faults through the common `ZERO` path if observation age exceeds 3 ms.
+  accepted 4 kHz observation supplies measured phase, filtered mechanical
+  velocity, direction, and acquisition-start timestamp; each 20 kHz current
+  event extrapolates to the measured PWM application boundary, regenerates the
+  q-axis A/B references, and faults through the common `ZERO` path if
+  observation age exceeds 3 ms.
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
   diagnostic and motion authority, and bridge deauthorization on faults.
@@ -132,7 +153,8 @@ The current image implements:
 - A focused relative-position controller that begins near rest, advances a
   bounded trapezoidal reference, retains independent travel, acceleration,
   following-error, settling, feedback-age, current, and deadline contracts,
-  and drives only dynamic targets into the product velocity controller.
+  requires 200 settled samples at 4 kHz (about 50 ms), and drives only dynamic
+  targets into the product velocity controller.
 - An encoder-production liveness monitor independent of the callback-driven
   controller updates. If accepted sample evidence does not advance within 3
   ms, idle readiness is removed; any energized diagnostic or motion authority
@@ -233,9 +255,11 @@ flowchart LR
 ## Real-time timing domains
 
 - **PWM/current ISR:** initiated by a deterministic ADC completion event; reads one accepted current sample, applies current-loop limits, and prepares the next PWM preload values.
-- **Encoder transport ISRs:** TIM6 releases the 1 kHz transaction, TIM7 bounds
-  CS setup/hold, and SPI DMA completion publishes deferred work. PendSV decodes
-  and advances the rotor runtime; foreground consumes snapshots and mailboxes.
+- **Encoder transport ISRs:** TIM6 releases the 4 kHz transaction and timestamps
+  the observation when CS asserts at the start of the coherent four-byte
+  acquisition window. TIM7 bounds CS setup/hold, SPI DMA completion publishes
+  deferred work, and PendSV decodes and advances the rotor runtime; foreground
+  consumes snapshots and mailboxes.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
 - **Communications/background:** parses complete frames outside the current ISR,
   maintains diagnostics, applies or reverts volatile tuning only from a safe
@@ -248,9 +272,9 @@ authority. The old slot remains valid throughout the new-slot transaction.
 
 The active current loop runs at 20 kHz from DMA completion after a TIM2 compare
 at 80% of the TIM3 carrier. Encoder acquisition is timer-released through SPI
-DMA at 1 kHz, with decode and aligned-q-current updates deferred through PendSV
-below the hard real-time current path. See [Real-time and control
-architecture](REALTIME_ARCHITECTURE.md).
+DMA at 4 kHz (250 us nominal period), with decode and aligned-q-current updates
+deferred through PendSV below the hard real-time current path. See [Real-time
+and control architecture](REALTIME_ARCHITECTURE.md).
 
 ## Product application states
 

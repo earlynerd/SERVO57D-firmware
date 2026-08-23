@@ -9,9 +9,9 @@
 
 enum
 {
-    SPI1_TARGET_CLOCK_HZ = 500000u,
+    SPI1_TARGET_CLOCK_HZ = 8000000u,
     SPI1_MAX_TRANSFER_BYTES = 8u,
-    SPI1_PERIODIC_FREQUENCY_HZ = 1000u
+    SPI1_PERIODIC_FREQUENCY_HZ = 4000u
 };
 
 typedef void (*spi1_periodic_exchange_callback_t)(

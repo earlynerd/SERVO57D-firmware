@@ -100,6 +100,8 @@ static void* s_periodic_callback_context;
 static volatile spi_status_t s_deferred_status = SPI_STATUS_NOT_READY;
 static volatile uint32_t s_deferred_timestamp_us;
 static volatile uint32_t s_deferred_pending;
+static volatile uint32_t s_periodic_acquisition_timestamp_us;
+static volatile bool s_periodic_acquisition_timestamp_valid;
 static bool s_periodic_first_release;
 static bool s_periodic_prime_pending;
 
@@ -178,10 +180,18 @@ static void periodic_timer7_start(uint16_t microseconds)
     TIM7->CTRL1 = TIM_CTRL1_ONEPM | TIM_CTRL1_CNTEN;
 }
 
-static void periodic_publish(spi_status_t status)
+static uint32_t periodic_acquisition_timestamp_or_now(void)
+{
+    return s_periodic_acquisition_timestamp_valid ?
+        s_periodic_acquisition_timestamp_us : timebase_micros();
+}
+
+static void periodic_publish(spi_status_t status, uint32_t timestamp_us)
 {
     size_t index;
-    const uint32_t timestamp_us = timebase_micros();
+
+    s_periodic_acquisition_timestamp_us = 0u;
+    s_periodic_acquisition_timestamp_valid = false;
 
     /* The N32L40x DMA has demonstrated a one-transfer startup anomaly on both
        ADC and SPI paths. Exercise and discard exactly one bounded exchange
@@ -209,7 +219,7 @@ static void periodic_publish(spi_status_t status)
 
 }
 
-static void periodic_fail_transfer(spi_status_t status)
+static void periodic_fail_transfer(spi_status_t status, uint32_t timestamp_us)
 {
     periodic_dma_disable();
     DMA->INTCLR = SPI_DMA_CHANNEL2_ALL_INTERRUPT_FLAGS |
@@ -218,14 +228,16 @@ static void periodic_fail_transfer(spi_status_t status)
     TIM7->STS = 0u;
     periodic_chip_select_high();
     s_periodic_state = SPI_PERIODIC_STATE_IDLE;
-    periodic_publish(status);
+    periodic_publish(status, timestamp_us);
 }
 
 static void periodic_begin_dma(void)
 {
     if ((SPI1->STS & SPI_ERROR_MASK) != 0u)
     {
-        periodic_fail_transfer(SPI_STATUS_PERIPHERAL_ERROR);
+        periodic_fail_transfer(
+            SPI_STATUS_PERIPHERAL_ERROR,
+            periodic_acquisition_timestamp_or_now());
         return;
     }
 
@@ -348,6 +360,8 @@ bool spi1_periodic_exchange_start(
     s_deferred_status = SPI_STATUS_NOT_READY;
     s_deferred_timestamp_us = 0u;
     s_deferred_pending = 0u;
+    s_periodic_acquisition_timestamp_us = 0u;
+    s_periodic_acquisition_timestamp_valid = false;
     s_periodic_first_release = true;
     s_periodic_prime_pending = true;
 
@@ -446,6 +460,8 @@ static void periodic_exchange_stop(void)
     periodic_chip_select_high();
     s_periodic_state = SPI_PERIODIC_STATE_STOPPED;
     s_deferred_pending = 0u;
+    s_periodic_acquisition_timestamp_us = 0u;
+    s_periodic_acquisition_timestamp_valid = false;
     s_periodic_prime_pending = false;
 }
 
@@ -463,15 +479,20 @@ void TIM6_IRQHandler(void)
     }
     if (s_periodic_state != SPI_PERIODIC_STATE_IDLE)
     {
-        periodic_fail_transfer(SPI_STATUS_BUS_BUSY);
+        periodic_fail_transfer(SPI_STATUS_BUS_BUSY, timebase_micros());
         return;
     }
 
     if (!periodic_receive_path_clear())
     {
-        periodic_fail_transfer(SPI_STATUS_PERIPHERAL_ERROR);
+        periodic_fail_transfer(
+            SPI_STATUS_PERIPHERAL_ERROR, timebase_micros());
         return;
     }
+    /* Capture immediately before asserting CS so higher-priority preemption
+       cannot make the coherent acquisition window appear newer than it is. */
+    s_periodic_acquisition_timestamp_us = timebase_micros();
+    s_periodic_acquisition_timestamp_valid = true;
     GPIOB->PBC = (uint32_t)SPI_GPIO_CS_MASK;
     s_periodic_state = SPI_PERIODIC_STATE_CS_SETUP;
     periodic_timer7_start(SPI_CHIP_SELECT_GUARD_US);
@@ -492,11 +513,14 @@ void TIM7_IRQHandler(void)
 
         periodic_chip_select_high();
         s_periodic_state = SPI_PERIODIC_STATE_IDLE;
-        periodic_publish(status);
+        periodic_publish(
+            status, periodic_acquisition_timestamp_or_now());
     }
     else if (s_periodic_state != SPI_PERIODIC_STATE_STOPPED)
     {
-        periodic_fail_transfer(SPI_STATUS_PERIPHERAL_ERROR);
+        periodic_fail_transfer(
+            SPI_STATUS_PERIPHERAL_ERROR,
+            periodic_acquisition_timestamp_or_now());
     }
 }
 
@@ -507,7 +531,9 @@ void DMA_Channel2_IRQHandler(void)
     if ((flags & DMA_INTSTS_ERRF2) != 0u)
     {
         DMA->INTCLR = SPI_DMA_CHANNEL2_ALL_INTERRUPT_FLAGS;
-        periodic_fail_transfer(SPI_STATUS_PERIPHERAL_ERROR);
+        periodic_fail_transfer(
+            SPI_STATUS_PERIPHERAL_ERROR,
+            periodic_acquisition_timestamp_or_now());
         return;
     }
     if ((flags & DMA_INTSTS_TXCF2) != 0u)
@@ -526,7 +552,9 @@ void DMA_Channel3_IRQHandler(void)
     if ((flags & DMA_INTSTS_ERRF3) != 0u)
     {
         DMA->INTCLR = SPI_DMA_CHANNEL3_ALL_INTERRUPT_FLAGS;
-        periodic_fail_transfer(SPI_STATUS_PERIPHERAL_ERROR);
+        periodic_fail_transfer(
+            SPI_STATUS_PERIPHERAL_ERROR,
+            periodic_acquisition_timestamp_or_now());
     }
     else if ((flags & DMA_INTSTS_TXCF3) != 0u)
     {

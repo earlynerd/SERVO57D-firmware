@@ -1,8 +1,9 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.31.0 source implements the fast current path, production alignment,
-safe-state configuration maintenance, the first aligned torque-current motion
-client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
+Status: firmware 0.32.2 implements the fast current path, production
+alignment, safe-state configuration maintenance, the first aligned torque-current
+motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
+Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
 current control, and the carrier deadline guardian remain the project-owned
 backend. Firmware 0.24.14 removes the local fixed-duty characterization path;
@@ -12,7 +13,7 @@ immutable observation boundary used by slower loops. Firmware 0.25.1 runs the
 first bounded velocity PI once per accepted rotor observation and maps its
 mechanical effort through the persisted alignment direction before routing it
 through the existing aligned-q-current actuator. Firmware 0.26.0 adds focused
-relative position on the same 1 kHz accepted-sample release, and firmware
+relative position on the same accepted-sample release, and firmware
 0.26.1 adds an independent foreground encoder-production deadline. This
 document defines those boundaries and the route to faster outer loops. Firmware
 0.27.1 turns each accepted encoder phase/velocity observation into a bounded
@@ -35,7 +36,17 @@ velocity, and torque deadline ordering.
 Firmware 0.31.0 adds an inactive-only current-gain rebuild: foreground
 establishes `ZERO`, validates a complete candidate, resets controller state,
 and publishes it before any later authority can start. Active fast control
-remains immutable.
+remains immutable. The current source candidate releases the four-byte MT6816
+exchange every 250 us at an 8 MHz SPI clock with the established chip-select
+guards retained, optimizes the complete deferred estimator/control chain at
+`-O2` even in Debug, and uses the Cortex-M4F single-precision hardware through
+the `softfp` ABI. These outer-path changes do not alter the fixed-point 20 kHz
+current path and remain pending hardware timing and numerical acceptance.
+Firmware 0.32.2 treats that active backend-owned configuration as already
+validated in the fast step, leaves timing instrumentation dormant until an
+explicit trace arm, publishes compact rotor progress at 4 kHz and full
+controller state at 100 Hz or on transitions, and schedules foreground safety
+housekeeping at 1 ms. Immediate ISR/runtime fault shutdown is unchanged.
 
 ## Goals
 
@@ -96,8 +107,10 @@ Every ISR must meet these rules:
 - Maintain per-source counts for invocation, error, overrun, and maximum observed duration.
 
 Firmware 0.30.0 implements the first bounded fast-path measurement channel.
-The 256-entry one-shot trace can be re-armed from foreground during active
-motion. TIM2, clocked continuously at 32 MHz, records ADC trigger phase and
+The 256-entry one-shot trace can be armed from foreground during active
+motion. In firmware 0.32.2 its timing reads are dormant before that explicit
+arm and after the buffer fills, authority stops, or a fault occurs. TIM2,
+clocked continuously at 32 MHz, then records ADC trigger phase and
 trigger-to-DMA-entry latency. The 64 MHz DWT counter records end-to-end
 DMA-entry-to-PWM-stage and DMA-entry-to-trace-preparation cycles, including any
 higher-priority guardian preemption, while TIM3
@@ -115,7 +128,8 @@ fixed buffer occupies 8,192 bytes of SRAM1.
 | --- | --- | --- | --- |
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
 | Raw VBUS sample | ADC automatic-injected completion | Foreground telemetry | Latest completed injected register plus validity and an accepted-sample count; never a current-loop prerequisite |
-| Encoder angle/status/timestamp | PendSV-deferred rotor runtime after SPI DMA | Supervisor, diagnostics, and motion control | Sequence-numbered snapshot; readers retry if publication changes |
+| Encoder progress | TIM6 captures time at CS assertion; PendSV-deferred rotor runtime publishes after SPI DMA/hold | Foreground liveness, readiness, and state invariants | A sequence-protected 56-byte record publishes at 4 kHz with encoder production, coherent estimator position/velocity/timestamp/health, active-control flags, and full-snapshot generation |
+| Full rotor/controller status | PendSV-deferred rotor runtime | Commands, telemetry, and diagnostics | A sequence-protected 576-byte snapshot publishes at 100 Hz and on requests, faults, events, clears, and initialization; foreground consumes it at 100 Hz or when progress reports a new generation |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
@@ -180,10 +194,15 @@ still requires a channel-budget and latency review.
   takes about 2.5 microseconds and VBUS takes about 4.25 microseconds, leaving a
   nominal 3.25 microseconds before the next carrier trigger. Hardware must
   confirm both voltage plausibility and unchanged current-loop deadline margin.
-- **Encoder SPI:** TIM6 releases a 1 kHz transaction, TIM7 enforces CS setup and
-  hold, DMA channels 2/3 move the fixed four-byte frame, and PendSV performs
-  decode/runtime work. One post-power-up exchange is explicitly primed and
-  discarded; subsequent errors are reported normally.
+- **Encoder SPI:** TIM6 releases a 4 kHz transaction every 250 us and captures
+  its timestamp when CS is asserted. TIM7 enforces
+  the retained CS setup and hold guards, and DMA channels 2/3 move the fixed
+  four-byte frame at an 8 MHz SPI clock. The 2 us setup, 4 us wire transfer, and
+  2 us hold mean this acquisition-start timestamp is about 8 us earlier than
+  post-hold publication; the sensor's exact internal latch instant remains a
+  hardware detail. PendSV performs decode/runtime work. One post-power-up
+  exchange is explicitly primed and discarded; subsequent errors are reported
+  normally.
 - **USART1/RS-485:** RX and TX DMA eliminate per-byte interrupt work. DMA owns
   byte movement only; framing, CRC, address checks, command validation, timeout
   policy, and PC13 direction turnaround remain explicit software behavior.
@@ -217,27 +236,52 @@ initial targets.
 | --- | ---: | --- | --- |
 | PWM carrier | 20 kHz | TIM3 hardware timer | Bridge waveform and internal sampling events |
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
-| Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
-| Aligned q-current demand/seed | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited q-current plus timestamped phase/velocity observation |
+| Encoder acquisition | 4 kHz | TIM6/TIM7 plus 8 MHz SPI1 DMA channels 2/3 | CS-assertion-timestamped mechanical-angle snapshot and interval telemetry |
+| Aligned q-current demand/seed | 4 kHz | PendSV-deferred accepted encoder sample | Slew-limited q-current plus timestamped phase/velocity observation |
 | Electrical-phase advance and A/B mapping | 20 kHz | ADC DMA completion | Phase predicted to the measured PWM application boundary and fresh A/B current references |
-| Velocity control | 1 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
-| Position control | 1 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
-| Trajectory generation | 1 kHz | Same accepted-sample position update | Bounded position and velocity references |
+| Velocity control | 4 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
+| Position control | 4 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
+| Trajectory generation | 4 kHz | Same accepted-sample position update | Bounded position and velocity references |
 | Communications | Event-driven | USART/DMA plus foreground parser | Validated commands and telemetry requests |
-| Housekeeping | 10–100 Hz | Foreground | Diagnostics, thermal state, and noncritical status |
+| Safety housekeeping | 1 kHz | Foreground | Compact rotor progress, liveness/readiness, runtime events, state invariants, RS-485 health, diagnostic deadline, and watchdog policy |
+| Full rotor telemetry | 100 Hz plus transitions | PendSV publication plus foreground | Controller/estimator status without a 576-byte copy on every rotor release or foreground wake |
+| Noncritical housekeeping | 5–100 Hz | Foreground | Display, diagnostics, thermal state, and noncritical status |
 
 The active 20 kHz rate has completed roughly 160,000 recent fault-free loop
-samples. Firmware 0.24.13 schedules encoder acquisition at 1 kHz, timestamps each
-accepted sample in microseconds, and reports the latest and maximum observed
-interval. The deterministic hardware regression accepted this schedule: idle
-operation held the latest/worst interval to 1000/1001 us with zero errors, and
-a 606 mA five-second aligned-torque run completed 100,000 current-loop updates
-with zero encoder, estimator, DMA, backend, or control faults. Firmware 0.25.1
-adds software-floating-point PI and reference-slew work to the same PendSV
-release. Firmware 0.26.0 adds the position/profile work and passed mirrored
-±0.25-revolution moves with captured 1000 us encoder intervals. Worst-case
-PendSV execution still must be instrumented before substantially increasing
-target speed or outer-loop rate.
+samples. Firmware 0.24.13 introduced encoder acquisition at 1 kHz, timestamped
+each accepted sample in microseconds, and reported the latest and maximum
+observed interval. The corresponding deterministic hardware regression held
+the latest/worst interval to 1000/1001 us with zero errors, and a 606 mA
+five-second aligned-torque run completed 100,000 current-loop updates with zero
+encoder, estimator, DMA, backend, or control faults. Firmware 0.25.1 originally
+added software-floating-point PI and reference-slew work to that PendSV release,
+and firmware 0.26.0 added position/profile work and passed mirrored
+±0.25-revolution moves with captured 1000 us encoder intervals.
+
+The current source candidate replaces that operating point with a 4 kHz,
+250 us release and an 8 MHz four-byte SPI transaction while retaining the
+timer-owned chip-select guards and DMA/PendSV ownership. The complete deferred
+transport, decode, estimation, alignment, torque, velocity, position, PI, and
+profile chain is optimized at `-O2` in Debug, and its floating-point outer
+control uses the hardware single-precision FPU through the `softfp` ABI. The
+4 kHz estimator uses a `0.03283179` velocity-filter alpha, and position requires
+200 settled observations to retain the existing 50 ms settle duration. The
+legacy 1 kHz results do not validate this candidate: worst-case PendSV duration,
+20 kHz current-ISR preemption, SPI/sample integrity, stack high-water use, and
+numerical equivalence remain hardware acceptance gates.
+
+The 0.32.2 hot path skips repeated scans of the backend-owned configuration
+after start or reconfiguration has validated and frozen it. It still checks
+ADC range, independent hard current, references, control state, generated
+duties, PWM register state/readback, and the priority-1 output-generation
+deadline on every applicable pass. Disarmed operation also skips TIM2
+trigger/entry reads, DWT timing reads, and preload-margin acquisition; an
+explicit trace arm restores the complete timing record transaction-coherently.
+
+The user's initial 4 kHz observation is informal bench evidence only. Without a
+captured timing/fault record it does not qualify the new release rate, SPI
+integrity, deferred-chain WCET, preemption margin, estimator noise, or numerical
+behavior.
 
 ## Processor and cycle budget
 
@@ -251,7 +295,7 @@ instrumentation remains release work:
 | 20 kHz | 3,200 |
 | 40 kHz | 1,600 |
 | 10 kHz | 6,400 |
-| 1 kHz | 64,000 |
+| 4 kHz | 16,000 |
 
 For an initial 20 kHz, one-sample-per-carrier design, an engineering target of
 approximately 1,000-1,200 worst-case cycles for the complete fast ISR would
@@ -262,6 +306,11 @@ all validation branches, interrupt entry/exit, DMA completion handling, and
 the longest permitted higher-priority nesting. A 40 kHz or dual-sample design
 is not accepted merely because its average execution time fits within 1,600
 cycles.
+
+The 4 kHz rotor release has 16,000 core cycles between nominal events. Its
+acceptance budget includes the complete DMA-to-PendSV deferred chain plus any
+higher-priority 20 kHz current-loop preemption; enabling hardware
+single-precision and `-O2` does not substitute for measuring that worst case.
 
 Cycle-conservation rules for the hard-real-time path are:
 
@@ -349,15 +398,16 @@ the proven phase-current backend:
   controller layers and the retained future-control primitives.
 
 The active stepper path does not send the portable d/q controller's voltage
-output to PWM. At each accepted 1 kHz encoder sample it validates phase,
+output to PWM. At each accepted 4 kHz encoder sample it validates phase,
 velocity, acceleration, backend state, and deadline, slews signed q-current,
 and publishes a timestamped measured-phase/filtered-velocity seed. On each
 20 kHz DMA completion the backend extrapolates phase to the measured PWM
 application boundary, adds 90 degrees, and regenerates A/B current references
 before the already-qualified A/B PI step. The predictor is fixed-point, includes
 a measured 55 us output lead, permits at most 3,000 us of observation age, and
-immediately forces `ZERO` on invalid or stale prediction. One nominal encoder
-period of PendSV dispatch margin separates that horizon from the controllers'
+immediately forces `ZERO` on invalid or stale prediction. Four nominal encoder
+periods, 1 ms total, of PendSV dispatch margin separate that horizon from the
+controllers'
 2 ms timestamp-interval check; the predictor may never outlive the independent
 3 ms encoder-production guard. The
 0.25 velocity loop commands
@@ -367,7 +417,8 @@ separate active work requiring its own modulation and timing evidence. The 0.26 
 layer adds independent travel, start-speed, following-error, settling, and
 deadline checks above the same velocity/current contracts.
 
-The timing burst measures the implemented seams without changing them. The
+When explicitly armed, the timing burst measures the implemented seams without
+changing them. The
 TIM2 count just before the ADC software trigger identifies trigger delivery
 relative to the carrier. TIM2 elapsed ticks to DMA entry include conversion and
 interrupt-entry latency. DWT cycles to the verified TIM3 compare preload bound
@@ -480,7 +531,9 @@ service; see [Independent watchdog policy](WATCHDOG.md).
 
 During `RUN`, the control deadline guardian and accepted sample epochs provide
 fast-domain progress evidence. Firmware 0.26.1 also compares the foreground
-snapshot's accepted encoder count/timestamp with a 3 ms wrap-safe deadline. It
+progress snapshot's accepted encoder count/timestamp with a 3 ms wrap-safe
+deadline. Firmware 0.32.2 evaluates that threshold on a 1 ms foreground cadence,
+so expiry is observed on the next poll. It
 stays not-live after a stall until genuine sample progress occurs, removes idle
 readiness, and forces any energized authority through the shared fault path.
 Watchdog reset remains the slower recovery path for a stalled foreground; the
@@ -532,12 +585,15 @@ and should be used only when that interruption is part of the test.
 
 ## Numerical policy
 
-The active phase-current loop uses fixed-point arithmetic with defined
-saturation and overflow behavior and passes its host vectors. Portable outer
-control currently uses the soft floating-point ABI outside the fast ISR.
-Higher-priority fault and deadline handlers do not use the FPU. A future
-hard-float build must preserve the same saturation, invalid-input, and replay
-tests.
+The active 20 kHz phase-current loop remains fixed-point, with defined
+saturation and overflow behavior, and continues to pass its host vectors. The
+current source candidate enables the Cortex-M4F single-precision hardware for
+the deferred estimator, trajectory, and outer-control path while retaining the
+`softfp` calling convention. Higher-priority current, fault, and deadline
+handlers do not use floating point. Hardware acceptance must preserve the
+existing saturation, invalid-input, and replay results and must measure
+PendSV/current-ISR preemption, lazy FPU context behavior, numerical equivalence,
+and stack high-water use before this numerical contract is considered proven.
 
 ## Verification strategy
 
@@ -561,8 +617,8 @@ Verification for the active backend and next control layers includes:
 | Whether to replace the synchronized TIM2 software-start path | Scoped trigger timing and a demonstrated benefit |
 | Expanded PWM and loop-rate envelope | Measured plant, switching losses, noise, and worst-case execution time |
 | Comparator-based hardware trip | Comparator routing, thresholds, bipolar-current coverage, and resulting gate-driver state |
-| Fixed-point tuning and optional future hard-float comparison | On-target numerical equivalence and worst-case cycle measurements |
-| Encoder acquisition rate and prediction horizon | Fitted sensor identity, SPI timing, noise, and latency |
+| Hardware-FPU outer-control acceptance | On-target numerical equivalence, lazy-context/preemption timing, and stack high-water measurements |
+| 4 kHz encoder acquisition and prediction horizon | 8 MHz SPI integrity, CS-assertion timestamp semantics, sample timing/noise, latency, and worst-case deferred execution |
 | Step/direction capture peripheral | Physical pin alternate functions and maximum required input rate |
 
 These decisions guide hardening and the broader operating envelope. They do not

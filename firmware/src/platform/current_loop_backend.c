@@ -79,6 +79,7 @@ static void fault_from_interrupt(uint32_t fault)
 {
     s_active = false;
     s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     s_fault_flags |= fault;
     phase_current_loop_stop(&s_loop);
     board_bridge_force_low_zero();
@@ -163,9 +164,9 @@ static void adc_current_event(adc1_status_t status,
     uint32_t prediction_age_us = 0u;
     current_loop_phase_prediction_reject_t rejection_reason =
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
-    uint16_t pwm_preload_margin_ticks;
-    uint32_t pwm_stage_cycle_count;
-
+    uint16_t pwm_preload_margin_ticks = 0u;
+    uint32_t pwm_stage_cycle_count = 0u;
+    bool trace_armed;
     (void)context;
     if (status != ADC1_STATUS_OK)
     {
@@ -199,7 +200,7 @@ static void adc_current_event(adc1_status_t status,
                 CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION);
             return;
         }
-        if (!phase_current_loop_set_reference_counts(
+        if (!phase_current_loop_set_reference_counts_prevalidated(
                 &s_loop,
                 &s_config,
                 current_a_reference_counts,
@@ -218,11 +219,12 @@ static void adc_current_event(adc1_status_t status,
         s_predicted_electrical_phase_q32 = predicted_phase_q32;
         record_prediction_age(prediction_age_us);
     }
-    if (!phase_current_loop_step(&s_loop,
-                                 &s_config,
-                                 snapshot->current_a_raw,
-                                 snapshot->current_b_raw,
-                                 &output))
+    if (!phase_current_loop_step_prevalidated(
+            &s_loop,
+            &s_config,
+            snapshot->current_a_raw,
+            snapshot->current_b_raw,
+            &output))
     {
         const uint32_t phase_fault =
             s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
@@ -242,17 +244,20 @@ static void adc_current_event(adc1_status_t status,
         fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
         return;
     }
-    pwm_stage_cycle_count = cycle_counter_read();
-    if (!tim3_bridge_pwm_get_preload_margin_ticks(
-            &pwm_preload_margin_ticks))
+    trace_armed = s_trace_armed;
+    if (trace_armed)
     {
-        fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
-        return;
+        pwm_stage_cycle_count = cycle_counter_read();
+        if (!tim3_bridge_pwm_get_preload_margin_ticks(
+                &pwm_preload_margin_ticks))
+        {
+            fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
+            return;
+        }
     }
-
-    s_latest_output = output;
-    if (s_trace_armed &&
-        (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY))
+    if (trace_armed &&
+        (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY) &&
+        snapshot->timing_valid)
     {
         const uint16_t trace_index = s_trace_count;
         current_loop_backend_trace_sample_t* trace =
@@ -288,8 +293,10 @@ static void adc_current_event(adc1_status_t status,
         if (s_trace_count == CURRENT_LOOP_BACKEND_TRACE_CAPACITY)
         {
             s_trace_armed = false;
+            (void)adc1_set_current_timing_capture(false);
         }
     }
+    s_latest_output = output;
     __DMB();
     ++s_sample_count;
     ++s_output_generation;
@@ -358,9 +365,9 @@ bool current_loop_backend_init(
     s_active = false;
     s_phase_prediction_active = false;
     s_initialized = false;
+    (void)adc1_set_current_timing_capture(false);
 
-    if (!cycle_counter_init() ||
-        !phase_current_loop_init(&s_loop, &s_config) ||
+    if (!phase_current_loop_init(&s_loop, &s_config) ||
         !electrical_phase_predictor_init(
             &s_phase_predictor, phase_predictor_config) ||
         !adc1_set_current_event_handler(adc_current_event, NULL) ||
@@ -408,6 +415,8 @@ bool current_loop_backend_set_reference_counts(
             s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
 
         s_active = false;
+        s_trace_armed = false;
+        (void)adc1_set_current_timing_capture(false);
         s_fault_flags |= phase_fault != 0u ? phase_fault :
                                              CURRENT_LOOP_BACKEND_FAULT_INTERNAL;
     }
@@ -510,6 +519,8 @@ bool current_loop_backend_set_aligned_q_reference(
                     rejection_reason, prediction_age_us);
             }
             s_active = false;
+            s_trace_armed = false;
+            (void)adc1_set_current_timing_capture(false);
             s_fault_flags |= candidate_valid ?
                 (phase_fault != 0u ? phase_fault :
                                      CURRENT_LOOP_BACKEND_FAULT_INTERNAL) :
@@ -544,7 +555,8 @@ bool current_loop_backend_start(void)
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
-    s_trace_armed = true;
+    s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     s_maximum_observed_phase_prediction_age_us = 0u;
     s_rejected_phase_prediction_age_us = 0u;
     s_phase_prediction_reject_reason =
@@ -582,6 +594,7 @@ bool current_loop_backend_stop(void)
         s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE;
     s_active = false;
     s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     (void)tim3_bridge_pwm_update_irq_enable(false);
     phase_current_loop_stop(&s_loop);
     electrical_phase_predictor_reset(&s_phase_predictor);
@@ -646,6 +659,7 @@ bool current_loop_backend_reconfigure_gains(
        direct-GPIO ZERO vector before rebuilding the idle PWM binding; only
        publish the candidate gains after every backend step accepts it. */
     s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     (void)tim3_bridge_pwm_update_irq_enable(false);
     board_bridge_force_low_zero();
     accepted =
@@ -706,6 +720,8 @@ bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
        switching path back down to the direct-GPIO ZERO vector before
        rebuilding the idle PWM backend and all of its volatile loop state. */
     s_active = false;
+    s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     (void)tim3_bridge_pwm_update_irq_enable(false);
     phase_current_loop_stop(&s_loop);
     board_bridge_force_low_zero();
@@ -818,7 +834,15 @@ bool current_loop_backend_trace_arm(void)
         control_critical_exit(previous);
         return false;
     }
+    s_trace_armed = false;
+    (void)adc1_set_current_timing_capture(false);
     s_trace_count = 0u;
+    if (!cycle_counter_init() ||
+        !adc1_set_current_timing_capture(true))
+    {
+        control_critical_exit(previous);
+        return false;
+    }
     __DMB();
     s_trace_armed = true;
     control_critical_exit(previous);

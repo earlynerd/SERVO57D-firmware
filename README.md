@@ -5,8 +5,8 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.31.0 / native protocol 1.14 is the current source candidate;
-firmware 0.30.3 / protocol 1.13 is flashed. Firmware 0.30.1 corrected the fast
+Firmware 0.32.2 / native protocol 1.14 is the current source candidate;
+firmware 0.30.3 / protocol 1.13 is the last documented flashed baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -33,6 +33,27 @@ signed position moves bench-confirmed the coherent microsecond
 timebase: maximum successful prediction age remained 1,435-1,483 us with no
 predictor, backend, encoder, supervisor, reset, or panic fault.
 
+Firmware 0.32.2 retains that tuning workflow and stages the MT6816 transport at
+8 MHz with a deterministic 4 kHz rotor/velocity/position release. It preserves
+the prior velocity-filter pole with `alpha=0.03283179`, preserves the 50 ms
+position-settle policy with 200 samples, optimizes the complete deferred-control
+chain at `-O2`, and enables Cortex-M4F single-precision hardware through the
+`softfp` ABI. Encoder observations are timestamped when CS asserts at the start
+of the coherent four-byte transaction rather than after DMA and the CS hold.
+The user's preliminary 4 kHz run is encouraging, but formal interval, noise,
+preemption, stack, and motion evidence remains open. The 20 kHz fixed-point
+current path and all existing authority, deadline, current, voltage, duty,
+motion, and fault bounds are unchanged.
+
+The normal 20 kHz path now uses the already validated immutable controller
+configuration and leaves DWT/TIM2/preload timing capture dormant until an
+operator explicitly arms the one-shot trace. Raw ADC range, hard-current,
+reference, output-duty, PWM readback, and missed-output checks remain active.
+The 4 kHz rotor runtime publishes a 56-byte progress record on every sample and
+the 576-byte controller snapshot at 100 Hz or on transitions; foreground
+safety, readiness, events, and watchdog work run on a wrap-safe 1 ms cadence
+while RS-485 draining and raw Right-button sampling remain wake-driven.
+
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
 deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
 torque, signed velocity, and relative-position control. At 24 V, a +8 rev/s
@@ -42,10 +63,12 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is flashing 0.31.0, proving volatile apply/revert and
-explicit persistence across a power cycle, then using its fixed-condition sweep
-before negative-direction speed staging and the remaining position fault/stop
-gates. Exact live, validated, evaluation, and hard limits are owned by
+The next control work is capturing formal 0.32.2 evidence for 8 MHz / 4 kHz
+encoder timing and acquisition timestamps, outer-loop numerical/timing health,
+volatile gain apply/revert, and explicit persistence across a power cycle, then
+using its fixed-condition sweep before negative-direction speed staging and the
+remaining position fault/stop gates.
+Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).
 

@@ -40,6 +40,14 @@ are intentionally not linked into `mks57d.elf`. The explicit target is
 `future-control-arm`; successful compilation does not grant either primitive
 product motion or bridge authority.
 
+Firmware targets use the Cortex-M4F single-precision unit through
+`-mfpu=fpv4-sp-d16 -mfloat-abi=softfp`; the calling convention remains
+soft-float-compatible while generated outer-control math uses hardware FP.
+The complete 20 kHz current path and accepted-sample/PendSV estimator-control
+chain receive a source-level `-O2` override in Debug as well as Release.
+`-ffast-math` is intentionally not enabled because finite-value and fault checks
+remain part of the control contract.
+
 For the size-optimized configuration:
 
 ```powershell
@@ -163,7 +171,7 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.31.0 / protocol 1.14 is the current unflashed source candidate;
+Firmware 0.32.2 / protocol 1.14 is the current source candidate;
 firmware 0.30.3 / protocol 1.13 is the flashed evaluation build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
@@ -192,6 +200,14 @@ phase-prediction boundary and stage the tested Kp from 2 through 4. Firmware
 0.31.0 moves Kp/Ki into volatile-active, stored, and compiled-default product
 configuration and adds the guided sweep/report workflow without adding another
 bridge or motion owner.
+Firmware 0.32.2 retains that protocol and tuning workflow while staging an
+8 MHz MT6816 clock, 4 kHz accepted-sample release, acquisition-window
+timestamping, time-equivalent estimator filter and position settling, `-O2`
+deferred control, and Cortex-M4F hardware floating point.
+It also reuses the validated immutable fast-loop configuration, enables timing
+instrumentation only for an explicitly armed trace, and replaces continuous
+full rotor snapshots/foreground polling with compact progress, 100 Hz or
+transition-driven full state, and 1 ms safety housekeeping.
 Firmware 0.27.1 includes the
 independent 3 ms encoder-production guard and adds bounded 20 kHz electrical-
 phase prediction, a 16 rev/s/2.999 A nominal motion evaluation envelope, and explicit
@@ -209,7 +225,7 @@ position-cascade headroom without changing the wire layout. It:
 7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
-10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
+10. Initializes mode-3 SPI1 on PB3-PB6 at an 8 MHz target. TIM6 releases a 4 kHz MT6816 transaction, timestamps the start of the coherent window when CS asserts, TIM7 retains the bounded 2 us CS setup/hold guards, SPI1 DMA channels 2/3 move the unchanged four-byte frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
 12. Parses native v1.14 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
@@ -219,10 +235,10 @@ position-cascade headroom without changing the wire layout. It:
     apply or revert current-loop gains without saving them; explicit full-
     configuration save remains the only gain-persistence operation.
 13. Initializes the SSD1306-compatible 72-by-40 OLED over 333.3 kHz I2C1 and performs bounded 5 Hz partial updates in the current-loop display.
-14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; regular completion releases the current loop, then a one-rank automatic-injected PA3 conversion captures VBUS. Thirty-two startup current snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes.
+14. Configures and arms DMA channel 1 plus a two-rank `currentB/currentA` ADC sequence before starting TIM3. TIM2 resets from TIM3 update and its 80%-phase compare ISR software-starts each two-halfword DMA sequence; regular completion releases the current loop, then a one-rank automatic-injected PA3 conversion captures VBUS. Thirty-two startup current snapshots establish independent A/B zeros before the OLED displays both signed currents in milliamperes. TIM2/DWT/preload trace timing remains dormant until an active one-shot trace is explicitly armed.
 15. Samples and independently debounces the three keys, M_IN1/M_IN2, and the no-pull PA0/PA8/PB7 pulse-interface inputs every 10 ms.
 16. Keeps the bridge in `ZERO` until the product supervisor reaches `READY`. The retired local Left/Center phase selector cannot request authority. RS-485 may request the bounded rotating-current diagnostic through the supervisor/current backend; deadline, STOP, transport failure, or the physical Right button returns it to `ZERO`.
-17. Keeps RS-485, display, and configuration work in foreground while the timer/DMA/PendSV rotor service remains deterministic and observable during active operation.
+17. Keeps RS-485, display, and configuration work in foreground while the timer/DMA/PendSV rotor service remains deterministic and observable during active operation. PendSV publishes 56-byte progress at 4 kHz and 576-byte full controller state at 100 Hz or on transitions; 1 ms foreground safety housekeeping consumes progress while RS-485 draining and raw Right-button sampling remain wake-driven.
 18. Loads motor alignment and current-loop gains only from a schema/range/CRC/
     commit-valid record. Schema-1 records receive the 0.31.0 gain defaults in
     RAM and migrate transactionally on explicit save. A successful alignment is
@@ -232,12 +248,12 @@ position-cascade headroom without changing the wire layout. It:
 19. Enters `RUN` motion authority only for a valid aligned q-current request,
     waits for a newly accepted encoder sample, starts the existing 20 kHz
     backend at zero demand from that sample, and publishes bounded q-current plus
-    calibrated phase/velocity/timestamp seeds at 1 kHz. Every 20 kHz current
+    calibrated phase/velocity/timestamp seeds at 4 kHz. Every 20 kHz current
     event predicts phase to the measured PWM application boundary and regenerates signed
     A/B references under independent current, slew, velocity, acceleration,
     prediction-age, feedback-age, duration, and fault contracts.
 20. Starts a valid velocity request at zero q-current from newly accepted
-    feedback, runs an acceleration-limited PI at the 1 kHz rotor release, and
+    feedback, runs an acceleration-limited PI at the 4 kHz rotor release, and
     updates only the bounded aligned-q-current actuator. Target speed, observed
     speed, per-command current, reference acceleration, feedback age, deadline,
     actuator health, and common STOP/fault paths remain independently enforced.
@@ -250,7 +266,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.31.0`, authoritative drive state, reset cause,
+22. Publishes firmware `0.32.2`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -387,3 +403,34 @@ Debug/Release Arm post-link builds use 62,864/54,908 bytes Flash and 11,564
 bytes SRAM1, with no configuration-slot or SRAM2 allocation and the 240-byte
 debugger diagnostic ABI unchanged. Hardware flash, apply/revert, sweep-abort,
 save, and power-cycle gates remain open.
+
+Firmware 0.32.0 / protocol 1.14 passes the native suite; the 43-test Python
+suite completes with two optional skips; and clean Debug/Release Arm post-link builds pass. Debug
+uses 59,772 bytes Flash and Release uses 54,868 bytes; both use 11,484 bytes
+SRAM1, allocate neither configuration slot nor SRAM2, and preserve the 240-byte
+debugger diagnostic ABI. Release links the
+`v7e-m+fp/softfp` runtime, `SystemInit` enables CP10/CP11, and disassembly shows
+hardware `vdiv.f32` in the estimator and `vsqrt.f32` in the motion profile while
+the 20 kHz current path remains free of VFP instructions. Flash, 8 MHz SPI,
+2 kHz interval/noise, PendSV/preemption/stack, and motion gates remain open.
+
+Firmware 0.32.1 / protocol 1.14 passes the native suite and all 43 Python
+tests, with two optional skips, and clean Debug/Release Arm post-link builds
+pass. Debug uses 59,716 bytes Flash and Release uses 54,828 bytes; both use
+11,488 bytes SRAM1, allocate neither configuration slot nor SRAM2, and preserve
+the 240-byte debugger diagnostic ABI. Release disassembly confirms TIM6
+`ARR=249` for the 4 kHz rotor cadence and captures the sample timestamp before
+the CS-low write. Formal hardware qualification of the 4 kHz interval, signal
+integrity, estimator behavior, and preemption/stack margins remains open; the
+reported successful run is preliminary bench evidence.
+
+Firmware 0.32.2 / protocol 1.14 passes the native suite and all 43 Python
+tests, with two optional skips, and clean Debug/Release Arm post-link builds
+pass. Debug uses 60,764 bytes Flash and Release uses 55,924 bytes; both use
+11,616 bytes SRAM1, allocate neither configuration slot nor SRAM2, and preserve
+the 240-byte debugger diagnostic ABI. Release symbols confirm 56-byte progress
+and 576-byte full rotor publications. Disassembly confirms that the ordinary
+20 kHz current path skips trace timing/preload reads and uses the prevalidated
+phase-loop entry point; explicit trace capture retains those measurements.
+Hardware reflash, foreground-load measurement, trace regression, and motion
+qualification remain open.

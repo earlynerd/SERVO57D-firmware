@@ -859,3 +859,24 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Matched Kp=2/3/4 captures showed useful improvement but also established that gains belong to a motor, supply, and load—not a universal firmware build. Reflashing compiled constants is not a production tuning workflow.
 - **Supersedes:** Compile-time-only ownership of current-loop gains. It does not change current, voltage, duty, duration, timing, authority, or fault bounds.
 - **Affects:** configuration storage and status, current backend reconfiguration, native protocol, RS-485 tools, guided capture/report artifacts, operating limits, and bring-up.
+
+## 2026-08-23 — Double the rotor release and enable hardware floating point
+
+- **Decision:** Firmware 0.32.0 / protocol 1.14 clocks the unchanged four-byte MT6816 DMA frame at 8 MHz and releases it at 2 kHz through the existing TIM6/TIM7/PendSV path. The estimator uses `alpha=0.06458565` and position requires 100 settle samples, preserving the prior filter pole and 50 ms settle duration. The complete deferred-control chain is compiled at `-O2`, and Cortex-M4F single-precision hardware is enabled through the `softfp` ABI without fast-math. The fixed-point 20 kHz current path and every authority/fault bound remain unchanged.
+- **Why:** Halving acquisition/release delay and removing software-float helpers provides immediate outer-loop headroom without adding another control or bridge owner.
+- **Supersedes:** The 1 kHz release clause in “Make rotor feedback a deterministic timer/DMA service” and the software-floating-point numerical policy. Its ownership and safety contracts remain.
+- **Affects:** encoder SPI/timers, rotor runtime, estimator/position timing, Arm build policy, real-time budgets, and hardware qualification.
+
+## 2026-08-23 — Timestamp the 4 kHz rotor sample at acquisition
+
+- **Decision:** Firmware 0.32.1 / protocol 1.14 releases the 8 MHz MT6816 transaction at 4 kHz and timestamps immediately before CS assertion, conservatively marking the start boundary of the coherent four-byte acquisition window instead of post-DMA/post-hold publication. The estimator uses `alpha=0.03283179` and position requires 200 settle samples, preserving the prior filter pole and 50 ms settling duration. Pre-CS transport failures retain failure-time timestamps; started transactions retain their acquisition timestamp.
+- **Why:** The preliminary 4 kHz run shows usable headroom, and acquisition-boundary timestamps remove the nominal 8 us SPI/guard window plus completion overhead from reported observation age without understating age if a higher-priority ISR intervenes before CS.
+- **Supersedes:** The 2 kHz rate/filter/settle clauses in “Double the rotor release and enable hardware floating point” and post-hold encoder timestamp semantics.
+- **Affects:** SPI state machine, rotor timing, estimator/controller policy, predictor age, and hardware qualification.
+
+## 2026-08-23 — Gate fast-loop measurement and compact foreground publication
+
+- **Decision:** Firmware 0.32.2 / protocol 1.14 reuses the current backend's validated immutable configuration in its 20 kHz prevalidated step while retaining raw-range, hard-current, reference, output, PWM-readback, and deadline checks. TIM2/DWT/preload instrumentation runs only while an explicit 256-sample trace is armed. The 4 kHz rotor runtime publishes 56-byte progress and publishes 576-byte full state at 100 Hz or on transitions. Foreground safety work consumes progress at 1 kHz; RS-485 draining and raw Right-button sampling remain wake-driven.
+- **Why:** Repeated configuration scans, dormant trace reads, large per-sample copies, and 20 kHz foreground housekeeping consumed deterministic headroom without improving ordinary control or fault containment.
+- **Supersedes:** Automatic trace arm on backend start, continuous disarmed trace timing, full rotor publication on every sample, and wake-rate safety polling. The 3 ms encoder-stale threshold remains, with expiry observed by the next 1 ms poll.
+- **Affects:** ADC/current backend, phase-current loop, rotor publication, foreground scheduling, realtime budgets, and hardware qualification.

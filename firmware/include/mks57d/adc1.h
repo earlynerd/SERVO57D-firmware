@@ -1,6 +1,7 @@
 #ifndef MKS57D_ADC1_H
 #define MKS57D_ADC1_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "mks57d/adc_limits.h"
@@ -21,6 +22,7 @@ typedef struct
     uint16_t trigger_timer_count;
     uint16_t trigger_to_dma_timer_ticks;
     uint32_t dma_entry_cycle_count;
+    bool timing_valid;
 } adc1_current_snapshot_t;
 
 typedef struct
@@ -71,6 +73,10 @@ adc1_status_t adc1_read_synchronized_vbus(
 bool adc1_set_current_event_handler(
     adc1_current_event_handler_t handler,
     void* context);
+/* Enables timer/cycle capture for explicitly armed current-loop traces. A
+ * snapshot reports timing_valid only when both ends of the same ADC
+ * transaction were captured. Disabling is always accepted. */
+bool adc1_set_current_timing_capture(bool enabled);
 bool adc1_trigger_synchronized_current_from_isr(void);
 
 #endif

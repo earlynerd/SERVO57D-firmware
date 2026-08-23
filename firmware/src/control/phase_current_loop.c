@@ -103,14 +103,13 @@ static void latch_fault(phase_current_loop_t* loop, uint32_t fault)
     loop->current_b_integrator_q16 = 0;
 }
 
-bool phase_current_loop_set_reference_counts(
+bool phase_current_loop_set_reference_counts_prevalidated(
     phase_current_loop_t* loop,
     const phase_current_loop_config_t* config,
     int16_t current_a_reference_counts,
     int16_t current_b_reference_counts)
 {
-    if ((loop == NULL) || !loop->initialized ||
-        !phase_current_loop_config_is_valid(config) ||
+    if ((loop == NULL) || (config == NULL) || !loop->initialized ||
         (loop->fault_flags != PHASE_CURRENT_LOOP_FAULT_NONE))
     {
         return false;
@@ -127,6 +126,23 @@ bool phase_current_loop_set_reference_counts(
     loop->current_a_reference_counts = current_a_reference_counts;
     loop->current_b_reference_counts = current_b_reference_counts;
     return true;
+}
+
+bool phase_current_loop_set_reference_counts(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    int16_t current_a_reference_counts,
+    int16_t current_b_reference_counts)
+{
+    if (!phase_current_loop_config_is_valid(config))
+    {
+        return false;
+    }
+    return phase_current_loop_set_reference_counts_prevalidated(
+        loop,
+        config,
+        current_a_reference_counts,
+        current_b_reference_counts);
 }
 
 bool phase_current_loop_start(phase_current_loop_t* loop)
@@ -228,19 +244,20 @@ static bool build_duties(int16_t command_a,
     return true;
 }
 
-bool phase_current_loop_step(phase_current_loop_t* loop,
-                             const phase_current_loop_config_t* config,
-                             uint16_t current_a_raw,
-                             uint16_t current_b_raw,
-                             phase_current_loop_output_t* output)
+bool phase_current_loop_step_prevalidated(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    uint16_t current_a_raw,
+    uint16_t current_b_raw,
+    phase_current_loop_output_t* output)
 {
     int32_t current_a_delta;
     int32_t current_b_delta;
     int32_t output_limit_q16;
 
     zero_output(output);
-    if ((loop == NULL) || (output == NULL) || !loop->initialized ||
-        !loop->running || !phase_current_loop_config_is_valid(config) ||
+    if ((loop == NULL) || (config == NULL) || (output == NULL) ||
+        !loop->initialized || !loop->running ||
         (loop->fault_flags != PHASE_CURRENT_LOOP_FAULT_NONE))
     {
         return false;
@@ -303,4 +320,22 @@ bool phase_current_loop_step(phase_current_loop_t* loop,
         return false;
     }
     return true;
+}
+
+bool phase_current_loop_step(phase_current_loop_t* loop,
+                             const phase_current_loop_config_t* config,
+                             uint16_t current_a_raw,
+                             uint16_t current_b_raw,
+                             phase_current_loop_output_t* output)
+{
+    zero_output(output);
+    if (!phase_current_loop_config_is_valid(config))
+    {
+        return false;
+    }
+    return phase_current_loop_step_prevalidated(loop,
+                                                config,
+                                                current_a_raw,
+                                                current_b_raw,
+                                                output);
 }
