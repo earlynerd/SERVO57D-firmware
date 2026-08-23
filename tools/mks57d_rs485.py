@@ -19,6 +19,8 @@ from typing import Any
 PROTOCOL_VERSION = 1
 DEFAULT_ADDRESS = 1
 MAX_WIRE_FRAME_SIZE = 84
+MAX_RESPONSE_FRAMES_PER_TRANSACTION = 4
+CURRENT_TRACE_SAMPLE_ATTEMPTS = 3
 VELOCITY_MINIMUM_DURATION_MILLIS = 3
 POSITION_MINIMUM_DURATION_MILLIS = 100
 VELOCITY_CONSOLE_INTERVAL_SECONDS = 0.2
@@ -35,6 +37,7 @@ COMMAND_STOP_CURRENT_TEST = 0x0103
 COMMAND_GET_BOOT_STATUS = 0x0104
 COMMAND_GET_ENCODER_STATUS = 0x0105
 COMMAND_GET_CURRENT_TRACE = 0x0106
+COMMAND_ARM_CURRENT_TRACE = 0x0107
 COMMAND_START_ALIGNMENT = 0x0200
 COMMAND_GET_ALIGNMENT_STATUS = 0x0201
 COMMAND_STOP_DRIVE = 0x0202
@@ -42,6 +45,8 @@ COMMAND_CLEAR_FAULTS = 0x0203
 COMMAND_GET_CONFIGURATION_STATUS = 0x0300
 COMMAND_SAVE_CONFIGURATION = 0x0301
 COMMAND_CLEAR_CALIBRATION = 0x0302
+COMMAND_SET_CURRENT_LOOP_GAINS = 0x0303
+COMMAND_REVERT_CURRENT_LOOP_GAINS = 0x0304
 COMMAND_START_ALIGNED_TORQUE = 0x0400
 COMMAND_GET_ALIGNED_TORQUE_STATUS = 0x0401
 COMMAND_START_VELOCITY = 0x0500
@@ -355,11 +360,17 @@ POSITION_FAULT_NAMES = {
 
 STATUS_V2_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 STATUS_V3_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHI")
-CURRENT_TRACE_BODY = struct.Struct(">BHHIhhhhhh")
+CURRENT_TRACE_V1_BODY = struct.Struct(">BHHIhhhhhh")
+CURRENT_TRACE_V2_BODY = struct.Struct(">BHHIhhhhhhIHHHHHH")
+TRACE_CYCLE_COUNTER_HZ = 64_000_000
+TRACE_PWM_TIMER_HZ = 32_000_000
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
-CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
+CONFIGURATION_STATUS_V1_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
+CONFIGURATION_STATUS_V2_BODY = struct.Struct(
+    ">BBBBHIHHHHhbHHHHhbiiiiiiii"
+)
 ALIGNED_TORQUE_STATUS_V1_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
 ALIGNED_TORQUE_STATUS_V2_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIIIBIHH")
 VELOCITY_STATUS_BODY = struct.Struct(">BBBBIiiihhHIIiiiHHiiI")
@@ -459,6 +470,37 @@ POSITION_TELEMETRY_FIELDS = (
     "retained_panic",
     "watchdog_reset",
 )
+CURRENT_TRACE_CSV_FIELDS = (
+    "schema",
+    "sample_index",
+    "captured_sample_count",
+    "time_seconds",
+    "loop_sample_count",
+    "current_a_reference_counts",
+    "current_b_reference_counts",
+    "current_a_measured_counts",
+    "current_b_measured_counts",
+    "phase_a_voltage_permille",
+    "phase_b_voltage_permille",
+    "phase_a_voltage_command_volts",
+    "phase_b_voltage_command_volts",
+    "predicted_electrical_phase_q32",
+    "predicted_electrical_phase_turns",
+    "predicted_electrical_phase_degrees",
+    "phase_prediction_age_us",
+    "trigger_timer_count",
+    "trigger_timer_us",
+    "trigger_to_dma_timer_ticks",
+    "trigger_to_dma_us",
+    "dma_to_pwm_stage_cycles",
+    "dma_to_pwm_stage_us",
+    "dma_to_trace_record_cycles",
+    "dma_to_trace_record_us",
+    "pwm_preload_margin_ticks",
+    "pwm_preload_margin_us",
+    "bus_voltage_volts",
+    "phase_voltage_limit_volts",
+)
 COUNTS_TO_MILLIAMPERES = (
     3.3 / 4095.0 / (6.65 * 0.020) * 1000.0
 )
@@ -469,7 +511,24 @@ def nominal_amperes_from_counts(counts: int) -> float:
     return counts * COUNTS_TO_MILLIAMPERES / 1000.0
 
 
+def current_loop_gain_from_q16(value: int) -> float:
+    return value / 65536.0
+
+
+def current_loop_gain_to_q16(value: float, name: str = "gain") -> int:
+    if not math.isfinite(value) or value < 0.0:
+        raise ProtocolError(f"{name} must be a finite nonnegative value")
+    scaled = round(value * 65536.0)
+    if scaled > 0x7FFFFFFF:
+        raise ProtocolError(f"{name} exceeds the signed Q16.16 range")
+    return scaled
+
+
 class ProtocolError(RuntimeError):
+    pass
+
+
+class TransportError(ProtocolError):
     pass
 
 
@@ -512,11 +571,11 @@ def cobs_decode(data: bytes) -> bytes:
     while index < len(data):
         code = data[index]
         if code == 0:
-            raise ProtocolError("zero byte inside COBS frame")
+            raise TransportError("zero byte inside COBS frame")
         index += 1
         end = index + code - 1
         if end > len(data):
-            raise ProtocolError("truncated COBS frame")
+            raise TransportError("truncated COBS frame")
         output.extend(data[index:end])
         index = end
         if code != 0xFF and index < len(data):
@@ -550,20 +609,20 @@ class Response:
 
 def decode_response(wire: bytes) -> Response:
     if not wire.endswith(b"\x00"):
-        raise ProtocolError("response has no delimiter")
+        raise TransportError("response has no delimiter")
     decoded = cobs_decode(wire[:-1])
     if len(decoded) < 10:
-        raise ProtocolError("response is too short")
+        raise TransportError("response is too short")
     version, address, sequence, message_type, command, length = struct.unpack(
         ">BBHBHB", decoded[:8]
     )
     if version != PROTOCOL_VERSION or message_type != MESSAGE_RESPONSE:
-        raise ProtocolError("unexpected response version or message type")
+        raise TransportError("unexpected response version or message type")
     if len(decoded) != 8 + length + 2:
-        raise ProtocolError("response length field does not match frame")
+        raise TransportError("response length field does not match frame")
     expected_crc = struct.unpack(">H", decoded[-2:])[0]
     if crc16_ccitt_false(decoded[:-2]) != expected_crc:
-        raise ProtocolError("response CRC mismatch")
+        raise TransportError("response CRC mismatch")
     return Response(address, sequence, command, decoded[8:-2])
 
 
@@ -580,16 +639,38 @@ class Client:
             self.sequence = 1
         self.serial.write(encode_request(self.address, sequence, command, payload))
         self.serial.flush()
-        wire = self.serial.read_until(b"\x00", MAX_WIRE_FRAME_SIZE)
-        if not wire:
-            raise ProtocolError("response timeout")
-        response = decode_response(wire)
-        if (
+        last_frame_error: ProtocolError | None = None
+        response: Response | None = None
+        wire = b""
+        for _ in range(MAX_RESPONSE_FRAMES_PER_TRANSACTION):
+            wire = self.serial.read_until(b"\x00", MAX_WIRE_FRAME_SIZE)
+            if not wire:
+                break
+            try:
+                response = decode_response(wire)
+            except ProtocolError as error:
+                last_frame_error = error
+                continue
+            if (
+                response.address != self.address
+                or response.sequence != sequence
+                or response.command != command
+            ):
+                last_frame_error = TransportError(
+                    "response identity does not match request"
+                )
+                continue
+            break
+        else:
+            response = None
+        if not wire or response is None or (
             response.address != self.address
             or response.sequence != sequence
             or response.command != command
         ):
-            raise ProtocolError("response identity does not match request")
+            if last_frame_error is not None:
+                raise last_frame_error
+            raise TransportError("response timeout")
         if not response.payload:
             raise ProtocolError("response has no status byte")
         status = response.payload[0]
@@ -876,22 +957,63 @@ def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:
         COMMAND_GET_CURRENT_TRACE,
         struct.pack(">H", index),
     )
-    if len(body) != CURRENT_TRACE_BODY.size:
+    if len(body) == CURRENT_TRACE_V1_BODY.size:
+        (
+            schema,
+            captured_sample_count,
+            sample_index,
+            loop_sample_count,
+            reference_a,
+            reference_b,
+            measured_a,
+            measured_b,
+            voltage_a,
+            voltage_b,
+        ) = CURRENT_TRACE_V1_BODY.unpack(body)
+        if schema != 1:
+            raise ProtocolError(
+                "current-trace schema does not match its response length"
+            )
+        predicted_phase_q32 = None
+        phase_prediction_age_us = None
+        trigger_timer_count = None
+        trigger_to_dma_timer_ticks = None
+        dma_to_pwm_stage_cycles = None
+        dma_to_trace_record_cycles = None
+        pwm_preload_margin_ticks = None
+    elif len(body) == CURRENT_TRACE_V2_BODY.size:
+        (
+            schema,
+            captured_sample_count,
+            sample_index,
+            loop_sample_count,
+            reference_a,
+            reference_b,
+            measured_a,
+            measured_b,
+            voltage_a,
+            voltage_b,
+            predicted_phase_q32,
+            phase_prediction_age_us,
+            trigger_timer_count,
+            trigger_to_dma_timer_ticks,
+            dma_to_pwm_stage_cycles,
+            dma_to_trace_record_cycles,
+            pwm_preload_margin_ticks,
+        ) = CURRENT_TRACE_V2_BODY.unpack(body)
+        if schema != 2:
+            raise ProtocolError(
+                "current-trace schema does not match its response length"
+            )
+    else:
         raise ProtocolError("current-trace response has an unexpected length")
-    (
-        schema,
-        captured_sample_count,
-        sample_index,
-        loop_sample_count,
-        reference_a,
-        reference_b,
-        measured_a,
-        measured_b,
-        voltage_a,
-        voltage_b,
-    ) = CURRENT_TRACE_BODY.unpack(body)
     if sample_index != index:
         raise ProtocolError("current-trace response index does not match request")
+    phase_turns = (
+        predicted_phase_q32 / 4294967296.0
+        if predicted_phase_q32 is not None
+        else None
+    )
     return {
         "schema": schema,
         "captured_sample_count": captured_sample_count,
@@ -900,7 +1022,53 @@ def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:
         "reference_counts": {"a": reference_a, "b": reference_b},
         "measured_counts": {"a": measured_a, "b": measured_b},
         "phase_voltage_permille": {"a": voltage_a, "b": voltage_b},
+        "phase_prediction": {
+            "electrical_phase_q32": predicted_phase_q32,
+            "electrical_phase_turns": (
+                round(phase_turns, 9) if phase_turns is not None else None
+            ),
+            "electrical_phase_degrees": (
+                round(phase_turns * 360.0, 6)
+                if phase_turns is not None
+                else None
+            ),
+            "age_us": phase_prediction_age_us,
+        },
+        "timing": {
+            "cycle_counter_hz": (
+                TRACE_CYCLE_COUNTER_HZ if schema >= 2 else None
+            ),
+            "pwm_timer_hz": TRACE_PWM_TIMER_HZ if schema >= 2 else None,
+            "trigger_timer_count": trigger_timer_count,
+            "trigger_to_dma_timer_ticks": trigger_to_dma_timer_ticks,
+            "dma_to_pwm_stage_cycles": dma_to_pwm_stage_cycles,
+            "dma_to_trace_record_cycles": dma_to_trace_record_cycles,
+            "pwm_preload_margin_ticks": pwm_preload_margin_ticks,
+        },
     }
+
+
+def arm_current_trace(client: Client) -> None:
+    client.transact(COMMAND_ARM_CURRENT_TRACE)
+
+
+def _query_current_trace_sample_with_retry(
+    client: Client, index: int
+) -> dict[str, Any]:
+    last_error: ProtocolError | None = None
+    for attempt in range(1, CURRENT_TRACE_SAMPLE_ATTEMPTS + 1):
+        try:
+            return query_current_trace_sample(client, index)
+        except TransportError as error:
+            last_error = error
+            if attempt < CURRENT_TRACE_SAMPLE_ATTEMPTS:
+                print(
+                    f"warning: retrying current-trace sample {index} "
+                    f"after {error}",
+                    file=sys.stderr,
+                )
+    assert last_error is not None
+    raise last_error
 
 
 def read_current_trace(client: Client) -> list[dict[str, Any]]:
@@ -909,11 +1077,11 @@ def read_current_trace(client: Client) -> list[dict[str, Any]]:
     phase_voltage_limit = drive_status.get("loop", {}).get(
         "phase_voltage_limit_volts"
     )
-    first = query_current_trace_sample(client, 0)
+    first = _query_current_trace_sample_with_retry(client, 0)
     samples = [first]
     expected_count = first["captured_sample_count"]
     for index in range(1, expected_count):
-        sample = query_current_trace_sample(client, index)
+        sample = _query_current_trace_sample_with_retry(client, index)
         if sample["captured_sample_count"] != expected_count:
             raise ProtocolError("current-trace sample count changed while reading")
         samples.append(sample)
@@ -925,6 +1093,42 @@ def read_current_trace(client: Client) -> list[dict[str, Any]]:
         )
         sample["bus_voltage_volts"] = bus_voltage
         sample["phase_voltage_limit_volts"] = phase_voltage_limit
+        trigger_timer_count = sample["timing"]["trigger_timer_count"]
+        sample["timing"]["trigger_timer_us"] = (
+            round(
+                trigger_timer_count * 1_000_000.0 / TRACE_PWM_TIMER_HZ,
+                6,
+            )
+            if trigger_timer_count is not None
+            else None
+        )
+        trigger_to_dma_ticks = sample["timing"][
+            "trigger_to_dma_timer_ticks"
+        ]
+        sample["timing"]["trigger_to_dma_us"] = (
+            round(
+                trigger_to_dma_ticks * 1_000_000.0 / TRACE_PWM_TIMER_HZ,
+                6,
+            )
+            if trigger_to_dma_ticks is not None
+            else None
+        )
+        for key in (
+            "dma_to_pwm_stage_cycles",
+            "dma_to_trace_record_cycles",
+        ):
+            cycles = sample["timing"][key]
+            sample["timing"][key.removesuffix("_cycles") + "_us"] = (
+                round(cycles * 1_000_000.0 / TRACE_CYCLE_COUNTER_HZ, 6)
+                if cycles is not None
+                else None
+            )
+        margin_ticks = sample["timing"]["pwm_preload_margin_ticks"]
+        sample["timing"]["pwm_preload_margin_us"] = (
+            round(margin_ticks * 1_000_000.0 / TRACE_PWM_TIMER_HZ, 6)
+            if margin_ticks is not None
+            else None
+        )
         raw_voltage = sample["phase_voltage_permille"]
         sample["phase_voltage_command_volts"] = {
             phase: (
@@ -935,6 +1139,65 @@ def read_current_trace(client: Client) -> list[dict[str, Any]]:
             for phase, value in raw_voltage.items()
         }
     return samples
+
+
+def _current_trace_csv_row(sample: dict[str, Any]) -> dict[str, Any]:
+    prediction = sample["phase_prediction"]
+    timing = sample["timing"]
+    reference = sample["reference_counts"]
+    measured = sample["measured_counts"]
+    voltage = sample["phase_voltage_permille"]
+    voltage_command = sample["phase_voltage_command_volts"]
+    return {
+        "schema": sample["schema"],
+        "sample_index": sample["sample_index"],
+        "captured_sample_count": sample["captured_sample_count"],
+        "time_seconds": sample["time_seconds"],
+        "loop_sample_count": sample["loop_sample_count"],
+        "current_a_reference_counts": reference["a"],
+        "current_b_reference_counts": reference["b"],
+        "current_a_measured_counts": measured["a"],
+        "current_b_measured_counts": measured["b"],
+        "phase_a_voltage_permille": voltage["a"],
+        "phase_b_voltage_permille": voltage["b"],
+        "phase_a_voltage_command_volts": voltage_command["a"],
+        "phase_b_voltage_command_volts": voltage_command["b"],
+        "predicted_electrical_phase_q32": prediction[
+            "electrical_phase_q32"
+        ],
+        "predicted_electrical_phase_turns": prediction[
+            "electrical_phase_turns"
+        ],
+        "predicted_electrical_phase_degrees": prediction[
+            "electrical_phase_degrees"
+        ],
+        "phase_prediction_age_us": prediction["age_us"],
+        "trigger_timer_count": timing["trigger_timer_count"],
+        "trigger_timer_us": timing["trigger_timer_us"],
+        "trigger_to_dma_timer_ticks": timing[
+            "trigger_to_dma_timer_ticks"
+        ],
+        "trigger_to_dma_us": timing["trigger_to_dma_us"],
+        "dma_to_pwm_stage_cycles": timing["dma_to_pwm_stage_cycles"],
+        "dma_to_pwm_stage_us": timing["dma_to_pwm_stage_us"],
+        "dma_to_trace_record_cycles": timing[
+            "dma_to_trace_record_cycles"
+        ],
+        "dma_to_trace_record_us": timing["dma_to_trace_record_us"],
+        "pwm_preload_margin_ticks": timing["pwm_preload_margin_ticks"],
+        "pwm_preload_margin_us": timing["pwm_preload_margin_us"],
+        "bus_voltage_volts": sample["bus_voltage_volts"],
+        "phase_voltage_limit_volts": sample["phase_voltage_limit_volts"],
+    }
+
+
+def write_current_trace_csv(
+    path: Path, samples: list[dict[str, Any]]
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=CURRENT_TRACE_CSV_FIELDS)
+        writer.writeheader()
+        writer.writerows(_current_trace_csv_row(sample) for sample in samples)
 
 
 def query_alignment(client: Client) -> dict[str, Any]:
@@ -1017,7 +1280,10 @@ def query_alignment(client: Client) -> dict[str, Any]:
 
 def query_configuration(client: Client) -> dict[str, Any]:
     body = client.transact(COMMAND_GET_CONFIGURATION_STATUS)
-    if len(body) != CONFIGURATION_STATUS_BODY.size:
+    if len(body) not in {
+        CONFIGURATION_STATUS_V1_BODY.size,
+        CONFIGURATION_STATUS_V2_BODY.size,
+    }:
         raise ProtocolError(
             "configuration-status response has an unexpected length"
         )
@@ -1040,9 +1306,11 @@ def query_configuration(client: Client) -> dict[str, Any]:
         active_quarter_step,
         active_quarter_error,
         active_direction,
-    ) = CONFIGURATION_STATUS_BODY.unpack(body)
+    ) = CONFIGURATION_STATUS_V1_BODY.unpack(
+        body[: CONFIGURATION_STATUS_V1_BODY.size]
+    )
     names = active_names(flags, CONFIGURATION_FLAG_NAMES)
-    return {
+    result = {
         "schema": schema,
         "flags": names,
         "last_result": CONFIGURATION_RESULT_NAMES.get(
@@ -1072,6 +1340,137 @@ def query_configuration(client: Client) -> dict[str, Any]:
             "encoder_direction": active_direction,
         },
     }
+    if len(body) == CONFIGURATION_STATUS_V2_BODY.size:
+        if schema < 2:
+            raise ProtocolError(
+                "configuration schema does not match its response length"
+            )
+        gain_values = struct.unpack(
+            ">iiiiiiii", body[CONFIGURATION_STATUS_V1_BODY.size :]
+        )
+        (
+            default_kp,
+            default_ki,
+            stored_kp,
+            stored_ki,
+            active_kp,
+            active_ki,
+            maximum_kp,
+            maximum_ki,
+        ) = gain_values
+
+        def gains(kp_q16: int, ki_q16: int) -> dict[str, Any]:
+            return {
+                "proportional_q16_per_count": kp_q16,
+                "integral_q16_per_count_per_step": ki_q16,
+                "proportional_per_count": round(
+                    current_loop_gain_from_q16(kp_q16), 9
+                ),
+                "integral_per_count_per_step": round(
+                    current_loop_gain_from_q16(ki_q16), 9
+                ),
+            }
+
+        result["tuning_supported"] = True
+        result["default"] = {
+            "current_loop_gains": gains(default_kp, default_ki)
+        }
+        result["stored"]["current_loop_gains"] = gains(
+            stored_kp, stored_ki
+        )
+        result["active"]["current_loop_gains"] = gains(
+            active_kp, active_ki
+        )
+        result["limits"] = {
+            "maximum_current_loop_gains": gains(maximum_kp, maximum_ki)
+        }
+    else:
+        if schema != 1:
+            raise ProtocolError(
+                "configuration schema does not match its response length"
+            )
+        result["tuning_supported"] = False
+    return result
+
+
+def _validate_current_loop_gains_against_configuration(
+    configuration: dict[str, Any], kp_q16: int, ki_q16: int
+) -> None:
+    if not configuration.get("tuning_supported"):
+        raise ProtocolError(
+            "firmware does not expose volatile current-loop tuning"
+        )
+    limits = configuration["limits"]["maximum_current_loop_gains"]
+    maximum_kp = int(limits["proportional_q16_per_count"])
+    maximum_ki = int(limits["integral_q16_per_count_per_step"])
+    if kp_q16 > maximum_kp:
+        raise ProtocolError(
+            "Kp exceeds the firmware-reported maximum of "
+            f"{current_loop_gain_from_q16(maximum_kp):g}"
+        )
+    if ki_q16 > maximum_ki:
+        raise ProtocolError(
+            "Ki exceeds the firmware-reported maximum of "
+            f"{current_loop_gain_from_q16(maximum_ki):g}"
+        )
+
+
+def set_current_loop_gains_q16(
+    client: Client, kp_q16: int, ki_q16: int
+) -> None:
+    if not 0 <= kp_q16 <= 0x7FFFFFFF:
+        raise ProtocolError("Kp Q16.16 value is outside the supported range")
+    if not 0 <= ki_q16 <= 0x7FFFFFFF:
+        raise ProtocolError("Ki Q16.16 value is outside the supported range")
+    client.transact(
+        COMMAND_SET_CURRENT_LOOP_GAINS,
+        struct.pack(">ii", kp_q16, ki_q16),
+    )
+
+
+def set_current_loop_gains(
+    client: Client, kp: float, ki: float,
+    configuration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    kp_q16 = current_loop_gain_to_q16(kp, "Kp")
+    ki_q16 = current_loop_gain_to_q16(ki, "Ki")
+    before = configuration or query_configuration(client)
+    _validate_current_loop_gains_against_configuration(
+        before, kp_q16, ki_q16
+    )
+    set_current_loop_gains_q16(client, kp_q16, ki_q16)
+    return query_configuration(client)
+
+
+def revert_current_loop_gains(client: Client) -> dict[str, Any]:
+    client.transact(COMMAND_REVERT_CURRENT_LOOP_GAINS)
+    return query_configuration(client)
+
+
+def print_current_loop_gain_summary(configuration: dict[str, Any]) -> None:
+    if not configuration.get("tuning_supported"):
+        print("Current-loop tuning: unavailable (configuration schema 1)")
+        return
+
+    def format_set(label: str, values: dict[str, Any]) -> str:
+        gains = values["current_loop_gains"]
+        return (
+            f"{label} Kp={gains['proportional_per_count']:g} "
+            f"(Q16={gains['proportional_q16_per_count']}), "
+            f"Ki={gains['integral_per_count_per_step']:g} "
+            f"(Q16={gains['integral_q16_per_count_per_step']})"
+        )
+
+    print(
+        "Current-loop gains: "
+        + "; ".join(
+            (
+                format_set("active", configuration["active"]),
+                format_set("stored", configuration["stored"]),
+                format_set("default", configuration["default"]),
+            )
+        )
+    )
 
 
 def query_aligned_torque(client: Client) -> dict[str, Any]:
@@ -1622,6 +2021,7 @@ def _run_velocity_capture(
     metadata_path = run_directory / "metadata.json"
     telemetry_path = run_directory / "telemetry.csv"
     full_jsonl_path = run_directory / "telemetry.jsonl"
+    current_trace_path = run_directory / "current_trace.csv"
     initial_drive = query_status(client)
     initial_encoder = query_encoder(client)
     metadata: dict[str, Any] = {
@@ -1637,6 +2037,7 @@ def _run_velocity_capture(
             "duration_millis": args.duration_ms,
             "capture_interval_seconds": args.interval,
             "scheduled_stop_after_seconds": args.stop_after_seconds,
+            "trace_at_seconds": args.trace_at_seconds,
         },
         "transport": {
             "port": args.port,
@@ -1655,6 +2056,11 @@ def _run_velocity_capture(
         "capture": {
             "telemetry_csv": telemetry_path.name,
             "full_jsonl": full_jsonl_path.name if args.jsonl else None,
+            "current_trace_csv": (
+                current_trace_path.name
+                if args.trace_at_seconds is not None
+                else None
+            ),
             "terminal_update_interval_seconds": (
                 None if args.quiet else VELOCITY_CONSOLE_INTERVAL_SECONDS
             ),
@@ -1678,6 +2084,8 @@ def _run_velocity_capture(
     capture_error: Exception | None = None
     final_snapshot: dict[str, Any] | None = None
     scheduled_stop_sent = False
+    trace_arm_sent = False
+    trace_arm_host_elapsed_seconds: float | None = None
     exit_code = 2
 
     with telemetry_path.open("w", encoding="utf-8", newline="") as csv_stream:
@@ -1715,6 +2123,17 @@ def _run_velocity_capture(
                     _update_velocity_capture_analysis(analysis, row)
                     terminal = row["state"] in {"complete", "stopped", "failed"}
                     now = time.monotonic()
+                    if (
+                        not terminal
+                        and args.trace_at_seconds is not None
+                        and not trace_arm_sent
+                        and now - capture_start >= args.trace_at_seconds
+                    ):
+                        arm_current_trace(client)
+                        trace_arm_sent = True
+                        trace_arm_host_elapsed_seconds = round(
+                            now - capture_start, 6
+                        )
                     if not args.quiet and (
                         terminal or now >= next_console_update
                     ):
@@ -1789,6 +2208,15 @@ def _run_velocity_capture(
 
     if console_active:
         print()
+    trace_samples: list[dict[str, Any]] = []
+    if trace_arm_sent:
+        try:
+            trace_samples = read_current_trace(client)
+            write_current_trace_csv(current_trace_path, trace_samples)
+        except (ProtocolError, OSError, ValueError) as error:
+            if capture_error is None:
+                capture_error = error
+                exit_code = 2
     final_analysis = _finalize_velocity_capture_analysis(analysis)
     metadata["completed_at"] = datetime.now().astimezone().isoformat(
         timespec="seconds"
@@ -1816,6 +2244,16 @@ def _run_velocity_capture(
             "exit_code": exit_code,
             "stop_error": stop_error,
             "scheduled_stop_sent": scheduled_stop_sent,
+            "trace_arm_sent": trace_arm_sent,
+            "trace_arm_host_elapsed_seconds": (
+                trace_arm_host_elapsed_seconds
+            ),
+            "trace_sample_count": len(trace_samples),
+            "trace_duration_seconds": (
+                trace_samples[-1]["time_seconds"]
+                if trace_samples
+                else None
+            ),
             "error": str(capture_error) if capture_error is not None else None,
         }
     )
@@ -2420,10 +2858,26 @@ def make_parser() -> argparse.ArgumentParser:
         "configuration", help="read persistent and active motor configuration"
     )
     commands.add_parser(
-        "save-configuration", help="persist the active alignment configuration"
+        "save-configuration", help="persist the full active motor configuration"
     )
     commands.add_parser(
         "clear-calibration", help="persistently invalidate motor alignment"
+    )
+    set_gains = commands.add_parser(
+        "set-current-loop-gains",
+        help="apply volatile current-loop gains without saving them",
+    )
+    set_gains.add_argument(
+        "--kp", type=float, required=True,
+        help="proportional gain in PWM-permille Q16 units per ADC count",
+    )
+    set_gains.add_argument(
+        "--ki", type=float, required=True,
+        help="integral gain in PWM-permille Q16 units per count per 20 kHz step",
+    )
+    commands.add_parser(
+        "revert-current-loop-gains",
+        help="restore volatile current-loop gains from stored configuration",
     )
     commands.add_parser(
         "torque-status", help="read aligned q-current progress and policy"
@@ -2435,9 +2889,12 @@ def make_parser() -> argparse.ArgumentParser:
         "position-status", help="read position-loop progress and policy"
     )
     trace = commands.add_parser(
-        "trace", help="read the completed 20 kHz current-loop startup trace"
+        "trace", help="read the completed 20 kHz current-loop burst trace"
     )
     trace.add_argument("--output", help="write JSON lines to this path")
+    commands.add_parser(
+        "arm-trace", help="re-arm the one-shot trace during active motion"
+    )
 
     configure = commands.add_parser("configure", help="set test demand")
     configure_current = configure.add_mutually_exclusive_group(required=True)
@@ -2489,6 +2946,14 @@ def make_parser() -> argparse.ArgumentParser:
         help=(
             "send generic STOP over the active connection after this many "
             "seconds, for deterministic shutdown qualification"
+        ),
+    )
+    velocity.add_argument(
+        "--trace-at-seconds",
+        type=float,
+        help=(
+            "re-arm the 256-sample timing/current burst this many seconds "
+            "after the velocity command starts"
         ),
     )
     velocity.add_argument(
@@ -2642,6 +3107,16 @@ def main() -> int:
         elif args.command == "clear-calibration":
             client.transact(COMMAND_CLEAR_CALIBRATION)
             print_json(query_configuration(client))
+        elif args.command == "set-current-loop-gains":
+            configuration = query_configuration(client)
+            updated = set_current_loop_gains(
+                client, args.kp, args.ki, configuration
+            )
+            print_current_loop_gain_summary(updated)
+        elif args.command == "revert-current-loop-gains":
+            print_current_loop_gain_summary(
+                revert_current_loop_gains(client)
+            )
         elif args.command == "torque-status":
             print_json(query_aligned_torque(client))
         elif args.command == "velocity-status":
@@ -2664,6 +3139,9 @@ def main() -> int:
             else:
                 for sample in samples:
                     print(json.dumps(sample, sort_keys=True), flush=True)
+        elif args.command == "arm-trace":
+            arm_current_trace(client)
+            print("current trace armed")
         elif args.command == "configure":
             if args.counts is not None:
                 amplitude_counts = args.counts
@@ -2854,6 +3332,20 @@ def main() -> int:
                 raise ProtocolError(
                     "--stop-after-seconds must be positive and earlier than "
                     "the firmware deadline"
+                )
+            trace_deadline_seconds = (
+                args.stop_after_seconds
+                if args.stop_after_seconds is not None
+                else args.duration_ms / 1000.0
+            )
+            if args.trace_at_seconds is not None and (
+                not math.isfinite(args.trace_at_seconds)
+                or args.trace_at_seconds < 0.0
+                or args.trace_at_seconds >= trace_deadline_seconds
+            ):
+                raise ProtocolError(
+                    "--trace-at-seconds must be nonnegative and earlier than "
+                    "the scheduled STOP or firmware deadline"
                 )
             velocity_status = query_velocity(client)
             policy = velocity_status["policy"]

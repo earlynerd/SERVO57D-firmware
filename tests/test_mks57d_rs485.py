@@ -10,6 +10,21 @@ from unittest import mock
 from tools import mks57d_rs485 as console
 
 
+def encoded_response(sequence: int, command: int, body: bytes = b"") -> bytes:
+    payload = b"\x00" + body
+    decoded = struct.pack(
+        ">BBHBHB",
+        console.PROTOCOL_VERSION,
+        console.DEFAULT_ADDRESS,
+        sequence,
+        console.MESSAGE_RESPONSE,
+        command,
+        len(payload),
+    ) + payload
+    decoded += struct.pack(">H", console.crc16_ccitt_false(decoded))
+    return console.cobs_encode(decoded) + b"\x00"
+
+
 def velocity_status(state: str) -> dict:
     active = state not in {"complete", "stopped", "failed"}
     result = (
@@ -174,7 +189,44 @@ def capture_args(root: Path) -> SimpleNamespace:
         jsonl=False,
         quiet=True,
         stop_after_seconds=None,
+        trace_at_seconds=None,
     )
+
+
+def current_trace_sample() -> dict:
+    return {
+        "schema": 2,
+        "captured_sample_count": 1,
+        "sample_index": 0,
+        "loop_sample_count": 123,
+        "time_seconds": 0.0,
+        "reference_counts": {"a": 10, "b": -10},
+        "measured_counts": {"a": 9, "b": -9},
+        "phase_voltage_permille": {"a": 100, "b": -100},
+        "phase_voltage_command_volts": {"a": 2.4, "b": -2.4},
+        "phase_prediction": {
+            "electrical_phase_q32": 0x40000000,
+            "electrical_phase_turns": 0.25,
+            "electrical_phase_degrees": 90.0,
+            "age_us": 1000,
+        },
+        "timing": {
+            "cycle_counter_hz": 64_000_000,
+            "pwm_timer_hz": 32_000_000,
+            "trigger_timer_count": 1284,
+            "trigger_timer_us": 40.125,
+            "trigger_to_dma_timer_ticks": 160,
+            "trigger_to_dma_us": 5.0,
+            "dma_to_pwm_stage_cycles": 160,
+            "dma_to_pwm_stage_us": 2.5,
+            "dma_to_trace_record_cycles": 192,
+            "dma_to_trace_record_us": 3.0,
+            "pwm_preload_margin_ticks": 240,
+            "pwm_preload_margin_us": 7.5,
+        },
+        "bus_voltage_volts": 24.0,
+        "phase_voltage_limit_volts": 16.8,
+    }
 
 
 def position_capture_args(root: Path) -> SimpleNamespace:
@@ -196,7 +248,259 @@ def position_capture_args(root: Path) -> SimpleNamespace:
     )
 
 
+class ConfigurationTuningTests(unittest.TestCase):
+    @staticmethod
+    def configuration_prefix(schema: int = 1) -> tuple[int, ...]:
+        return (
+            schema,
+            0x9F,
+            0,
+            1,
+            2,
+            7,
+            16384,
+            50,
+            9301,
+            8192,
+            0,
+            -1,
+            16384,
+            50,
+            9301,
+            8192,
+            0,
+            -1,
+        )
+
+    def test_configuration_schema_one_remains_decodable(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = (
+            console.CONFIGURATION_STATUS_V1_BODY.pack(
+                *self.configuration_prefix()
+            )
+        )
+
+        configuration = console.query_configuration(client)
+
+        self.assertEqual(configuration["schema"], 1)
+        self.assertFalse(configuration["tuning_supported"])
+        self.assertNotIn("current_loop_gains", configuration["active"])
+
+    def test_configuration_schema_two_decodes_all_gain_sets(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = (
+            console.CONFIGURATION_STATUS_V2_BODY.pack(
+                *self.configuration_prefix(2),
+                4 * 65536,
+                1024,
+                3 * 65536,
+                768,
+                5 * 65536,
+                512,
+                8 * 65536,
+                4096,
+            )
+        )
+
+        configuration = console.query_configuration(client)
+
+        self.assertTrue(configuration["tuning_supported"])
+        self.assertEqual(
+            configuration["default"]["current_loop_gains"][
+                "proportional_q16_per_count"
+            ],
+            4 * 65536,
+        )
+        self.assertEqual(
+            configuration["active"]["current_loop_gains"][
+                "proportional_per_count"
+            ],
+            5.0,
+        )
+        self.assertEqual(
+            configuration["stored"]["current_loop_gains"][
+                "integral_per_count_per_step"
+            ],
+            768 / 65536.0,
+        )
+        self.assertEqual(
+            configuration["limits"]["maximum_current_loop_gains"][
+                "integral_q16_per_count_per_step"
+            ],
+            4096,
+        )
+
+    def test_set_gains_emits_big_endian_signed_q16_payload(self) -> None:
+        client = mock.Mock()
+
+        console.set_current_loop_gains_q16(client, 0x00048000, 0x00000400)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_SET_CURRENT_LOOP_GAINS,
+            b"\x00\x04\x80\x00\x00\x00\x04\x00",
+        )
+
+    def test_gain_conversion_rejects_invalid_values(self) -> None:
+        for value in (-1.0, float("inf"), float("nan"), 32768.0):
+            with self.subTest(value=value):
+                with self.assertRaises(console.ProtocolError):
+                    console.current_loop_gain_to_q16(value)
+
+    def test_set_gains_validates_firmware_reported_limits(self) -> None:
+        configuration = {
+            "tuning_supported": True,
+            "limits": {
+                "maximum_current_loop_gains": {
+                    "proportional_q16_per_count": 4 * 65536,
+                    "integral_q16_per_count_per_step": 4096,
+                }
+            },
+        }
+        client = mock.Mock()
+
+        with self.assertRaisesRegex(
+            console.ProtocolError, "firmware-reported maximum"
+        ):
+            console.set_current_loop_gains(
+                client, 4.5, 0.01, configuration
+            )
+
+        client.transact.assert_not_called()
+
+    def test_parser_exposes_volatile_gain_commands(self) -> None:
+        parser = console.make_parser()
+        args = parser.parse_args(
+            ["set-current-loop-gains", "--kp", "4", "--ki", "0.015625"]
+        )
+        revert = parser.parse_args(["revert-current-loop-gains"])
+
+        self.assertEqual(args.command, "set-current-loop-gains")
+        self.assertEqual(args.kp, 4.0)
+        self.assertEqual(revert.command, "revert-current-loop-gains")
+
+
 class VelocityCaptureTests(unittest.TestCase):
+    def test_client_discards_malformed_frame_before_matching_response(self) -> None:
+        serial_port = mock.Mock()
+        serial_port.read_until.side_effect = [
+            b"\x05\x01\x00",
+            encoded_response(1, console.COMMAND_PING, b"ok"),
+        ]
+        client = console.Client(serial_port, console.DEFAULT_ADDRESS)
+
+        self.assertEqual(client.transact(console.COMMAND_PING), b"ok")
+        self.assertEqual(serial_port.read_until.call_count, 2)
+
+    def test_client_discards_stale_response_before_matching_response(self) -> None:
+        serial_port = mock.Mock()
+        serial_port.read_until.side_effect = [
+            encoded_response(99, console.COMMAND_PING, b"stale"),
+            encoded_response(1, console.COMMAND_PING, b"ok"),
+        ]
+        client = console.Client(serial_port, console.DEFAULT_ADDRESS)
+
+        self.assertEqual(client.transact(console.COMMAND_PING), b"ok")
+        self.assertEqual(serial_port.read_until.call_count, 2)
+
+    def test_current_trace_schema_two_decodes_timing(self) -> None:
+        body = console.CURRENT_TRACE_V2_BODY.pack(
+            2,
+            256,
+            42,
+            1234,
+            -10,
+            10,
+            -9,
+            9,
+            -100,
+            100,
+            0x40000000,
+            1001,
+            1284,
+            321,
+            222,
+            250,
+            240,
+        )
+        client = mock.Mock()
+        client.transact.return_value = body
+
+        sample = console.query_current_trace_sample(client, 42)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_GET_CURRENT_TRACE, struct.pack(">H", 42)
+        )
+        self.assertEqual(sample["schema"], 2)
+        self.assertEqual(
+            sample["phase_prediction"]["electrical_phase_degrees"], 90.0
+        )
+        self.assertEqual(
+            sample["timing"]["trigger_to_dma_timer_ticks"], 321
+        )
+        self.assertEqual(sample["timing"]["pwm_preload_margin_ticks"], 240)
+
+    def test_current_trace_schema_one_remains_decodable(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.CURRENT_TRACE_V1_BODY.pack(
+            1, 1, 0, 5, 1, -1, 2, -2, 3, -3
+        )
+
+        sample = console.query_current_trace_sample(client, 0)
+
+        self.assertEqual(sample["schema"], 1)
+        self.assertIsNone(sample["timing"]["trigger_timer_count"])
+        self.assertIsNone(
+            sample["phase_prediction"]["electrical_phase_q32"]
+        )
+
+    def test_current_trace_read_retries_an_idempotent_sample(self) -> None:
+        sample = current_trace_sample()
+        with (
+            mock.patch.object(console, "query_status", return_value={}),
+            mock.patch.object(
+                console,
+                "query_current_trace_sample",
+                side_effect=[
+                    console.TransportError("truncated COBS frame"),
+                    sample,
+                ],
+            ) as query_sample,
+        ):
+            trace = console.read_current_trace(mock.Mock())
+
+        self.assertEqual(trace[0]["sample_index"], 0)
+        self.assertEqual(query_sample.call_count, 2)
+
+    def test_current_trace_read_does_not_retry_device_errors(self) -> None:
+        with (
+            mock.patch.object(console, "query_status", return_value={}),
+            mock.patch.object(
+                console,
+                "query_current_trace_sample",
+                side_effect=console.ProtocolError(
+                    "device returned invalid_payload"
+                ),
+            ) as query_sample,
+        ):
+            with self.assertRaisesRegex(
+                console.ProtocolError, "invalid_payload"
+            ):
+                console.read_current_trace(mock.Mock())
+
+        query_sample.assert_called_once_with(mock.ANY, 0)
+
+    def test_arm_trace_is_a_first_class_command(self) -> None:
+        parser = console.make_parser()
+        client = mock.Mock()
+
+        args = parser.parse_args(["arm-trace"])
+        console.arm_current_trace(client)
+
+        self.assertEqual(args.command, "arm-trace")
+        client.transact.assert_called_once_with(
+            console.COMMAND_ARM_CURRENT_TRACE
+        )
+
     def test_commissioning_status_reports_physical_voltage(self) -> None:
         body = console.STATUS_V3_BODY.pack(
             3,
@@ -569,6 +873,52 @@ class VelocityCaptureTests(unittest.TestCase):
             self.assertIn("measured_velocity_rps", rows[-1])
             self.assertNotIn("policy", rows[-1])
             self.assertFalse((run_directory / "telemetry.jsonl").exists())
+
+    def test_capture_arms_and_saves_current_trace_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = capture_args(root)
+            args.trace_at_seconds = 0.0
+            arm = mock.Mock()
+            read = mock.Mock(return_value=[current_trace_sample()])
+            patches = self.common_patches(
+                [
+                    velocity_status("tracking"),
+                    velocity_status("complete"),
+                ]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "arm_current_trace", arm),
+                mock.patch.object(console, "read_current_trace", read),
+            ):
+                result = console._run_velocity_capture(
+                    FakeClient(),
+                    args,
+                    round(0.1 * 65536.0),
+                    25,
+                    velocity_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            arm.assert_called_once()
+            read.assert_called_once()
+            run_directory = next(root.iterdir())
+            metadata = json.loads(
+                (run_directory / "metadata.json").read_text(encoding="utf-8")
+            )
+            with (run_directory / "current_trace.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertTrue(metadata["capture"]["trace_arm_sent"])
+            self.assertEqual(metadata["capture"]["trace_sample_count"], 1)
+            self.assertEqual(rows[0]["pwm_preload_margin_us"], "7.5")
 
     def test_ambiguous_start_error_still_sends_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

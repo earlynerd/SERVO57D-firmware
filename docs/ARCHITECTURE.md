@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.29.3 source implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.31.0 source implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -29,6 +29,10 @@ dispatch age and publishes the evidence needed to inspect predictor rejection.
 Firmware 0.29.2 reconciles the preempted-SysTick epoch gap through a bounded
 monotonic microsecond publication while retaining the established priority
 ordering.
+Firmware 0.30.1 predicts aligned phase to the measured PWM application
+boundary. Firmware 0.31.0 makes current-loop gains a safe-state product
+configuration: trials are volatile, persistence remains a separate foreground
+transaction, and active control still has one immutable configuration.
 
 ## Design priorities
 
@@ -82,7 +86,9 @@ The current image implements:
 - A project-owned persistent-configuration service using the final two 2 KiB
   Flash pages as alternating records. Schema, length, generation, CRC-32,
   semantic validation, and a commit-last marker protect boot loading; a newer
-  incomplete or corrupt slot falls back to the previous record.
+  incomplete or corrupt slot falls back to the previous record. Schema-1
+  alignment records load with current firmware's default PI gains and migrate
+  to schema 2 only through an explicit save or later configuration change.
 - A versioned, sequence-protected debugger diagnostic record published by the foreground loop.
 - A monotonic boot self-test ledger covering memory, clocks, priorities, passive GPIO construction, timebase, application state, and IWDG readiness.
 - An edge-aligned 20 kHz TIM3 backend mapping channels 1-4 to
@@ -90,11 +96,13 @@ The current image implements:
   direct-GPIO all-low panic fallback.
 - A fixed-point A/B PI current loop with conditional anti-windup,
   low-zero sign-magnitude H-bridge modulation, independent reference/raw-current/voltage/
-  duty bounds, and DMA/PWM/deadline fault latching.
+  duty bounds, and DMA/PWM/deadline fault latching. Kp/Ki may be rebuilt only
+  through an inactive, fault-free foreground transaction that first establishes
+  `ZERO`; the 20 kHz ISR never observes a partial configuration.
 - A fixed-point electrical-phase predictor owned by the current backend. Each
   accepted 1 kHz observation supplies measured phase, filtered mechanical
   velocity, direction, and timestamp; each 20 kHz current event extrapolates to
-  the following preload boundary, regenerates the q-axis A/B references, and
+  the measured PWM application boundary, regenerates the q-axis A/B references, and
   faults through the common `ZERO` path if observation age exceeds 3 ms.
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
@@ -107,7 +115,9 @@ The current image implements:
   authority is released. Boot restores motor geometry/alignment but never
   authority, pending work, leases, faults, or startup current-sensor zeros;
   explicit safe-state save and persistent-clear operations use the same
-  production configuration service.
+  production configuration service. Automatic alignment save and calibration
+  clear preserve the previously stored tuning (or defaults when no record
+  exists); only explicit save promotes volatile-active gains.
 - A portable fixed-point aligned-torque controller that slews signed q-current,
   validates calibrated electrical phase and publishes bounded predictor seeds,
   reports its
@@ -131,10 +141,9 @@ The current image implements:
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
   deterministic mechanical and electrical host-plant tests.
-- A portable application shell that arbitrates native, Modbus, Makerbase,
-  step/direction, and local motion sources; applies explicit enable, stop,
-  disable, lease, completion, and recovery contracts; and drives the servo core
-  in end-to-end simulated-plant tests.
+- Standalone cumulative-count step/direction decoding and portable d/q current
+  regulation remain host-tested and Arm-compiled for future integration. They
+  do not own product motion or bridge authority.
 
 The drive supervisor is the only application-level bridge authority. The
 current-loop backend owns TIM3, DMA channel 1 completion, independent electrical
@@ -146,29 +155,23 @@ envelope expands.
 
 The product-owned portable modules live under `firmware/src/control/`,
 `firmware/src/app/`, and `firmware/src/services/` and are linked into `mks57d`.
-The general outer application/servo shell, step-direction path, and d/q
-voltage-control modules form a separate `mks57d_motion_candidate` compile
-target and are not linked into the product image. The focused product velocity
-and relative-position controllers, their trajectory/PI dependencies, and the
-encoder-liveness guard are linked. Both paths are compiled for the
-exact Arm target, and the candidate is also covered by host tests. Their contracts use
-revolutions, seconds, amperes, volts, and radians explicitly.
+The focused product velocity and relative-position controllers, their
+trajectory/PI dependencies, and the encoder-liveness guard are linked. The
+standalone step/direction decoder and d/q current controller form the
+`mks57d_future_control` compile target and remain outside the product image;
+both also retain host tests. Their contracts use revolutions, seconds,
+amperes, volts, and radians explicitly.
 
 `rotor_control_runtime` alone consumes raw encoder samples and owns the
 angle-unwrapping/filter state. Its sequence-protected snapshot publishes a
 `rotor_observation_t` containing validity, timestamp, unwrapped position, and
-filtered velocity. The motion candidate may validate and cache that immutable
-observation but cannot reconstruct position from raw counts or maintain a
-second estimator. Its servo core emits a hard-clamped torque-current request;
-invalid/stale feedback, missed control deadlines, excessive following error,
-and invalid arithmetic latch the output invalid. The current-control
-core accepts stationary measured current plus d/q references and emits a
-bounded stationary voltage vector. Firmware 0.23 deliberately does not connect
-that unqualified voltage output to PWM: q-current is transformed into A/B
-current references and regulated by the proven board-specific backend. The
-0.25 velocity loop drives this torque interface; the focused 0.26 position
-controller drives the velocity loop, while the broader candidate shell remains
-disconnected.
+filtered velocity. The focused velocity and relative-position controllers
+consume that immutable observation and independently enforce feedback age,
+deadlines, speed, acceleration, current, and following-error limits. The
+portable d/q current controller accepts stationary measured current plus d/q
+references and emits a bounded stationary voltage vector, but that unqualified
+future output is not connected to PWM. Product q-current is instead transformed
+into A/B current references and regulated by the proven board-specific backend.
 
 `main.c` uses `product_command_context_t` as the foreground composition
 aggregate for diagnostics, alignment, torque, configuration, and telemetry.
@@ -208,7 +211,7 @@ The initial bring-up should be bare-metal. An RTOS can be reconsidered only if m
 
 ```mermaid
 flowchart LR
-    CMD["RS-485 or step/direction command"] --> AUTH["Drive supervisor, authority, lease, and completion"]
+    CMD["RS-485 command"] --> AUTH["Drive supervisor and motion authority"]
     AUTH --> MOTION["Trajectory, position, and velocity limits"]
     ENC["SPI magnetic encoder"] --> EST["Angle unwrap, velocity, and electrical angle"]
     EST --> OBS["Immutable rotor observation"]
@@ -234,7 +237,9 @@ flowchart LR
   CS setup/hold, and SPI DMA completion publishes deferred work. PendSV decodes
   and advances the rotor runtime; foreground consumes snapshots and mailboxes.
 - **Position/velocity/motion loop:** runs below interrupt priority in the initial design and generates bounded `Id`/`Iq` demand.
-- **Communications/background:** parses complete frames outside the current ISR, maintains diagnostics, and commits configuration only from safe states.
+- **Communications/background:** parses complete frames outside the current ISR,
+  maintains diagnostics, applies or reverts volatile tuning only from a safe
+  state, and commits configuration only through a separate explicit action.
 
 The N32L406 has single-bank Flash behavior: erase/program stalls code fetches.
 Configuration maintenance therefore runs only in foreground with interrupts

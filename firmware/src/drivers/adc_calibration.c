@@ -42,46 +42,6 @@ bool adc_calibration_build(adc_calibration_t* output,
     return true;
 }
 
-bool adc_sample_convert(const adc_sample_t* raw,
-                        const adc_calibration_t* calibration,
-                        adc_engineering_sample_t* output)
-{
-    adc_engineering_sample_t candidate;
-    float volts_per_count;
-    float amperes_per_count;
-    float vbus_ratio;
-
-    if (!adc_sample_is_valid(raw) ||
-        !adc_calibration_is_valid(calibration) ||
-        (output == NULL))
-    {
-        return false;
-    }
-
-    volts_per_count =
-        calibration->reference_voltage / (float)ADC_SAMPLE_RAW_MAX;
-    amperes_per_count = volts_per_count /
-                        (ADC_CURRENT_SHUNT_OHMS *
-                         ADC_CURRENT_SENSE_GAIN);
-    vbus_ratio =
-        (ADC_VBUS_UPPER_RESISTANCE_OHMS +
-         ADC_VBUS_LOWER_RESISTANCE_OHMS) /
-        ADC_VBUS_LOWER_RESISTANCE_OHMS;
-
-    candidate.current_b_amperes =
-        ((float)raw->current_b_raw - calibration->current_b_zero_raw) *
-        amperes_per_count;
-    candidate.current_a_amperes =
-        ((float)raw->current_a_raw - calibration->current_a_zero_raw) *
-        amperes_per_count;
-    candidate.vbus_volts =
-        (float)raw->vbus_raw * volts_per_count * vbus_ratio;
-    candidate.capture_index = raw->capture_index;
-
-    *output = candidate;
-    return true;
-}
-
 bool adc_zero_calibrator_init(adc_zero_calibrator_t* calibrator,
                               float reference_voltage)
 {

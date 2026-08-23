@@ -825,3 +825,37 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** The former 1,000 rev/s² value was an untraceable sanity ceiling, and an undocumented shorter inner deadline would convert ordinary completion into a position actuator fault.
 - **Supersedes:** The 1,000 rev/s² acceleration clause in “Open the full attached-motor torque evaluation envelope.” It retains the fourfold 64/256 rev/s² cascade headroom and every current, speed, following-error, timing, and `ZERO` contract.
 - **Affects:** aligned-torque acceleration policy, position cascade construction, operating limits, and host regressions
+
+## 2026-08-22 — Retire the superseded general motion shell
+
+- **Decision:** Remove `application_core`, `motion_manager`, and `servo_core` instead of retaining a second unlinked control architecture. Also remove the unused passive ADC sample/conversion path, blocking SPI/encoder path, standalone diagnostic renderers, duplicate fault latch, and unused public/status helpers. Keep the cumulative-count step/direction decoder and portable d/q current controller under the unlinked `mks57d_future_control` Arm target and host tests.
+- **Why:** The product supervisor, rotor runtime, focused position/velocity controllers, aligned-q-current actuator, and current backend now own the corresponding active control and safety behavior. The old shell added only deferred policy—multi-source arbitration, retry/completion history, persistent leases, absolute targets, and controlled disable—and retaining it created drift rather than product capability.
+- **Supersedes:** “Develop the production servo core against host simulation,” “Give motion authority to one source with controlled lease expiry,” and later decisions that kept the general shell compile-only. Deferred features require fresh integration through the product authority path.
+- **Affects:** firmware/source layout, host tests, Arm build targets, architecture, protocol status, ADC documentation, and active deferrals
+- **Validation:** Host tests pass. Clean Debug and Release Arm builds pass with the future-control primitives included; Debug uses 60,632 bytes Flash and Release uses 52,800 bytes, both with 7,452 bytes SRAM1. The completeness scan reports no stubs or placeholders; its seven findings are reviewed callback-context casts, not incomplete behavior.
+
+## 2026-08-22 — Add a re-armable current/timing burst
+
+- **Decision:** Firmware 0.30.0 / protocol 1.13 extends the existing 256-sample current trace into a re-armable one-shot. Schema 2 appends predicted phase/age, 32 MHz TIM2 trigger phase and trigger-to-DMA latency, 64 MHz DWT DMA-to-PWM/trace timing, and TIM3 preload margin. `ARM_CURRENT_TRACE` is active-only; reads remain post-authority.
+- **Why:** Steady-state 8-12 rev/s evidence needs acquisition, compute, and preload timing correlated with current tracking without streaming from the fast path.
+- **Timing contract:** The ISR performs fixed SRAM stores only while armed and disarms after 12.8 ms. Formatting and RS-485 transfer occur after STOP. DWT is used only across uninterrupted ISR work; TIM2 supplies wall time across possible core sleep.
+- **Supersedes:** The startup-only ownership and 4,096-byte schema-1 buffer contract; old traces remain host-decodable.
+- **Affects:** current backend, ADC/TIM2/TIM3 instrumentation, native protocol, host capture tooling, timing bring-up, and SRAM budget
+- **Validation:** Native and 22 Python tests pass. Debug/Release Arm builds use 61,496/53,608 bytes Flash and 11,564 bytes SRAM1. Flash and hardware timing evidence remain open.
+
+## 2026-08-22 — Predict phase to the measured PWM application boundary
+
+- **Decision:** Firmware 0.30.1 / protocol 1.13 retains the 80%-carrier current-acquisition point, 20 kHz edge-aligned PWM, preloaded compare writer, and one-intervening-update guardian contract. It changes the fast electrical-phase predictor lead from the nominal 7 us estimate to 55 us: the measured interval from regular-current DMA completion near 45 us to the 100 us update at which the newly staged compares become active.
+- **Why:** The first re-armed +8 rev/s burst on firmware 0.30.0 measured a 41.094 us trigger, 3.938 us trigger-to-DMA interval, and 20.578-21.141 us from DMA entry to compare staging. Staging therefore occurred after the 50 us update, with 33.031-33.594 us left to the following update. The old predictor targeted an update the control path could not reach.
+- **Timing contract:** The priority-1 carrier guardian may preempt the priority-2 current ISR at the intentional intervening update, so the DWT DMA-to-stage measurement is end-to-end and includes that preemption. A second update without a new output still faults through the common all-low `ZERO` path. Trigger phase, ADC configuration, current/voltage/duty limits, PWM frequency, protocol schemas, and authority ownership are unchanged.
+- **Supersedes:** The 7 us output-lead clause in “Advance aligned electrical phase in the 20 kHz backend” and the “uninterrupted ISR work” wording in “Add a re-armable current/timing burst.”
+- **Affects:** firmware version 0.30.1, phase-predictor configuration, fast-path timing documentation, operating-limit evidence, and the +8/+12 rev/s qualification sequence
+- **Validation:** The rebuilt native suite passes; all 22 applicable Python tests pass with two optional skips. Clean Debug/Release Arm builds use 61,484/53,612 bytes Flash and 11,564 bytes SRAM1. The repeated +8 rev/s hardware burst remains open.
+
+## 2026-08-22 — Make motor tuning volatile first and persistence explicit
+
+- **Decision:** Firmware 0.31.0 / protocol 1.14 moves current-loop Kp/Ki into schema-2 product configuration. The active pair may be applied or reverted only while the supervisor has no authority and the backend is inactive, fault-free, and re-established in direct-GPIO `ZERO`. The 20 kHz loop receives one immutable copied configuration for each active interval.
+- **Persistence contract:** A tuning sweep never saves and restores the starting gains plus diagnostic configuration on exit. Only an explicitly confirmed `SAVE_CONFIGURATION` promotes the full active motor configuration. Automatic alignment and calibration clear preserve the previously stored gains, or compiled defaults when storage is empty, so neither operation can promote an experimental pair as a side effect.
+- **Why:** Matched Kp=2/3/4 captures showed useful improvement but also established that gains belong to a motor, supply, and load—not a universal firmware build. Reflashing compiled constants is not a production tuning workflow.
+- **Supersedes:** Compile-time-only ownership of current-loop gains. It does not change current, voltage, duty, duration, timing, authority, or fault bounds.
+- **Affects:** configuration storage and status, current backend reconfiguration, native protocol, RS-485 tools, guided capture/report artifacts, operating limits, and bring-up.

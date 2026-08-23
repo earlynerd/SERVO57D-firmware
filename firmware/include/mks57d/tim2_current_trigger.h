@@ -11,5 +11,7 @@ enum
 };
 
 bool tim2_current_trigger_init(uint32_t timer_clock_hz);
+uint16_t tim2_current_trigger_counter(void);
+uint16_t tim2_current_trigger_elapsed_ticks(uint16_t start, uint16_t end);
 
 #endif

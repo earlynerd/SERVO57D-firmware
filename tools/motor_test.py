@@ -15,21 +15,40 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from analyze_current_loop import analyze as analyze_current_loop
-from mks57d_rs485 import (
-    COMMAND_CONFIGURE_CURRENT_TEST,
-    COMMAND_START_CURRENT_TEST,
-    COMMAND_STOP_CURRENT_TEST,
-    COUNTS_TO_MILLIAMPERES,
-    DEFAULT_ADDRESS,
-    LEG_VALUES,
-    Client,
-    ProtocolError,
-    open_serial,
-    query_encoder,
-    query_status,
-    read_current_trace,
-)
+try:
+    from .analyze_current_loop import analyze as analyze_current_loop
+    from .mks57d_rs485 import (
+        COMMAND_CONFIGURE_CURRENT_TEST,
+        COMMAND_START_CURRENT_TEST,
+        COMMAND_STOP_CURRENT_TEST,
+        COUNTS_TO_MILLIAMPERES,
+        DEFAULT_ADDRESS,
+        LEG_VALUES,
+        Client,
+        ProtocolError,
+        arm_current_trace,
+        open_serial,
+        query_encoder,
+        query_status,
+        read_current_trace,
+    )
+except ImportError:  # Direct execution from tools/.
+    from analyze_current_loop import analyze as analyze_current_loop
+    from mks57d_rs485 import (
+        COMMAND_CONFIGURE_CURRENT_TEST,
+        COMMAND_START_CURRENT_TEST,
+        COMMAND_STOP_CURRENT_TEST,
+        COUNTS_TO_MILLIAMPERES,
+        DEFAULT_ADDRESS,
+        LEG_VALUES,
+        Client,
+        ProtocolError,
+        arm_current_trace,
+        open_serial,
+        query_encoder,
+        query_status,
+        read_current_trace,
+    )
 
 
 LOOP_FREQUENCY_HZ = 20_000.0
@@ -76,6 +95,27 @@ def _format_number(value: float) -> str:
     if absolute >= 10.0:
         return f"{value:.1f}"
     return f"{value:.2f}"
+
+
+def _plot_series_css(
+    color_count: int = 5,
+    dash_pattern: str = "7 5",
+    legend_width_pixels: int = 20,
+) -> str:
+    color_classes = "".join(
+        f".s{index}{{--series-color:var(--s{index})}}"
+        for index in range(1, color_count + 1)
+    )
+    return (
+        ".series{fill:none;stroke:var(--series-color);stroke-width:2.2;"
+        "vector-effect:non-scaling-stroke}"
+        f".dashed{{stroke-dasharray:{dash_pattern}}}"
+        ".point{fill:var(--series-color);stroke:none}"
+        f"{color_classes}"
+        f".legend-line{{width:{legend_width_pixels}px;border-top:3px solid "
+        "var(--series-color);display:inline-block}"
+        ".legend-line.dashed{border-top-style:dashed}"
+    )
 
 
 def _polyline_plot(
@@ -462,8 +502,8 @@ def write_report(
     .stat {{ background:var(--surface); border:1px solid var(--grid); border-radius:8px; padding:10px 12px; }} .stat-label {{ display:block; color:var(--muted); font-size:.82rem; }} .stat strong {{ font-size:1.08rem; font-weight:600; }}
     section {{ margin:24px 0 34px; }} svg {{ display:block; width:100%; height:auto; min-height:240px; }} .frame {{ fill:var(--surface); stroke:var(--grid); }}
     .grid {{ stroke:var(--grid); stroke-width:1; }} .tick {{ fill:var(--muted); font-size:12px; }} .axis-label {{ fill:var(--fg); font-size:13px; }}
-    .series {{ fill:none; stroke-width:2.2; vector-effect:non-scaling-stroke; }} .dashed {{ stroke-dasharray:7 5; }} .s1 {{ stroke:var(--s1); }} .s2 {{ stroke:var(--s2); }} .s3 {{ stroke:var(--s3); }} .s4 {{ stroke:var(--s4); }} .s5 {{ stroke:var(--s5); }}
-    .legend {{ display:flex; flex-wrap:wrap; gap:7px 18px; color:var(--muted); margin-bottom:3px; }} .legend span {{ display:inline-flex; align-items:center; gap:6px; }} .legend-line {{ width:20px; border-top:3px solid; display:inline-block; }} .legend-line.dashed {{ border-top-style:dashed; }}
+    {_plot_series_css()}
+    .legend {{ display:flex; flex-wrap:wrap; gap:7px 18px; color:var(--muted); margin-bottom:3px; }} .legend span {{ display:inline-flex; align-items:center; gap:6px; }}
     @media (max-width:600px) {{ main {{ padding:16px; }} svg {{ min-height:180px; }} }}
   </style>
 </head>
@@ -521,6 +561,7 @@ def _run_capture(
     duration_ms: int,
     interval: float,
     telemetry_path: Path,
+    trace_at_seconds: float | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     client.transact(
         COMMAND_START_CURRENT_TEST,
@@ -528,6 +569,7 @@ def _run_capture(
     )
     samples: list[dict[str, Any]] = []
     completed = False
+    trace_armed = False
     deadline = time.monotonic() + duration_ms / 1000.0 + 5.0
     with telemetry_path.open("w", encoding="utf-8") as stream:
         while True:
@@ -538,6 +580,13 @@ def _run_capture(
             stream.flush()
             remaining = int(status["test"]["remote_run_remaining_millis"])
             elapsed = max(0.0, (duration_ms - remaining) / 1000.0)
+            if (
+                trace_at_seconds is not None
+                and not trace_armed
+                and elapsed >= trace_at_seconds
+            ):
+                arm_current_trace(client)
+                trace_armed = True
             measured = status["loop"]["measured_nominal_milliamperes"]
             voltage = status["loop"].get("phase_voltage_command_volts", {})
             voltage_limit = status["loop"].get("phase_voltage_limit_volts")

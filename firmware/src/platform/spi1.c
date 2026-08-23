@@ -39,7 +39,6 @@ enum
     SPI_GPIO_AF_VALUE = (1u << (SPI_GPIO_SCK_PIN * 4u)) |
                         (1u << (SPI_GPIO_MISO_PIN * 4u)),
     SPI_POLL_BUDGET = 8192u,
-    SPI_CHIP_SELECT_GUARD_CYCLES = 64u,
     SPI_SUPPORTED_CLOCK_MIN_HZ = 1000000u,
     SPI_SUPPORTED_CLOCK_MAX_HZ = 64000000u,
     SPI_ERROR_MASK = SPI_STS_MODERR | SPI_STS_OVER,
@@ -90,7 +89,6 @@ _Static_assert((SPI_PERIODIC_TIMER_TICK_HZ %
                "periodic SPI timer requires an integral interval");
 
 static bool s_spi1_initialized;
-static bool s_spi1_transfer_active;
 static volatile spi_periodic_state_t s_periodic_state =
     SPI_PERIODIC_STATE_STOPPED;
 static uint8_t s_periodic_transmit[SPI1_MAX_TRANSFER_BYTES];
@@ -102,28 +100,10 @@ static void* s_periodic_callback_context;
 static volatile spi_status_t s_deferred_status = SPI_STATUS_NOT_READY;
 static volatile uint32_t s_deferred_timestamp_us;
 static volatile uint32_t s_deferred_pending;
-static volatile uint32_t s_periodic_completed_count;
-static volatile uint32_t s_periodic_error_count;
-static volatile uint32_t s_periodic_overrun_count;
-static volatile uint32_t s_deferred_overrun_count;
-static volatile uint32_t s_latest_interval_us;
-static volatile uint32_t s_maximum_interval_us;
-static volatile uint32_t s_last_timestamp_us;
 static bool s_periodic_first_release;
 static bool s_periodic_prime_pending;
 
-static void chip_select_guard_delay(void)
-{
-    uint32_t remaining = SPI_CHIP_SELECT_GUARD_CYCLES;
-
-    /* At the N32L406 64 MHz maximum, 64 NOPs alone cover 1 us. The loop
-       overhead only lengthens both the MT6816 CS setup and hold intervals. */
-    while (remaining != 0u)
-    {
-        __NOP();
-        --remaining;
-    }
-}
+static void periodic_exchange_stop(void);
 
 static uint16_t baud_rate_bits(uint32_t peripheral_clock_hz)
 {
@@ -140,60 +120,6 @@ static uint16_t baud_rate_bits(uint32_t peripheral_clock_hz)
     return bits;
 }
 
-static spi_status_t status_error(void)
-{
-    if ((SPI1->STS & SPI_ERROR_MASK) != 0u)
-    {
-        return SPI_STATUS_PERIPHERAL_ERROR;
-    }
-    return SPI_STATUS_OK;
-}
-
-static spi_status_t wait_for_set(uint16_t mask, spi_status_t timeout_status)
-{
-    uint32_t remaining = SPI_POLL_BUDGET;
-
-    while (remaining != 0u)
-    {
-        const spi_status_t error = status_error();
-
-        if (error != SPI_STATUS_OK)
-        {
-            return error;
-        }
-        if ((SPI1->STS & mask) == mask)
-        {
-            return SPI_STATUS_OK;
-        }
-        --remaining;
-    }
-
-    return timeout_status;
-}
-
-static spi_status_t wait_for_clear(uint16_t mask,
-                                   spi_status_t timeout_status)
-{
-    uint32_t remaining = SPI_POLL_BUDGET;
-
-    while (remaining != 0u)
-    {
-        const spi_status_t error = status_error();
-
-        if (error != SPI_STATUS_OK)
-        {
-            return error;
-        }
-        if ((SPI1->STS & mask) == 0u)
-        {
-            return SPI_STATUS_OK;
-        }
-        --remaining;
-    }
-
-    return timeout_status;
-}
-
 static void clear_receive_and_overrun(void)
 {
     uint32_t remaining = SPI_POLL_BUDGET;
@@ -208,13 +134,6 @@ static void clear_receive_and_overrun(void)
         (void)SPI1->DAT;
         (void)SPI1->STS;
     }
-}
-
-static void finish_transfer(void)
-{
-    chip_select_guard_delay();
-    GPIOB->PBSC = (uint32_t)SPI_GPIO_CS_MASK;
-    s_spi1_transfer_active = false;
 }
 
 static void periodic_chip_select_high(void)
@@ -276,38 +195,18 @@ static void periodic_publish(spi_status_t status)
 
     if (s_deferred_pending != 0u)
     {
-        ++s_deferred_overrun_count;
         status = SPI_STATUS_BUS_BUSY;
     }
     for (index = 0u; index < s_periodic_length; ++index)
     {
         s_deferred_receive[index] = s_periodic_receive[index];
     }
-    if (s_last_timestamp_us != 0u)
-    {
-        const uint32_t interval_us = timestamp_us - s_last_timestamp_us;
-
-        s_latest_interval_us = interval_us;
-        if (interval_us > s_maximum_interval_us)
-        {
-            s_maximum_interval_us = interval_us;
-        }
-    }
-    s_last_timestamp_us = timestamp_us;
     s_deferred_status = status;
     s_deferred_timestamp_us = timestamp_us;
     __DMB();
     s_deferred_pending = 1u;
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 
-    if (status == SPI_STATUS_OK)
-    {
-        ++s_periodic_completed_count;
-    }
-    else
-    {
-        ++s_periodic_error_count;
-    }
 }
 
 static void periodic_fail_transfer(spi_status_t status)
@@ -351,7 +250,6 @@ bool spi1_init(uint32_t peripheral_clock_hz)
     uint16_t control;
 
     s_spi1_initialized = false;
-    s_spi1_transfer_active = false;
     s_periodic_state = SPI_PERIODIC_STATE_STOPPED;
 
     if ((peripheral_clock_hz < SPI_SUPPORTED_CLOCK_MIN_HZ) ||
@@ -408,88 +306,6 @@ bool spi1_init(uint32_t peripheral_clock_hz)
     return true;
 }
 
-spi_status_t spi1_exchange(const uint8_t* transmit,
-                           uint8_t* receive,
-                           size_t length)
-{
-    spi_status_t result;
-    size_t index;
-
-    if ((transmit == NULL) || (receive == NULL) ||
-        (length == 0u) || (length > SPI1_MAX_TRANSFER_BYTES))
-    {
-        return SPI_STATUS_INVALID_ARGUMENT;
-    }
-    if (!s_spi1_initialized)
-    {
-        return SPI_STATUS_NOT_READY;
-    }
-    if ((s_periodic_state != SPI_PERIODIC_STATE_STOPPED) ||
-        s_spi1_transfer_active || ((SPI1->STS & SPI_STS_BUSY) != 0u))
-    {
-        return SPI_STATUS_BUS_BUSY;
-    }
-
-    clear_receive_and_overrun();
-    if (status_error() != SPI_STATUS_OK)
-    {
-        return SPI_STATUS_PERIPHERAL_ERROR;
-    }
-
-    s_spi1_transfer_active = true;
-    GPIOB->PBC = (uint32_t)SPI_GPIO_CS_MASK;
-    chip_select_guard_delay();
-
-    for (index = 0u; index < length; ++index)
-    {
-        result = wait_for_set(SPI_STS_TE, SPI_STATUS_TRANSMIT_TIMEOUT);
-        if (result != SPI_STATUS_OK)
-        {
-            finish_transfer();
-            return result;
-        }
-
-        SPI1->DAT = transmit[index];
-        result = wait_for_set(SPI_STS_RNE, SPI_STATUS_RECEIVE_TIMEOUT);
-        if (result != SPI_STATUS_OK)
-        {
-            (void)wait_for_clear(SPI_STS_BUSY,
-                                 SPI_STATUS_COMPLETE_TIMEOUT);
-            finish_transfer();
-            return result;
-        }
-        receive[index] = (uint8_t)SPI1->DAT;
-    }
-
-    result = wait_for_set(SPI_STS_TE, SPI_STATUS_TRANSMIT_TIMEOUT);
-    if (result == SPI_STATUS_OK)
-    {
-        result = wait_for_clear(SPI_STS_BUSY,
-                                SPI_STATUS_COMPLETE_TIMEOUT);
-    }
-    finish_transfer();
-    return result;
-}
-
-static spi_status_t spi1_bus_exchange(void* context,
-                                      const uint8_t* transmit,
-                                      uint8_t* receive,
-                                      size_t length)
-{
-    (void)context;
-    return spi1_exchange(transmit, receive, length);
-}
-
-spi_bus_t spi1_bus(void)
-{
-    const spi_bus_t bus = {
-        .exchange = spi1_bus_exchange,
-        .context = NULL,
-    };
-
-    return bus;
-}
-
 bool spi1_periodic_exchange_start(
     const uint8_t* transmit,
     size_t length,
@@ -532,13 +348,6 @@ bool spi1_periodic_exchange_start(
     s_deferred_status = SPI_STATUS_NOT_READY;
     s_deferred_timestamp_us = 0u;
     s_deferred_pending = 0u;
-    s_periodic_completed_count = 0u;
-    s_periodic_error_count = 0u;
-    s_periodic_overrun_count = 0u;
-    s_deferred_overrun_count = 0u;
-    s_latest_interval_us = 0u;
-    s_maximum_interval_us = 0u;
-    s_last_timestamp_us = 0u;
     s_periodic_first_release = true;
     s_periodic_prime_pending = true;
 
@@ -623,13 +432,13 @@ bool spi1_periodic_exchange_start(
         (NVIC_GetPriority(PendSV_IRQn) !=
              INTERRUPT_PRIORITY_SLOW_RELEASE))
     {
-        spi1_periodic_exchange_stop();
+        periodic_exchange_stop();
         return false;
     }
     return true;
 }
 
-void spi1_periodic_exchange_stop(void)
+static void periodic_exchange_stop(void)
 {
     TIM6->CTRL1 = 0u;
     TIM7->CTRL1 = 0u;
@@ -638,21 +447,6 @@ void spi1_periodic_exchange_stop(void)
     s_periodic_state = SPI_PERIODIC_STATE_STOPPED;
     s_deferred_pending = 0u;
     s_periodic_prime_pending = false;
-}
-
-void spi1_periodic_exchange_get_stats(spi1_periodic_stats_t* stats)
-{
-    if (stats == NULL)
-    {
-        return;
-    }
-    stats->completed_count = s_periodic_completed_count;
-    stats->error_count = s_periodic_error_count;
-    stats->overrun_count = s_periodic_overrun_count;
-    stats->deferred_overrun_count = s_deferred_overrun_count;
-    stats->latest_interval_us = s_latest_interval_us;
-    stats->maximum_interval_us = s_maximum_interval_us;
-    stats->active = s_periodic_state != SPI_PERIODIC_STATE_STOPPED;
 }
 
 void TIM6_IRQHandler(void)
@@ -669,7 +463,6 @@ void TIM6_IRQHandler(void)
     }
     if (s_periodic_state != SPI_PERIODIC_STATE_IDLE)
     {
-        ++s_periodic_overrun_count;
         periodic_fail_transfer(SPI_STATUS_BUS_BUSY);
         return;
     }

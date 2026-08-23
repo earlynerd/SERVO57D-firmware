@@ -6,13 +6,22 @@
 #include <stdint.h>
 
 #include "mks57d/motor_alignment.h"
+#include "mks57d/phase_current_loop.h"
 
 enum
 {
     CONFIGURATION_STORE_SLOT_COUNT = 2u,
     CONFIGURATION_STORE_PAGE_SIZE_BYTES = 2048u,
-    CONFIGURATION_STORE_RECORD_SCHEMA_VERSION = 1u,
-    CONFIGURATION_STORE_INVALID_SLOT = 0xFFu
+    CONFIGURATION_STORE_RECORD_SCHEMA_VERSION = 2u,
+    CONFIGURATION_STORE_INVALID_SLOT = 0xFFu,
+    PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16 =
+        4 * PHASE_CURRENT_LOOP_Q16_ONE,
+    PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16 =
+        PHASE_CURRENT_LOOP_Q16_ONE / 64,
+    PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16 =
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16,
+    PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16 =
+        PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16
 };
 
 typedef struct
@@ -20,6 +29,8 @@ typedef struct
     uint16_t encoder_counts_per_revolution;
     uint16_t electrical_cycles_per_revolution;
     motor_alignment_status_t alignment;
+    int32_t current_loop_proportional_gain_q16_per_count;
+    int32_t current_loop_integral_gain_q16_per_count_per_step;
 } product_configuration_t;
 
 typedef bool (*configuration_store_read_word_fn)(
@@ -57,6 +68,7 @@ typedef struct
     configuration_store_backend_t backend;
     product_configuration_t configuration;
     uint32_t generation;
+    uint16_t record_schema_version;
     uint8_t active_slot;
     uint8_t valid_slot_mask;
     configuration_store_result_t last_result;
@@ -76,6 +88,9 @@ bool configuration_store_get(
 bool configuration_store_matches(
     const configuration_store_t* store,
     const product_configuration_t* configuration);
+void configuration_store_restore_current_loop_gains(
+    const configuration_store_t* store,
+    product_configuration_t* configuration);
 bool product_configuration_is_valid(
     const product_configuration_t* configuration);
 

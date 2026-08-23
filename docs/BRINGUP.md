@@ -117,6 +117,34 @@ the report, and restores the prior inactive test configuration. Use
 `--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
 saved report without touching the motor.
 
+On protocol 1.14, use the production tuner to compare PI candidates under the
+same fixed current and electrical-frequency points. The sweep applies gains only
+while inactive, runs each point through the same supervisor/current backend,
+aborts on fault or abnormal terminal state, and restores the starting gains and
+diagnostic configuration even after interruption:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
+```
+
+Review `session.json`, `summary.csv`, and `report.html` under the printed
+`scratch/tuning-runs/` session. The report includes both cross-trial comparisons
+and the settled 20 kHz current/voltage waveform for every completed trial.
+Replotting is offline. The sweep never persists a candidate. Apply the selected
+gains in RAM first, repeat a bounded validation, then promote them explicitly
+only after reviewing voltage headroom, overshoot, tracking, encoder motion,
+timing, and faults:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 apply --kp 4 --ki 0.015625
+py tools/mks57d_tune.py --port COM14 persist --confirm-save-active-configuration
+```
+
+After persistence, power-cycle and confirm configuration generation, stored and
+active gains, alignment, readiness, zero outputs, and fault/reset/panic state
+before another motor command. Automatic alignment save and calibration clear
+must not promote an unsaved volatile tuning trial.
+
 Use the lower-level console when inspecting individual protocol operations:
 
 ```powershell
@@ -162,13 +190,17 @@ for this open-loop rotating vector. It does not yet regulate mechanical speed,
 select direction, or command position; use encoder agreement and the generated
 plots as the acceptance evidence until the aligned outer loops exist.
 
-Firmware 0.19.0 retains the 0.18.2 `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 mA startup
+Firmware 0.19.0 used the 0.18.2 `Kp=2` with `Ki=1/64` per 20 kHz step. A 303 mA startup
 step has 6.53 ms rise time and 8% overshoot. The tested motor tracked 606 mA /
 15 Hz at -17.78 RPM and completed 1.97 revolutions during a five-second 757 mA /
 20 Hz run, with zero faults and 25.2% peak voltage effort. Operation through
 757 mA / 20 Hz is accepted on this motor; stage the enabled 1.503 A, 2.25 A,
 2.999 A, and 50-250 Hz evaluation points separately. The 256-sample startup trace is available after a run with
 `trace`; analyze saved JSON lines with `tools/analyze_current_trace.py`.
+Firmware 0.30.3 bench-tested Kp=4 at +8 rev/s without changing Ki or any
+electrical bound; firmware 0.31.0 makes both gains volatile-first product
+configuration so a different motor or supply can be measured rather than
+inheriting that candidate blindly.
 
 The tuning sweep is not an enclosed thermal qualification. Before permanently
 closing the housing, repeat the longest intended bounded duty cycle while
@@ -529,8 +561,8 @@ Use the same already-qualified low-speed move as the first predictor gate. The
 aligned-torque status A/B fields now report the references actually used by the
 20 kHz backend; they should advance between 1 kHz encoder samples while q-current
 is nonzero. Require zero prediction/backend faults and clean terminal A/B
-references. Scope DMA completion and the following TIM3 preload boundary before
-treating the configured 7 us output lead as measured timing evidence. Also
+references. Firmware 0.30.0 measured the DMA-to-PWM application interval and
+firmware 0.30.1 compensates it with a 55 us lead. Also
 measure or bound the MT6816 angle-acquisition instant relative to the timestamp
 published at completion of its four-byte SPI transaction; the predictor cannot
 remove an uncharacterized constant sensor/transport phase bias.
@@ -660,6 +692,42 @@ py tools/mks57d_rs485.py --port COM14 velocity --rpm 360 --current-limit-ma 3000
 py tools/mks57d_rs485.py --port COM14 velocity --rpm 480 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --jsonl
 py tools/mks57d_rs485.py --port COM14 velocity --rpm 720 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --jsonl
 ```
+
+On firmware 0.30.0 or newer, add a steady-state timing burst
+to the retained +8 rev/s and +12 rev/s boundary runs. The arm request is sent on
+the active serial connection at one second; after STOP/deadline release the host
+downloads the 256 samples to `current_trace.csv` beside the ordinary compact
+telemetry and metadata:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1
+py tools/mks57d_rs485.py --port COM14 velocity --rps 12 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1
+```
+
+Stop on any abnormal tracking, supply, mechanical, thermal, reset, panic, or
+fault evidence. For each accepted burst record the minimum/maximum TIM2 ADC
+trigger phase, trigger-to-DMA microseconds, DWT DMA-to-preload and
+DMA-to-trace-record microseconds, TIM3 preload margin, prediction age, phase,
+and A/B tracking error. The nominal trigger compare is 80% of the 50 us
+carrier; the trace is measurement evidence, not permission to change sampling,
+duty, voltage, or prediction lead.
+
+The first +8 rev/s firmware 0.30.0 burst completed normally with no faults. It
+measured a 41.094 us trigger, 3.938 us trigger-to-DMA interval, and
+20.578-21.141 us DMA-to-stage path. The staging crossed the 50 us update and
+left 33.031-33.594 us to the 100 us application boundary, proving that the old
+7 us predictor lead was one carrier short. Firmware 0.30.1 corrects that lead
+to 55 us without changing the ADC/PWM schedule or electrical bounds. After
+flashing 0.30.1, repeat only the +8 rev/s command first; accept normal release,
+stable timing, improved alignment, and clear faults before the +12 rev/s run.
+
+Use the Saleae only on the 3.3 V MCU-side PWM/control signals (PA6, PA7, PB0,
+PB1 or another verified low-voltage test point) with a common ground. Do not
+connect a 5 V-limited logic input to the 12-24 V motor-phase outputs. Capture
+carrier period, duty transitions, and the update boundary while the internal
+burst is armed; use a properly rated differential scope probe if motor-terminal
+waveforms are needed. The logic capture validates external edge timing, while
+the SRAM burst separates ADC/DMA latency, computation, and preload margin.
 
 At each step record sign, the bounded 256 rev/s² reference slope, overshoot,
 current saturation, encoder/control/current/backend faults, and release state.

@@ -201,18 +201,6 @@ void board_display_reset_release(void)
     GPIOB->PBSC = (uint32_t)DISPLAY_RESET_MASK;
 }
 
-void board_status_led_set(bool on)
-{
-    if (on)
-    {
-        GPIOD->PBSC = (uint32_t)STATUS_LED_MASK;
-    }
-    else
-    {
-        GPIOD->PBC = (uint32_t)STATUS_LED_MASK;
-    }
-}
-
 void board_status_led_toggle(void)
 {
     GPIOD->POD ^= (uint32_t)STATUS_LED_MASK;

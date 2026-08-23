@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "mks57d/adc_sample.h"
+#include "mks57d/adc_limits.h"
 
 enum
 {

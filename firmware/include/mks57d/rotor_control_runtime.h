@@ -12,7 +12,7 @@
 #include "mks57d/motor_alignment.h"
 #include "mks57d/position_controller.h"
 #include "mks57d/rotor_observation.h"
-#include "mks57d/spi_bus.h"
+#include "mks57d/spi_status.h"
 #include "mks57d/velocity_controller.h"
 
 enum

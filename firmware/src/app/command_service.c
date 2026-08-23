@@ -293,6 +293,41 @@ void command_service_dispatch(const command_service_context_t* context,
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 
+        case COMMAND_OPERATION_SET_CURRENT_LOOP_GAINS:
+            if (request->payload_length != 8u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->configuration.set_current_loop_gains == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->configuration.set_current_loop_gains(
+                context->configuration.context,
+                (int32_t)read_u32_be(request->payload),
+                (int32_t)read_u32_be(&request->payload[4]));
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
+        case COMMAND_OPERATION_REVERT_CURRENT_LOOP_GAINS:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->configuration.revert_current_loop_gains == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status =
+                context->configuration.revert_current_loop_gains(
+                    context->configuration.context);
+            response->kind = COMMAND_RESPONSE_NONE;
+            return;
+
         case COMMAND_OPERATION_START_ALIGNED_TORQUE:
             if (request->payload_length != 6u)
             {
@@ -470,6 +505,21 @@ void command_service_dispatch(const command_service_context_t* context,
             {
                 response->kind = COMMAND_RESPONSE_CURRENT_TRACE;
             }
+            return;
+
+        case COMMAND_OPERATION_ARM_CURRENT_TRACE:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->commissioning.arm_current_trace == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->commissioning.arm_current_trace(
+                context->commissioning.context);
             return;
 
         default:

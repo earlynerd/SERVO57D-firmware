@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mks57d/spi_bus.h"
+#include "mks57d/spi_status.h"
 
 enum
 {
@@ -21,22 +21,7 @@ typedef void (*spi1_periodic_exchange_callback_t)(
     size_t length,
     uint32_t timestamp_us);
 
-typedef struct
-{
-    uint32_t completed_count;
-    uint32_t error_count;
-    uint32_t overrun_count;
-    uint32_t deferred_overrun_count;
-    uint32_t latest_interval_us;
-    uint32_t maximum_interval_us;
-    bool active;
-} spi1_periodic_stats_t;
-
 bool spi1_init(uint32_t peripheral_clock_hz);
-spi_status_t spi1_exchange(const uint8_t* transmit,
-                           uint8_t* receive,
-                           size_t length);
-spi_bus_t spi1_bus(void);
 bool spi1_periodic_exchange_start(
     const uint8_t* transmit,
     size_t length,
@@ -44,7 +29,4 @@ bool spi1_periodic_exchange_start(
     uint32_t initial_delay_millis,
     spi1_periodic_exchange_callback_t callback,
     void* callback_context);
-void spi1_periodic_exchange_stop(void);
-void spi1_periodic_exchange_get_stats(spi1_periodic_stats_t* stats);
-
 #endif

@@ -23,6 +23,7 @@ typedef enum
     COMMAND_OPERATION_GET_BOOT_STATUS,
     COMMAND_OPERATION_GET_ENCODER_STATUS,
     COMMAND_OPERATION_GET_CURRENT_TRACE,
+    COMMAND_OPERATION_ARM_CURRENT_TRACE,
     COMMAND_OPERATION_START_ALIGNMENT,
     COMMAND_OPERATION_GET_ALIGNMENT_STATUS,
     COMMAND_OPERATION_STOP_DRIVE,
@@ -30,6 +31,8 @@ typedef enum
     COMMAND_OPERATION_GET_CONFIGURATION_STATUS,
     COMMAND_OPERATION_SAVE_CONFIGURATION,
     COMMAND_OPERATION_CLEAR_CALIBRATION,
+    COMMAND_OPERATION_SET_CURRENT_LOOP_GAINS,
+    COMMAND_OPERATION_REVERT_CURRENT_LOOP_GAINS,
     COMMAND_OPERATION_START_ALIGNED_TORQUE,
     COMMAND_OPERATION_GET_ALIGNED_TORQUE_STATUS,
     COMMAND_OPERATION_START_VELOCITY,
@@ -189,6 +192,13 @@ typedef struct
     int16_t current_b_measured_counts;
     int16_t phase_a_voltage_permille;
     int16_t phase_b_voltage_permille;
+    uint32_t predicted_electrical_phase_q32;
+    uint16_t phase_prediction_age_us;
+    uint16_t trigger_timer_count;
+    uint16_t trigger_to_dma_timer_ticks;
+    uint16_t dma_to_pwm_stage_cycles;
+    uint16_t dma_to_trace_record_cycles;
+    uint16_t pwm_preload_margin_ticks;
 } command_current_trace_sample_t;
 
 enum
@@ -261,6 +271,14 @@ typedef struct
     uint16_t active_observed_quarter_step_counts;
     int16_t active_quarter_step_error_counts;
     int8_t active_encoder_direction;
+    int32_t default_current_loop_proportional_gain_q16_per_count;
+    int32_t default_current_loop_integral_gain_q16_per_count_per_step;
+    int32_t stored_current_loop_proportional_gain_q16_per_count;
+    int32_t stored_current_loop_integral_gain_q16_per_count_per_step;
+    int32_t active_current_loop_proportional_gain_q16_per_count;
+    int32_t active_current_loop_integral_gain_q16_per_count_per_step;
+    int32_t maximum_current_loop_proportional_gain_q16_per_count;
+    int32_t maximum_current_loop_integral_gain_q16_per_count_per_step;
 } command_configuration_status_t;
 
 enum
@@ -397,6 +415,8 @@ typedef command_status_t (*command_commissioning_get_current_trace_fn)(
     void* context,
     uint16_t sample_index,
     command_current_trace_sample_t* sample);
+typedef command_status_t (*command_commissioning_arm_current_trace_fn)(
+    void* context);
 typedef command_status_t (*command_alignment_start_fn)(
     void* context,
     uint16_t alignment_current_counts);
@@ -411,6 +431,10 @@ typedef command_status_t (*command_configuration_get_status_fn)(
     void* context,
     command_configuration_status_t* status);
 typedef command_status_t (*command_configuration_action_fn)(void* context);
+typedef command_status_t (*command_configuration_set_current_loop_gains_fn)(
+    void* context,
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step);
 typedef command_status_t (*command_aligned_torque_start_fn)(
     void* context,
     int16_t q_current_counts,
@@ -447,6 +471,7 @@ typedef struct
     command_commissioning_get_boot_status_fn get_boot_status;
     command_commissioning_get_encoder_status_fn get_encoder_status;
     command_commissioning_get_current_trace_fn get_current_trace;
+    command_commissioning_arm_current_trace_fn arm_current_trace;
 } command_commissioning_api_t;
 
 typedef struct
@@ -469,6 +494,8 @@ typedef struct
     command_configuration_get_status_fn get_status;
     command_configuration_action_fn save;
     command_configuration_action_fn clear_calibration;
+    command_configuration_set_current_loop_gains_fn set_current_loop_gains;
+    command_configuration_action_fn revert_current_loop_gains;
 } command_configuration_api_t;
 
 typedef struct

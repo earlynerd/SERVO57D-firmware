@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.29.3 source implements the fast current path, production alignment,
+Status: firmware 0.31.0 source implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -32,6 +32,10 @@ priority caller preempts the low-priority SysTick handler during epoch service.
 Firmware 0.29.3 makes the independent observed-acceleration shutdown traceable
 to twice the fastest inner reference slew and codifies the shared position,
 velocity, and torque deadline ordering.
+Firmware 0.31.0 adds an inactive-only current-gain rebuild: foreground
+establishes `ZERO`, validates a complete candidate, resets controller state,
+and publishes it before any later authority can start. Active fast control
+remains immutable.
 
 ## Goals
 
@@ -91,6 +95,18 @@ Every ISR must meet these rules:
 - Measure worst-case execution using the Cortex-M DWT cycle counter once the final clock is enabled.
 - Maintain per-source counts for invocation, error, overrun, and maximum observed duration.
 
+Firmware 0.30.0 implements the first bounded fast-path measurement channel.
+The 256-entry one-shot trace can be re-armed from foreground during active
+motion. TIM2, clocked continuously at 32 MHz, records ADC trigger phase and
+trigger-to-DMA-entry latency. The 64 MHz DWT counter records end-to-end
+DMA-entry-to-PWM-stage and DMA-entry-to-trace-preparation cycles, including any
+higher-priority guardian preemption, while TIM3
+records preload margin to the next update. Prediction age/phase and the current
+reference/measurement/output are stored in the same sample. No encoding,
+transport, allocation, or waiting occurs in either interrupt; the trace is read
+only after authority ends. The armed interval is 256 samples/12.8 ms and the
+fixed buffer occupies 8,192 bytes of SRAM1.
+
 `PRIMASK` is reserved for reset, panic, and the final bridge-fault sequence. Ordinary critical sections use `BASEPRI` so priority-zero fault handling remains available. Critical sections must cover only a few bounded loads/stores; they are not a substitute for clear data ownership.
 
 ## Shared-data ownership
@@ -105,7 +121,7 @@ Every ISR must meet these rules:
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
 | PWM preload request | Fast current loop | PWM backend | Single writer during `RUN`; safety may override only by disabling |
 | Fault state | Safety subsystem | All layers | Monotonic atomic latch or per-source slots; never cleared from an ISR |
-| Configuration | Foreground configuration service | Control initialization | Immutable while running; changes require a safe-state transaction |
+| Configuration | Foreground configuration service | Control initialization | Compiled-default, stored, and volatile-active snapshots; immutable while running, with whole-candidate safe-state publication |
 | Debugger diagnostic record | Foreground diagnostics service | Debugger and future telemetry service | Versioned sequence-numbered snapshot; readers accept matching even sequences |
 | RS-485 RX circular bytes | DMA channel 4 | Foreground transport consumer | Monotonic produced/consumed counts; cursor laps discard and account the oldest bytes |
 | Microsecond timestamp | SysTick plus any interrupt/foreground caller | Encoder, current backend, liveness, and control | Four-attempt raw snapshot plus four-attempt exclusive monotonic publication; one sub-period epoch regression is reconciled and larger stale samples clamp |
@@ -203,7 +219,7 @@ initial targets.
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
 | Encoder acquisition | 1 kHz | TIM6/TIM7 plus SPI1 DMA channels 2/3 | Timestamped mechanical-angle snapshot and interval telemetry |
 | Aligned q-current demand/seed | 1 kHz | PendSV-deferred accepted encoder sample | Slew-limited q-current plus timestamped phase/velocity observation |
-| Electrical-phase advance and A/B mapping | 20 kHz | ADC DMA completion | Phase predicted to the next preload boundary and fresh A/B current references |
+| Electrical-phase advance and A/B mapping | 20 kHz | ADC DMA completion | Phase predicted to the measured PWM application boundary and fresh A/B current references |
 | Velocity control | 1 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
 | Position control | 1 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
 | Trajectory generation | 1 kHz | Same accepted-sample position update | Bounded position and velocity references |
@@ -304,14 +320,13 @@ The intended common control domain is stationary `alpha/beta` current transforme
 ### Portable implementation status
 
 The hardware-independent portion is implemented under `firmware/src/control/`
-and `firmware/src/app/`. Product modules are linked into `mks57d`; the general
-application/servo shell, step-direction, and d/q voltage modules are instead
-compiled as the explicitly non-product `mks57d_motion_candidate` target and in
-host tests. Firmware 0.27.1 integrates the authoritative drive
-supervisor, mechanical angle tracker, measured stepper-alignment geometry,
-signed q-current actuator, focused bounded velocity and relative-position
-controllers, and the independent encoder-liveness guard; the general motion
-shell remains excluded while the proven phase-current backend is active:
+and `firmware/src/app/`. Product modules are linked into `mks57d`. The
+standalone step/direction decoder and d/q voltage controller are compiled as
+the explicitly non-product `mks57d_future_control` target and in host tests.
+The authoritative drive supervisor, mechanical angle tracker, measured
+stepper-alignment geometry, signed q-current actuator, focused bounded velocity
+and relative-position controllers, and independent encoder-liveness guard use
+the proven phase-current backend:
 
 - `rotor_control_runtime` alone unwraps raw encoder angle in both directions
   with timestamp, sample-age, maximum-velocity, and filter contracts, then
@@ -324,29 +339,23 @@ shell remains excluded while the proven phase-current backend is active:
 - the focused product position controller advances a trapezoidal trajectory on
   the same accepted observation and supplies only a bounded dynamic target to
   the velocity controller;
-- the candidate cascaded position and velocity control consumes only that observation, emits
-  a hard-clamped torque-current request, and latches invalid/stale feedback,
-  deadline, following-error, and numeric faults;
-- one motion manager arbitrates all command sources, retains bounded retry and
-  completion history, applies an explicit remote heartbeat/lease contract, and
-  converts lease expiry into controlled stop followed by disable;
 - step/direction consumes cumulative hardware-count snapshots, re-anchors on
   enable, and rejects ambiguous or implausible count changes without requiring
-  an interrupt for each edge;
+  an interrupt for each edge; it is not yet connected to product motion;
 - Park/inverse-Park transforms and two anti-windup PI axes emit a
-  magnitude-limited stationary voltage request; and
-- deterministic mechanical and two-axis RL plant tests exercise the complete
-  candidate path through supplied rotor observations, command arbitration, lease expiry,
-  trajectory completion, saturation, fault recovery, and current regulation.
+  magnitude-limited stationary voltage request for later PMSM or common-current
+  work; and
+- deterministic mechanical and two-axis RL plant tests cover the active
+  controller layers and the retained future-control primitives.
 
 The active stepper path does not send the portable d/q controller's voltage
 output to PWM. At each accepted 1 kHz encoder sample it validates phase,
 velocity, acceleration, backend state, and deadline, slews signed q-current,
 and publishes a timestamped measured-phase/filtered-velocity seed. On each
-20 kHz DMA completion the backend extrapolates phase to the following PWM
-preload boundary, adds 90 degrees, and regenerates A/B current references before
-the already-qualified A/B PI step. The predictor is fixed-point, includes a
-nominal 7 us output lead, permits at most 3,000 us of observation age, and
+20 kHz DMA completion the backend extrapolates phase to the measured PWM
+application boundary, adds 90 degrees, and regenerates A/B current references
+before the already-qualified A/B PI step. The predictor is fixed-point, includes
+a measured 55 us output lead, permits at most 3,000 us of observation age, and
 immediately forces `ZERO` on invalid or stale prediction. One nominal encoder
 period of PendSV dispatch margin separates that horizon from the controllers'
 2 ms timestamp-interval check; the predictor may never outlive the independent
@@ -357,6 +366,23 @@ age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
 separate active work requiring its own modulation and timing evidence. The 0.26 position
 layer adds independent travel, start-speed, following-error, settling, and
 deadline checks above the same velocity/current contracts.
+
+The timing burst measures the implemented seams without changing them. The
+TIM2 count just before the ADC software trigger identifies trigger delivery
+relative to the carrier. TIM2 elapsed ticks to DMA entry include conversion and
+interrupt-entry latency. DWT cycles to the verified TIM3 compare preload bound
+the control work, the later trace-preparation stamp captures the recorder cost,
+and remaining TIM3 ticks state the actual next-update margin. DWT is not used
+across `WFI`, because its count is not the wall-time authority while the core
+clock may sleep.
+
+The first +8 rev/s burst on firmware 0.30.0 measured a 41.094 us trigger and
+3.938 us trigger-to-DMA interval. DMA entry to staged compares took
+20.578-21.141 us, crossing the 50 us update; the reported 33.031-33.594 us
+margin is therefore to the 100 us boundary at which those compares become
+active. Firmware 0.30.1 predicts 55 us from DMA completion to that application
+boundary. It retains the 80%-carrier acquisition window and the guardian's one
+intentional intervening update.
 
 These tests establish signs, units, bounds, state ownership, and fault
 behavior. They do not establish loop gains, numerical representation,

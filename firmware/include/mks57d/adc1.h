@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "mks57d/adc_sample.h"
+#include "mks57d/adc_limits.h"
 
 enum
 {
@@ -18,6 +18,9 @@ typedef struct
 {
     uint16_t current_b_raw;
     uint16_t current_a_raw;
+    uint16_t trigger_timer_count;
+    uint16_t trigger_to_dma_timer_ticks;
+    uint32_t dma_entry_cycle_count;
 } adc1_current_snapshot_t;
 
 typedef struct
@@ -53,7 +56,6 @@ typedef void (*adc1_current_event_handler_t)(
  * The hclk_hz argument must describe the actual HCLK frequency.
  */
 adc1_status_t adc1_init_passive(uint32_t hclk_hz);
-adc1_status_t adc1_read_passive(adc_sample_t* output);
 
 /* Arm a two-rank currentB/currentA sequence before TIM3 starts. TIM2 issues
  * one software trigger per carrier period and DMA publishes each fresh pair. */

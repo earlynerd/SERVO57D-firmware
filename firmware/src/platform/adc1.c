@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mks57d/cycle_counter.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/tim2_current_trigger.h"
@@ -22,7 +23,6 @@ enum
     ADC_CTRL3_READY = 1u << 5u,
     ADC_STATUS_WRITABLE_MASK = 0x7Fu,
     ADC_SOFTWARE_TRIGGER_SELECT = ADC_CTRL2_EXTRSEL,
-    ADC_SOFTWARE_START = ADC_CTRL2_EXTRTRIG | ADC_CTRL2_SWSTRRCH,
     ADC_POLL_BUDGET = 20000u,
     ADC_LDO_CONTROL_OFFSET = 0x60u,
     ADC_LDO_ENABLE_VALUE = 0x28u,
@@ -91,13 +91,13 @@ static const adc_clock_divider_t ADC_CLOCK_DIVIDERS[] = {
 static bool s_adc1_initialized;
 static bool s_synchronous_current_started;
 static uint32_t s_adc_sampling_clock_hz;
-static uint32_t s_capture_index;
 static volatile uint32_t s_current_snapshot_sequence;
 static uint32_t s_last_read_snapshot_sequence;
 static uint32_t s_vbus_sample_count;
 static volatile adc1_status_t s_synchronous_status =
     ADC1_STATUS_NOT_READY;
 static volatile adc1_current_snapshot_t s_latest_current_snapshot;
+static volatile uint16_t s_current_trigger_timer_count;
 static adc1_current_event_handler_t s_current_event_handler;
 static void* s_current_event_context;
 static volatile uint16_t
@@ -166,57 +166,6 @@ static void rollback_adc_init(bool hsi_was_enabled)
     }
 }
 
-static adc1_status_t convert_channel(uint8_t channel, uint16_t* output)
-{
-    uint32_t remaining = ADC_POLL_BUDGET;
-    uint32_t raw;
-
-    if (output == NULL)
-    {
-        return ADC1_STATUS_INVALID_ARGUMENT;
-    }
-    if ((ADC->STS & ADC_STS_STR) != 0u)
-    {
-        return ADC1_STATUS_BUSY;
-    }
-
-    ADC->RSEQ3 = (ADC->RSEQ3 & ~ADC_RSEQ3_SEQ1) |
-                 ((uint32_t)channel & ADC_RSEQ3_SEQ1);
-    ADC->STS = (~((uint32_t)ADC_STS_AWDG |
-                  ADC_STS_ENDC |
-                  ADC_STS_STR |
-                  ADC_STS_ENDCA)) &
-               ADC_STATUS_WRITABLE_MASK;
-    ADC->CTRL2 |= ADC_SOFTWARE_START;
-
-    while (remaining != 0u)
-    {
-        const uint32_t status = ADC->STS;
-
-        if ((status & ADC_STS_AWDG) != 0u)
-        {
-            return ADC1_STATUS_DATA_OUT_OF_RANGE;
-        }
-        if ((status & ADC_STS_ENDC) != 0u)
-        {
-            raw = ADC->DAT & ADC_DAT_DAT;
-            ADC->STS = (~((uint32_t)ADC_STS_ENDC |
-                          ADC_STS_STR |
-                          ADC_STS_ENDCA)) &
-                       ADC_STATUS_WRITABLE_MASK;
-            if (raw > ADC_SAMPLE_RAW_MAX)
-            {
-                return ADC1_STATUS_DATA_OUT_OF_RANGE;
-            }
-            *output = (uint16_t)raw;
-            return ADC1_STATUS_OK;
-        }
-        --remaining;
-    }
-
-    return ADC1_STATUS_CONVERSION_TIMEOUT;
-}
-
 adc1_status_t adc1_init_passive(uint32_t hclk_hz)
 {
     uint32_t adc_clock_setting;
@@ -237,9 +186,9 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     s_adc1_initialized = false;
     s_synchronous_current_started = false;
     s_adc_sampling_clock_hz = 0u;
-    s_capture_index = 0u;
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
+    s_current_trigger_timer_count = 0u;
     s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NOT_READY;
     s_current_event_handler = NULL;
@@ -313,57 +262,6 @@ adc1_status_t adc1_init_passive(uint32_t hclk_hz)
     return ADC1_STATUS_OK;
 }
 
-adc1_status_t adc1_read_passive(adc_sample_t* output)
-{
-    adc1_status_t result;
-    uint16_t current_b_raw;
-    uint16_t current_a_raw;
-    uint16_t vbus_raw;
-    uint32_t capture_index;
-
-    if (output == NULL)
-    {
-        return ADC1_STATUS_INVALID_ARGUMENT;
-    }
-    if (!s_adc1_initialized)
-    {
-        return ADC1_STATUS_NOT_READY;
-    }
-    if (s_synchronous_current_started)
-    {
-        return ADC1_STATUS_BUSY;
-    }
-
-    result = convert_channel(ADC1_CURRENT_B_CHANNEL, &current_b_raw);
-    if (result != ADC1_STATUS_OK)
-    {
-        return result;
-    }
-    result = convert_channel(ADC1_CURRENT_A_CHANNEL, &current_a_raw);
-    if (result != ADC1_STATUS_OK)
-    {
-        return result;
-    }
-    result = convert_channel(ADC1_VBUS_CHANNEL, &vbus_raw);
-    if (result != ADC1_STATUS_OK)
-    {
-        return result;
-    }
-
-    capture_index = s_capture_index + 1u;
-    if (!adc_sample_build(output,
-                          current_b_raw,
-                          current_a_raw,
-                          vbus_raw,
-                          capture_index))
-    {
-        return ADC1_STATUS_DATA_OUT_OF_RANGE;
-    }
-
-    s_capture_index = capture_index;
-    return ADC1_STATUS_OK;
-}
-
 adc1_status_t adc1_start_pwm_synchronized_current(void)
 {
     if (!s_adc1_initialized)
@@ -407,6 +305,7 @@ adc1_status_t adc1_start_pwm_synchronized_current(void)
     DMA->INTCLR = DMA_CHANNEL1_ALL_INTERRUPT_FLAGS;
     s_current_snapshot_sequence = 0u;
     s_last_read_snapshot_sequence = 0u;
+    s_current_trigger_timer_count = 0u;
     s_vbus_sample_count = 0u;
     s_synchronous_status = ADC1_STATUS_NO_SAMPLE;
     DMA_CH1->PADDR = (uint32_t)(uintptr_t)&ADC->DAT;
@@ -520,6 +419,9 @@ adc1_status_t adc1_read_synchronized_current(
         const uint32_t sequence_before = s_current_snapshot_sequence;
         uint16_t current_b_raw;
         uint16_t current_a_raw;
+        uint16_t trigger_timer_count;
+        uint16_t trigger_to_dma_timer_ticks;
+        uint32_t dma_entry_cycle_count;
 
         if ((sequence_before == 0u) ||
             ((sequence_before & 1u) != 0u) ||
@@ -531,6 +433,12 @@ adc1_status_t adc1_read_synchronized_current(
         __DMB();
         current_b_raw = s_latest_current_snapshot.current_b_raw;
         current_a_raw = s_latest_current_snapshot.current_a_raw;
+        trigger_timer_count =
+            s_latest_current_snapshot.trigger_timer_count;
+        trigger_to_dma_timer_ticks =
+            s_latest_current_snapshot.trigger_to_dma_timer_ticks;
+        dma_entry_cycle_count =
+            s_latest_current_snapshot.dma_entry_cycle_count;
         __DMB();
         if (sequence_before == s_current_snapshot_sequence)
         {
@@ -542,6 +450,10 @@ adc1_status_t adc1_read_synchronized_current(
 
             output->current_a_raw = current_a_raw;
             output->current_b_raw = current_b_raw;
+            output->trigger_timer_count = trigger_timer_count;
+            output->trigger_to_dma_timer_ticks =
+                trigger_to_dma_timer_ticks;
+            output->dma_entry_cycle_count = dma_entry_cycle_count;
             s_last_read_snapshot_sequence = sequence_before;
             return ADC1_STATUS_OK;
         }
@@ -604,18 +516,25 @@ bool adc1_set_current_event_handler(
 
 bool adc1_trigger_synchronized_current_from_isr(void)
 {
+    uint16_t trigger_timer_count;
+
     if (!s_synchronous_current_started ||
         ((ADC->STS & ADC_STS_STR) != 0u))
     {
         return false;
     }
 
+    trigger_timer_count = tim2_current_trigger_counter();
     ADC->CTRL2 |= ADC_CTRL2_SWSTRRCH;
+    s_current_trigger_timer_count = trigger_timer_count;
     return true;
 }
 
 void DMA_Channel1_IRQHandler(void)
 {
+    const uint16_t dma_entry_timer_count =
+        tim2_current_trigger_counter();
+    const uint32_t dma_entry_cycle_count = cycle_counter_read();
     const uint32_t flags = DMA->INTSTS;
     adc1_current_event_handler_t handler;
     void* context;
@@ -642,6 +561,12 @@ void DMA_Channel1_IRQHandler(void)
         DMA->INTCLR = DMA_INTCLR_CTXCF1 | DMA_INTCLR_CGLBF1;
         snapshot.current_b_raw = s_current_dma_buffer[0];
         snapshot.current_a_raw = s_current_dma_buffer[1];
+        snapshot.trigger_timer_count = s_current_trigger_timer_count;
+        snapshot.trigger_to_dma_timer_ticks =
+            tim2_current_trigger_elapsed_ticks(
+                snapshot.trigger_timer_count,
+                dma_entry_timer_count);
+        snapshot.dma_entry_cycle_count = dma_entry_cycle_count;
         /* STR records that a regular conversion started; it is not a live
            busy bit. The N32L40x manual requires software to clear it. Clear
            the completed sequence flags here so the next timed software

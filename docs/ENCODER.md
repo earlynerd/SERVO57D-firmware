@@ -103,7 +103,7 @@ alignment direction. Controllers refuse feedback timestamp intervals over 2 ms;
 the predictor permits observation age through 3 ms so the completed sample can
 cross bounded PendSV dispatch, but it may not outlive the independent 3 ms
 production guard. Invalid or stale prediction routes through the common fault/
-`ZERO` path; the configured 7 us preload lead remains a scope-measurement gate.
+`ZERO` path; firmware 0.30.1 uses the measured 55 us DMA-to-PWM-application lead.
 
 The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
 estimator's 20 ms accepted-sample interval threshold
@@ -126,7 +126,7 @@ last-attempt timestamp. Native protocol encoder schema 2 appends estimator
 validity/faults, Q16.16 position and velocity, microsecond timestamp, alignment
 zero/direction, Q0.32 electrical phase, and current/maximum sample intervals.
 Status values are defined in `mks57d/mt6816.h`; SPI transport values are defined
-in `mks57d/spi_bus.h`.
+in `mks57d/spi_status.h`.
 
 ## Bench result and remaining validation
 

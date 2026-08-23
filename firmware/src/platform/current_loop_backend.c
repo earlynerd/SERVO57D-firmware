@@ -5,6 +5,7 @@
 
 #include "mks57d/adc1.h"
 #include "mks57d/board.h"
+#include "mks57d/cycle_counter.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/phase_current_reference.h"
 #include "mks57d/platform.h"
@@ -18,6 +19,9 @@ enum
     MAX_CONSECUTIVE_EMPTY_PWM_UPDATES = 1u,
     QUARTER_CYCLE_PHASE_Q32 = 0x40000000u
 };
+
+_Static_assert(sizeof(current_loop_backend_trace_sample_t) == 32u,
+               "current trace sample must retain its SRAM budget");
 
 static phase_current_loop_config_t s_config;
 static electrical_phase_predictor_config_t s_phase_predictor_config;
@@ -44,6 +48,12 @@ static phase_current_loop_output_t s_latest_output;
 static current_loop_backend_trace_sample_t
     s_trace[CURRENT_LOOP_BACKEND_TRACE_CAPACITY];
 static volatile uint16_t s_trace_count;
+static volatile bool s_trace_armed;
+
+static uint16_t saturate_u16(uint32_t value)
+{
+    return value > UINT16_MAX ? UINT16_MAX : (uint16_t)value;
+}
 
 static uint32_t control_critical_enter(void)
 {
@@ -68,6 +78,7 @@ static void control_critical_exit(uint32_t previous)
 static void fault_from_interrupt(uint32_t fault)
 {
     s_active = false;
+    s_trace_armed = false;
     s_fault_flags |= fault;
     phase_current_loop_stop(&s_loop);
     board_bridge_force_low_zero();
@@ -152,6 +163,8 @@ static void adc_current_event(adc1_status_t status,
     uint32_t prediction_age_us = 0u;
     current_loop_phase_prediction_reject_t rejection_reason =
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
+    uint16_t pwm_preload_margin_ticks;
+    uint32_t pwm_stage_cycle_count;
 
     (void)context;
     if (status != ADC1_STATUS_OK)
@@ -229,27 +242,53 @@ static void adc_current_event(adc1_status_t status,
         fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
         return;
     }
+    pwm_stage_cycle_count = cycle_counter_read();
+    if (!tim3_bridge_pwm_get_preload_margin_ticks(
+            &pwm_preload_margin_ticks))
+    {
+        fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
+        return;
+    }
 
     s_latest_output = output;
-    if (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY)
+    if (s_trace_armed &&
+        (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY))
     {
         const uint16_t trace_index = s_trace_count;
+        current_loop_backend_trace_sample_t* trace =
+            &s_trace[trace_index];
 
-        s_trace[trace_index].loop_sample_count = s_sample_count + 1u;
-        s_trace[trace_index].current_a_reference_counts =
+        trace->loop_sample_count = s_sample_count + 1u;
+        trace->current_a_reference_counts =
             s_last_reference_a_counts;
-        s_trace[trace_index].current_b_reference_counts =
+        trace->current_b_reference_counts =
             s_last_reference_b_counts;
-        s_trace[trace_index].current_a_measured_counts =
+        trace->current_a_measured_counts =
             output.current_a_measured_counts;
-        s_trace[trace_index].current_b_measured_counts =
+        trace->current_b_measured_counts =
             output.current_b_measured_counts;
-        s_trace[trace_index].phase_a_voltage_permille =
+        trace->phase_a_voltage_permille =
             output.phase_a_voltage_permille;
-        s_trace[trace_index].phase_b_voltage_permille =
+        trace->phase_b_voltage_permille =
             output.phase_b_voltage_permille;
+        trace->predicted_electrical_phase_q32 =
+            s_predicted_electrical_phase_q32;
+        trace->phase_prediction_age_us =
+            saturate_u16(s_phase_prediction_age_us);
+        trace->trigger_timer_count = snapshot->trigger_timer_count;
+        trace->trigger_to_dma_timer_ticks =
+            snapshot->trigger_to_dma_timer_ticks;
+        trace->dma_to_pwm_stage_cycles = saturate_u16(
+            pwm_stage_cycle_count - snapshot->dma_entry_cycle_count);
+        trace->pwm_preload_margin_ticks = pwm_preload_margin_ticks;
+        trace->dma_to_trace_record_cycles = saturate_u16(
+            cycle_counter_read() - snapshot->dma_entry_cycle_count);
         __DMB();
         s_trace_count = trace_index + 1u;
+        if (s_trace_count == CURRENT_LOOP_BACKEND_TRACE_CAPACITY)
+        {
+            s_trace_armed = false;
+        }
     }
     __DMB();
     ++s_sample_count;
@@ -315,11 +354,13 @@ bool current_loop_backend_init(
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
+    s_trace_armed = false;
     s_active = false;
     s_phase_prediction_active = false;
     s_initialized = false;
 
-    if (!phase_current_loop_init(&s_loop, &s_config) ||
+    if (!cycle_counter_init() ||
+        !phase_current_loop_init(&s_loop, &s_config) ||
         !electrical_phase_predictor_init(
             &s_phase_predictor, phase_predictor_config) ||
         !adc1_set_current_event_handler(adc_current_event, NULL) ||
@@ -503,6 +544,7 @@ bool current_loop_backend_start(void)
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
+    s_trace_armed = true;
     s_maximum_observed_phase_prediction_age_us = 0u;
     s_rejected_phase_prediction_age_us = 0u;
     s_phase_prediction_reject_reason =
@@ -539,6 +581,7 @@ bool current_loop_backend_stop(void)
     fault_was_latched =
         s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE;
     s_active = false;
+    s_trace_armed = false;
     (void)tim3_bridge_pwm_update_irq_enable(false);
     phase_current_loop_stop(&s_loop);
     electrical_phase_predictor_reset(&s_phase_predictor);
@@ -566,6 +609,78 @@ bool current_loop_backend_stop(void)
         return false;
     }
     return true;
+}
+
+bool current_loop_backend_reconfigure_gains(
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step)
+{
+    phase_current_loop_config_t candidate = s_config;
+    phase_current_loop_t reset_loop;
+    electrical_phase_predictor_t reset_predictor;
+    uint32_t previous;
+    bool accepted;
+
+    candidate.proportional_gain_q16_per_count =
+        proportional_gain_q16_per_count;
+    candidate.integral_gain_q16_per_count_per_step =
+        integral_gain_q16_per_count_per_step;
+    if (!s_initialized ||
+        !phase_current_loop_config_is_valid(&candidate) ||
+        !phase_current_loop_init(&reset_loop, &candidate) ||
+        !electrical_phase_predictor_init(
+            &reset_predictor, &s_phase_predictor_config))
+    {
+        return false;
+    }
+
+    previous = control_critical_enter();
+    if (s_active ||
+        (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE))
+    {
+        control_critical_exit(previous);
+        return false;
+    }
+
+    /* Reconfiguration is an idle-only safety transaction. Re-establish the
+       direct-GPIO ZERO vector before rebuilding the idle PWM binding; only
+       publish the candidate gains after every backend step accepts it. */
+    s_trace_armed = false;
+    (void)tim3_bridge_pwm_update_irq_enable(false);
+    board_bridge_force_low_zero();
+    accepted =
+        board_bridge_pwm_init(platform_apb1_timer_clock_hz()) &&
+        tim3_bridge_pwm_set_update_handler(pwm_update_event, NULL) &&
+        tim3_bridge_pwm_zero();
+    if (accepted)
+    {
+        s_config = candidate;
+        s_loop = reset_loop;
+        s_phase_predictor = reset_predictor;
+        memset(&s_latest_output, 0, sizeof(s_latest_output));
+        s_output_generation = 0u;
+        s_last_reference_a_counts = 0;
+        s_last_reference_b_counts = 0;
+        s_aligned_q_reference_counts = 0;
+        s_predicted_electrical_phase_q32 = 0u;
+        s_phase_prediction_age_us = 0u;
+        s_maximum_observed_phase_prediction_age_us = 0u;
+        s_rejected_phase_prediction_age_us = 0u;
+        s_phase_prediction_reject_reason =
+            CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
+        s_guardian_generation = 0u;
+        s_guardian_empty_updates = 0u;
+        s_guardian_primed = false;
+        s_trace_count = 0u;
+        s_phase_prediction_active = false;
+    }
+    else
+    {
+        board_bridge_force_low_zero();
+        s_fault_flags |= CURRENT_LOOP_BACKEND_FAULT_INTERNAL;
+    }
+    control_critical_exit(previous);
+    return accepted;
 }
 
 bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
@@ -620,6 +735,7 @@ bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
+    s_trace_armed = false;
     s_phase_prediction_active = false;
 
     if (recovered)
@@ -684,6 +800,29 @@ uint16_t current_loop_backend_trace_count(void)
 
     control_critical_exit(previous);
     return count;
+}
+
+bool current_loop_backend_trace_arm(void)
+{
+    uint32_t previous;
+
+    if (!s_initialized)
+    {
+        return false;
+    }
+
+    previous = control_critical_enter();
+    if (!s_active ||
+        (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE))
+    {
+        control_critical_exit(previous);
+        return false;
+    }
+    s_trace_count = 0u;
+    __DMB();
+    s_trace_armed = true;
+    control_critical_exit(previous);
+    return true;
 }
 
 bool current_loop_backend_trace_get(

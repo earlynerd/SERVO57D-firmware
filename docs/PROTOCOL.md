@@ -1,7 +1,8 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.12 is implemented in firmware 0.29.2 source and
-flashed firmware 0.29.1; protocol 1.11 remains backward-decodable by the host.
+Status: native protocol 1.14 is implemented in firmware 0.31.0 source;
+firmware 0.30.3 / protocol 1.13 is flashed. Protocol 1.12 trace schema 1
+remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
 power-loss-safe motor-configuration storage, bounded aligned q-current, and the
@@ -112,14 +113,17 @@ from causing reply storms.
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
-| `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema `u8`, captured count `u16`, echoed index `u16`, loop sample count `u32`, A/B references `i16`, A/B measurements `i16`, A/B voltage commands `i16` |
+| `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema-2 current, prediction, carrier-timer, DWT, and PWM-preload sample described below |
+| `0x0107` | `ARM_CURRENT_TRACE` | Empty | Empty |
 | `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
 | `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
 | `0x0202` | `STOP_DRIVE` | Empty | Empty |
 | `0x0203` | `CLEAR_FAULTS` | Empty | Schema-1 fault-recovery status block described below |
-| `0x0300` | `GET_CONFIGURATION_STATUS` | Empty | Schema-1 persistent/active configuration status block described below |
+| `0x0300` | `GET_CONFIGURATION_STATUS` | Empty | Schema-1 or schema-2 persistent/active configuration status block described below |
 | `0x0301` | `SAVE_CONFIGURATION` | Empty | Empty |
 | `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
+| `0x0303` | `SET_CURRENT_LOOP_GAINS` | Proportional gain Q16.16 `i32`, integral gain Q16.16 per 20 kHz step `i32` | Empty |
+| `0x0304` | `REVERT_CURRENT_LOOP_GAINS` | Empty | Empty |
 | `0x0400` | `START_ALIGNED_TORQUE` | Signed q-current counts `i16`, duration milliseconds `u32` | Empty |
 | `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-2 aligned-torque state, prediction rejection evidence, and complete policy block described below |
 | `0x0500` | `START_VELOCITY` | Signed target mechanical velocity Q16.16 rev/s `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
@@ -173,6 +177,11 @@ Firmware 0.29.1 / protocol 1.12 appends phase-prediction rejection reason,
 rejected age, maximum successful age, and configured maximum age to aligned-
 torque status schema 2. Every schema-1 field and offset is unchanged, and the
 host decodes both schemas.
+
+Firmware 0.30.0 / protocol 1.13 adds `ARM_CURRENT_TRACE` and current-trace
+schema 2. It appends the predicted electrical phase, prediction age, TIM2
+trigger phase and trigger-to-DMA timing, DWT DMA-entry-to-PWM/trace timing, and
+TIM3 preload margin without moving schema-1 fields.
 
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
@@ -264,7 +273,7 @@ pending drive operation. It enters `RUN` with motion authority and starts the
 20 kHz backend at zero reference. Every accepted 1 kHz encoder sample validates
 and slews signed q-current, then publishes measured electrical phase, filtered
 mechanical velocity, direction, and timestamp to the backend. Every 20 kHz
-current event extrapolates phase to the next preload boundary and regenerates
+current event extrapolates phase to the measured PWM application boundary and regenerates
 the A/B phase references through the same bounded current PI and bridge shutdown
 path used by alignment and the production diagnostic. The outer controllers
 still accept at most 2,000 us between feedback timestamps. The 20 kHz predictor
@@ -519,18 +528,19 @@ response payload is 58 bytes. Hosts should preflight from these reported policy
 fields rather than duplicating firmware constants; firmware still validates
 every request independently.
 
-`GET_CONFIGURATION_STATUS` returns this schema-1 body after the common status
-byte. The stored and active halves are both reported so a host can distinguish
-a boot-restored calibration, an unsaved active calibration, a persistent clear,
-and a record whose motor geometry is incompatible with the running firmware.
+`GET_CONFIGURATION_STATUS` schema 2 preserves the complete 32-byte schema-1
+body as its prefix. The stored and active halves let a host distinguish a boot-
+restored configuration, volatile tuning, a persistent clear, and a record whose
+motor geometry is incompatible with the running firmware. Schema 2 appends the
+compiled-default, stored, active, and maximum current-loop PI gains.
 
 | Body offset | Type | Configuration schema-1 field |
 | ---: | --- | --- |
-| 0 | `u8` | Schema version, currently 1 |
+| 0 | `u8` | Schema version, 1 or 2 |
 | 1 | `u8` | Store/record/calibration/match/slot/write flags |
 | 2 | `u8` | Last store result: 0 OK, 1 empty, 2 invalid argument, 3 I/O error, 4 verify error |
 | 3 | `u8` | Active slot, 0 or 1; `0xFF` when no valid record exists |
-| 4 | `u16` | Configuration-record schema supported by this firmware |
+| 4 | `u16` | Selected configuration-record schema; current schema 2 when storage is empty |
 | 6 | `u32` | Active record generation |
 | 10 | `u16` | Stored encoder counts per mechanical revolution |
 | 12 | `u16` | Stored electrical cycles per mechanical revolution |
@@ -548,8 +558,24 @@ and a record whose motor geometry is incompatible with the running firmware.
 Flag bits are 0 store initialized, 1 valid record selected, 2 stored
 calibration valid, 3 active calibration valid, 4 active configuration exactly
 matches the record, 5 slot 0 valid, 6 slot 1 valid, and 7 writes supported.
-The status body is 32 bytes and the complete successful response payload is 33
-bytes.
+The schema-1 status body is 32 bytes and the complete successful response
+payload is 33 bytes. Schema 2 appends:
+
+| Body offset | Type | Configuration schema-2 appended field |
+| ---: | --- | --- |
+| 32 | `i32` | Compiled-default current-loop proportional gain, Q16.16 permille/count |
+| 36 | `i32` | Compiled-default current-loop integral gain, Q16.16 permille/count per 20 kHz step |
+| 40 | `i32` | Stored proportional gain |
+| 44 | `i32` | Stored integral gain |
+| 48 | `i32` | Volatile-active proportional gain |
+| 52 | `i32` | Volatile-active integral gain |
+| 56 | `i32` | Maximum accepted proportional gain |
+| 60 | `i32` | Maximum accepted integral gain |
+
+The schema-2 body is 64 bytes and the complete successful response payload is
+65 bytes. Gains must be nonnegative and no greater than the reported maxima;
+zero is representable for controlled experiments but is not a performance
+recommendation.
 
 `SAVE_CONFIGURATION` is accepted only with a valid active alignment and while
 the supervisor has no authority, the current backend, alignment controller,
@@ -562,6 +588,18 @@ untouched. Both actions are idempotent at the configuration layer, so retrying
 an already-applied request does not consume another erase cycle despite native
 v1 not yet caching sequence numbers.
 
+`SET_CURRENT_LOOP_GAINS` and `REVERT_CURRENT_LOOP_GAINS` use the same inactive
+`READY`/`DIAGNOSTIC`, no-authority, no-pending-operation gate. Firmware forces
+the common `ZERO` vector, validates a complete candidate, rebuilds the idle
+current controller with cleared PI/predictor state, and publishes the new gains
+only after the transaction succeeds. Set changes RAM only. Revert restores the
+stored gains when a valid record exists, otherwise the compiled defaults.
+Neither operation writes Flash; `SAVE_CONFIGURATION` is the only promotion
+action. Schema-1 records load with the firmware defaults and are rewritten as
+schema 2 on an explicit save or later configuration change. Automatic alignment
+save and `CLEAR_CALIBRATION` preserve previously stored tuning, or compiled
+defaults when no record exists; they never promote volatile-active gains.
+
 The N32L406 storage backend reserves Flash pages 62 and 63 as alternating 2 KiB
 slots. Each record carries magic, schema, length, generation, semantic range
 checks, and CRC-32; the commit word is programmed last. The previously selected
@@ -571,13 +609,40 @@ foreground maintenance operation on this single-bank device and is performed
 only after the bridge is forced to `ZERO`; no authority, lease, pending command,
 fault state, or current-sensor startup zero is persisted.
 
+`ARM_CURRENT_TRACE` is accepted only while the current backend is active and
+fault-free. It atomically clears and arms the one-shot buffer; backend start
+also arms it for compatibility with the original startup trace. The next 256
+successful 20 kHz outputs fill 8,192 bytes of SRAM over 12.8 ms and disarm the
+recorder. When unarmed, the ISR pays only a branch. While armed it performs
+fixed-size stores after the PWM preload; it never formats or transfers data.
+
 `GET_CURRENT_TRACE` is available only after current-loop authority has ended.
-Each start clears a fixed 256-entry buffer, then the DMA-completion ISR records
-the first 12.8 ms of 20 kHz loop sample number, references, measurements, and
-voltage commands. The request reads one indexed entry; every response reports
-the fixed captured count so the host can reject a trace that changes while it
-is being transferred. Trace capture does not alter current reference, voltage,
-duty, duration, deadline, fault, or bridge-authority limits.
+The request reads one indexed entry; every response reports the captured count
+so the host can reject a trace that changes while it is transferred. Schema-2
+body offsets, excluding the common status byte, are:
+
+| Body offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version, currently 2 |
+| 1 | `u16` | Captured sample count |
+| 3 | `u16` | Echoed sample index |
+| 5 | `u32` | Current-loop sample count |
+| 9 | `i16,i16` | A/B current references |
+| 13 | `i16,i16` | A/B measured currents |
+| 17 | `i16,i16` | A/B phase-voltage commands in permille |
+| 21 | `u32` | Predicted electrical phase Q0.32 |
+| 25 | `u16` | Phase-prediction age in microseconds; saturated at 65,535 |
+| 27 | `u16` | TIM2 count immediately before the ADC software trigger |
+| 29 | `u16` | TIM2 ticks from that trigger stamp to DMA-handler entry |
+| 31 | `u16` | DWT cycles from DMA-handler entry through verified PWM staging |
+| 33 | `u16` | DWT cycles from DMA-handler entry through trace-record preparation |
+| 35 | `u16` | TIM3 ticks remaining to the next PWM update after staging |
+
+TIM2/TIM3 run at 32 MHz and DWT runs at the 64 MHz core clock in this image.
+TIM2 continues while the core sleeps, so its trigger and DMA fields are the
+wall-time acquisition evidence; DWT is used only across the uninterrupted ISR.
+All `u16` timing results saturate rather than wrap. Capture does not alter any
+current, voltage, duty, duration, deadline, fault, or authority limit.
 
 `GET_COMMISSIONING_STATUS` returns the following schema-3 body after the common
 status byte. All multi-byte fields are big-endian; signed fields use two's
@@ -654,6 +719,7 @@ to make measured current track the requested current.
 | 16 | Bounded mechanical-velocity control |
 | 17 | Bounded relative-position control |
 | 18 | Explicit operator fault acknowledgment and in-place recovery |
+| 19 | Volatile current-loop tuning with explicit configuration promotion |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:
@@ -719,12 +785,8 @@ All adapters are untrusted-input boundaries and follow the same rules:
 - DMA moves bytes only. Framing, CRC, address checks, validation, dispatch, and
   reply creation execute as bounded foreground work.
 - Malformed, unsupported, out-of-range, or unauthorized commands have no motor
-  effect and never refresh a remote-control lease.
-- A remote motion lease is refreshed only by a newly accepted command from its
-  current owner or an explicit newly accepted `KEEPALIVE`. An exact retry is
-  idempotent and does not refresh the lease. Lease expiry requests a bounded
-  trajectory stop and disables control after the stopped trajectory and
-  measured motion satisfy their completion tolerances.
+  effect. Every accepted product motion command has a finite requested duration
+  and is also releasable by generic STOP and the physical Right button.
 - Configuration that affects control or safety is immutable while running and
   changes only through a validated safe-state transaction. Same-bank Flash
   maintenance is permitted only with bridge authority absent and the backend
@@ -739,31 +801,31 @@ All adapters are untrusted-input boundaries and follow the same rules:
 - Protocol commands request behavior; they never manipulate bridge GPIO,
   timer, ADC, or DMA registers directly.
 
-### Implemented transport-independent motion contract
+### Deferred multi-transport motion policy
 
-The portable application layer now implements the semantics below the wire
-adapters:
+The current product does not implement a persistent communications lease,
+general multi-source arbitration, command retry/completion history, absolute
+position, or step/direction motion authority. If those capabilities are
+prioritized, their product implementation must preserve these requirements:
 
-- native, Modbus, Makerbase, step/direction, and local inputs share one motion
-  authority; only its owner may change position targets;
-- valid stop and disable requests remain available regardless of the current
+- native, Modbus, Makerbase, step/direction, and local inputs must share one
+  motion authority; only its owner may change position targets;
+- valid stop and disable requests must remain available regardless of the current
   owner or the source's permission to initiate motion;
 - the eight most recently accepted `(source, command_id)` identities are
-  retained: an exact replay is a duplicate with no repeated effect, while the
+  retained so an exact replay is a duplicate with no repeated effect, while the
   same identity with different content is a conflict;
-- command acceptance is distinct from active and terminal completion, and
-  status retains the two most recent terminal outcomes with source identity;
-- a new explicit heartbeat supports moves longer than one lease interval; and
-- step/direction is represented as timestamped cumulative hardware counts,
+- command acceptance must remain distinct from active and terminal completion,
+  and status must retain recent terminal outcomes with source identity;
+- an explicit heartbeat must support moves longer than one lease interval; and
+- step/direction must be represented as timestamped cumulative hardware counts,
   with re-anchoring at enable and bounded count-rate validation.
 
-These are application contracts, not new native-v1 wire commands. Command IDs,
-payload encoding, status/event messages, permission configuration, and each
-protocol adapter still need explicit mappings. The modules compile for the Arm
-target; firmware 0.25.1 links the mechanical estimator, transactional alignment
-controller, persistent configuration, aligned-q-current actuator, and the first
-supervisor-authorized velocity operation. The general position/step-direction
-motion shell remains excluded.
+These are requirements, not current native-v1 wire commands. The standalone
+step/direction count decoder remains Arm-compiled and host-tested, but command
+IDs, payload encoding, status/event messages, permission configuration, lease
+policy, and each protocol adapter require fresh integration through the current
+drive supervisor and product controller stack.
 
 ## Implementation sequence
 
@@ -783,15 +845,11 @@ motion shell remains excluded.
    read-only services, followed by safe configuration transactions.
 4. Add the documented Makerbase read-only compatibility subset and byte-level
    conformance tests from public manual examples.
-5. **Application prerequisite complete:** the portable application shell,
-   limits, command arbiter, retry history, lease, safe-stop, and completion
-   behavior exist and have end-to-end simulated-plant tests. The hardware
-   current-control state and automatic alignment are bench-proven, and
-   alignment persistence passes its power-cycle gate, and the aligned torque
-   and first native velocity paths are integrated. Protocol 1.9 now maps a
-   focused relative-position service through that product path; its staged
-   hardware gate is next. The broader lease/step-direction shell remains
-   separately compiled.
+5. **Focused product path complete:** the drive supervisor, current-control
+   state, automatic alignment, aligned torque, bounded velocity, and relative
+   position are integrated through one authority path. General leases,
+   arbitration, absolute motion, and step/direction integration remain explicit
+   deferrals rather than a parallel application shell.
 6. Add telemetry scheduling, staged synchronization, compatibility matrices,
    final lease timing, and hardware-in-the-loop multidrop tests.
 

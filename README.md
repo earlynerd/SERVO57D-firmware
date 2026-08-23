@@ -5,12 +5,31 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.29.3 / native protocol 1.12 is the current source candidate. It
-closes the remaining non-tuning review findings with a traceable 512 rev/s²
+Firmware 0.31.0 / native protocol 1.14 is the current source candidate;
+firmware 0.30.3 / protocol 1.13 is flashed. Firmware 0.30.1 corrected the fast
+phase predictor to the measured 55 us DMA-to-PWM-application interval, and
+matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
+and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
+fell from 0.797 to 0.621 to 0.460 rev/s, and A/B current RMS error fell from
+about 146 to 100 to 87 counts. The Kp=4 burst peaked at 563 of the unchanged
+700-permille phase-voltage limit, timing remained stable, authority released,
+and no current, predictor, encoder, backend, supervisor, reset, or panic fault
+appeared.
+
+The 0.31.0 candidate moves current-loop Kp/Ki from compile-time-only constants
+into the product configuration service. Protocol 1.14 reports compiled-default,
+stored, and volatile-active values; applies or reverts gains only while the
+drive is inactive and forced to `ZERO`; and retains explicit dual-slot saving as
+the only persistence action. A guided host sweep uses the existing
+supervisor-owned current diagnostic, restores the starting volatile gains on
+exit, writes normalized artifacts, and generates an offline-replottable HTML
+comparison. The image also retains the traceable 512 rev/s²
 observed-acceleration shutdown, an explicit shared cascade-deadline contract,
 wide-range current-slew arithmetic, and one shared set of safety-relevant
-control-math helpers. Firmware 0.29.2 / protocol 1.12 is flashed. Six
-alternating signed position moves bench-confirmed its coherent microsecond
+control-math helpers. Its bounded 0.1 rev/s smoke completed 40,001 current-loop
+updates with the live 512 rev/s² policy, normal zero-output release, preserved
+generation-3 calibration, and no faults/reset/panic. Six earlier alternating
+signed position moves bench-confirmed the coherent microsecond
 timebase: maximum successful prediction age remained 1,435-1,483 us with no
 predictor, backend, encoder, supervisor, reset, or panic fault.
 
@@ -23,10 +42,10 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is flashing the 0.29.3 review-closeout image, followed by
-measured current-loop and predictor/output timing, high-electrical-frequency
-current tracking, negative-direction speed staging, and the remaining position
-fault/stop gates. Exact live, validated, evaluation, and hard limits are owned by
+The next control work is flashing 0.31.0, proving volatile apply/revert and
+explicit persistence across a power cycle, then using its fixed-condition sweep
+before negative-direction speed staging and the remaining position fault/stop
+gates. Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).
 
@@ -58,6 +77,7 @@ For production motion status and a conservative relative move:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity-status
+py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --trace-at-seconds 1
 py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 ```

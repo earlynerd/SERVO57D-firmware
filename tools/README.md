@@ -51,6 +51,33 @@ converted using the tested motor's 50 electrical cycles per mechanical
 revolution. It is not a closed-loop command; use the separate
 `mks57d_rs485.py velocity` product service for signed, regulated speed.
 
+`mks57d_tune.py` builds a comparison session from those same bounded product
+diagnostics. Protocol 1.14 applies each Kp/Ki pair only as inactive volatile
+configuration, runs fixed current/frequency points, restores the starting gains
+and inactive diagnostic configuration even after an aborted trial, and never
+persists a sweep result:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
+```
+
+Each timestamped `scratch/tuning-runs/*-current-loop/` session contains
+`session.json`, `summary.csv`, a self-contained `report.html`, and per-trial
+telemetry/trace JSON lines plus `trial.json`. The report combines cross-trial
+gain, phase, error, voltage, motion, and timing comparisons with each trial's
+settled 20 kHz current and phase-voltage waveforms. Rebuild it without opening
+the serial port with `--replot SESSION_DIRECTORY`. Promotion is deliberately
+separate:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 apply --kp 4 --ki 0.015625
+py tools/mks57d_tune.py --port COM14 persist --confirm-save-active-configuration
+```
+
+The apply command changes RAM only. Persist uses the firmware's safe-state
+dual-slot configuration transaction and should follow review of the saved
+report; the sweep never chooses or saves a winner automatically.
+
 `build.ps1` configures and builds the Arm firmware and/or the native unit tests. It does not flash hardware or execute anything from `vendor/local/`.
 
 ```powershell
@@ -74,7 +101,7 @@ py tools/mks57d_rs485.py --port COM14 clear-calibration
 py tools/mks57d_rs485.py --port COM14 torque-status
 py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000 --trace-at-seconds 1
 py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 py tools/mks57d_rs485.py --port COM14 status
@@ -154,7 +181,13 @@ final summary. Use `--jsonl` to additionally retain complete nested snapshots,
 captures. Ctrl+C sends generic STOP and finalizes the directory. For a
 repeatable automated shutdown gate, `--stop-after-seconds SECONDS` sends the
 same STOP over the capture's active serial connection before the firmware
-deadline. The 0.27.1 evaluation envelope is ±16 rev/s (±960 RPM), 256 rev/s²
+deadline. On firmware 0.30.0 / protocol 1.13,
+`--trace-at-seconds SECONDS` atomically re-arms the 256-sample one-shot during
+motion and writes normalized `current_trace.csv` after authority ends. It
+contains A/B tracking, predicted phase/age, 32 MHz carrier-timer trigger and
+ADC/DMA timing, 64 MHz DWT ISR timing, and PWM preload margin. No trace bytes
+are transported while the backend is active; `arm-trace` exposes the same
+active-only operation for specialized clients. The 0.27.1 evaluation envelope is ±16 rev/s (±960 RPM), 256 rev/s²
 reference slew, and at most 495 counts (about 2.999 A nominal). The independent
 observed-speed shutdown remains 20 rev/s. Positive-direction 0.27.1 captures
 now exercise the predictor through a 12 rev/s request. At 24 V, +8 rev/s reaches

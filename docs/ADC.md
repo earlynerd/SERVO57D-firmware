@@ -1,9 +1,12 @@
 # ADC Bring-up
 
-Status: firmware 0.29.2 retains the TIM2 compare at 80% of each 20 kHz carrier to
+Status: firmware 0.30.1 retains the TIM2 compare at 80% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 16 MHz, 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.
+Its re-armable trace records the 32 MHz TIM2 trigger phase and
+trigger-to-DMA-entry latency beside 64 MHz DWT current-ISR timing; it does not
+stream from interrupt context.
 ADC/DMA configuration and arming still finish before the PWM timers start.
 Firmware averages 32 bridge-zeroed startup snapshots for independent A/B
 offsets, then the OLED shows both signed currents as compact `A+#####mA` and
@@ -25,10 +28,10 @@ reference and verified 6.65 gain.
 | `vbus_raw` | `vBus` | PA3 | 4 | High: published schematic plus Nations channel mapping |
 
 The two current inputs are outputs from the board's external GS8632
-amplifiers. The internal MCU op-amps remain disabled. `adc_sample_t` preserves
-the schematic order above, stores only right-aligned 12-bit values, and adds a
-wrapping capture index. Construction rejects any raw value above 4095 and does
-not modify the destination on failure.
+amplifiers. The internal MCU op-amps remain disabled. The active synchronous
+path publishes the A/B pair atomically as `adc1_current_snapshot_t` and the
+injected bus sample as `adc1_vbus_snapshot_t`; both reject raw values above
+4095.
 
 Channel identity, target synchronous acquisition, current signs, and dynamic
 operation agree with the tested board. Its ADC reference and current-sense gain
@@ -52,10 +55,10 @@ The current amplifier's mid-rail bias has unity gain; 6.65 is the verified
 differential shunt-voltage gain, not 7.65. The bus divider is 15.4 kOhm above
 1 kOhm. With the tested board's measured 3.3 V reference and fitted 20 mOhm
 shunts, these factors are 6.059 mA per current count and approximately
-13.22 mV per bus-voltage count. `adc_sample_convert()` accepts the ADC reference
-and independent A/B zero counts at runtime. Firmware 0.19.0 uses 3.3 V and
-measures each zero from 32 synchronized samples over approximately 320 ms while
-bridge authority remains inhibited.
+13.22 mV per bus-voltage count. `adc_current_pair_convert_milliamperes()`
+accepts the ADC reference and independent A/B zero counts at runtime. Firmware
+0.19.0 uses 3.3 V and measures each zero from 32 synchronized samples over
+approximately 320 ms while bridge authority remains inhibited.
 
 ## Acquisition design
 
@@ -79,19 +82,6 @@ register at ADC offset `0x60`. That step is retained here because the official
 driver requires it, but the N32L40x user manual does not name the register.
 This is a medium-confidence, SDK-backed detail. It works on the tested board,
 but remains undocumented by the user manual.
-
-`adc1_read_passive()` performs three independent software-triggered
-conversions in the fixed order `currentB`, `currentA`, `vBus`. It does not use a
-three-rank scan because, without DMA, successive results could overwrite the
-single regular-data register before software consumes each channel. Output is
-published only after all three conversions succeed, so callers never receive
-a partially updated sample.
-
-Passive conversions provisionally use 28.5 sampling cycles for the current
-channels and 55.5 cycles for the bus input. With the 16 MHz ADC clock, the nominal
-three-conversion sequence is about 9.4 microseconds plus the documented
-first-conversion overhead. These are bring-up settings, not a real-time timing
-contract; source impedance, settling, and loop timing must be measured.
 
 The firmware 0.12.1 synchronous attempt called
 `adc1_start_pwm_synchronized_current()` after TIM3 was already running. That
@@ -165,13 +155,15 @@ sets the ADC software-start bit. The current channels use 7.5-cycle apertures
 at the 16 MHz ADC clock. Low-zero sign-magnitude modulation confines
 the loop's switching edges to the first 70% of the period under the current
 phase-voltage bound, so sampling retains at least 5 microseconds after the latest
-permitted PWM edge. The two-rank sequence takes approximately 2.7 microseconds,
-leaving approximately 7 microseconds for DMA completion, fixed-point A/B PI
-control, phase prediction/A-B mapping, and preload staging. Firmware 0.27.1 uses
-that 7 microsecond estimate as its nominal phase-prediction output lead; scope
-measurement, not the estimate, is the acceptance evidence. DMA completion then publishes a new output generation.
-The TIM3 update guardian allows one empty update for this pipelined result and
-faults on a second consecutive update without a new output.
+permitted PWM edge. The first firmware 0.30.0 timing burst measured trigger
+delivery at 41.094 us and DMA entry 3.938 us later. Phase prediction, A/B
+mapping, PI control, and compare staging then took 20.578-21.141 us end to end,
+including priority-1 guardian preemption. The staged compares therefore miss
+the 50 us update and become active at 100 us, with 33.031-33.594 us of preload
+margin. Firmware 0.30.1 replaces the old 7 us estimate with the measured 55 us
+DMA-completion-to-application prediction lead. DMA completion publishes one new
+output generation; the TIM3 update guardian allows the intentional intervening
+empty update and faults on a second consecutive update without a new output.
 
 Firmware 0.28.0 adds a one-rank PA3 automatic-injected conversion after every
 regular A/B pair. The regular pair still completes DMA and releases the 20 kHz
@@ -202,9 +194,10 @@ range, or current condition that persists re-latches through the normal path.
 Remaining analog work is to characterize temperature and unit-to-unit gain
 tolerance, amplifier settling/bandwidth and clipping, and repeat across bus
 voltage. Switching-correlated offset or noise should be quantified beyond
-the successful current operating point. The 80%-phase trigger should be
-scoped to quantify switching-edge contamination, ISR latency, and
-conversion/control completion relative to the following preload boundary.
+the successful current operating point. The 80%-phase trigger should still be
+externally checked for switching-edge contamination. The internal burst now
+quantifies trigger delivery, ISR latency, and conversion/control completion
+relative to the application boundary.
 Analog-watchdog thresholds and production calibration/tolerance for the active
 `vBus` measurement remain current/voltage-envelope work.
 

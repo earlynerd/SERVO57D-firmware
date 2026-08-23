@@ -61,6 +61,13 @@ typedef struct
     int16_t current_b_measured_counts;
     int16_t phase_a_voltage_permille;
     int16_t phase_b_voltage_permille;
+    uint32_t predicted_electrical_phase_q32;
+    uint16_t phase_prediction_age_us;
+    uint16_t trigger_timer_count;
+    uint16_t trigger_to_dma_timer_ticks;
+    uint16_t dma_to_pwm_stage_cycles;
+    uint16_t dma_to_trace_record_cycles;
+    uint16_t pwm_preload_margin_ticks;
 } current_loop_backend_trace_sample_t;
 
 bool current_loop_backend_init(
@@ -77,10 +84,14 @@ bool current_loop_backend_set_aligned_q_reference(
     uint32_t encoder_timestamp_us);
 bool current_loop_backend_start(void);
 bool current_loop_backend_stop(void);
+bool current_loop_backend_reconfigure_gains(
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step);
 bool current_loop_backend_recover(uint32_t* cleared_fault_flags);
 void current_loop_backend_get_snapshot(
     current_loop_backend_snapshot_t* snapshot);
 uint16_t current_loop_backend_trace_count(void);
+bool current_loop_backend_trace_arm(void);
 bool current_loop_backend_trace_get(
     uint16_t index,
     current_loop_backend_trace_sample_t* sample);

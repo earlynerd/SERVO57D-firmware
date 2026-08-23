@@ -11,12 +11,15 @@ enum
                                   TIM_SMCTRL_SMSEL_2
 };
 
+static uint16_t s_period_counts;
+
 bool tim2_current_trigger_init(uint32_t timer_clock_hz)
 {
     uint32_t period_counts;
     uint32_t compare_counts;
     uint32_t wait_budget = 10000u;
 
+    s_period_counts = 0u;
     NVIC_DisableIRQ(TIM2_IRQn);
     if ((timer_clock_hz == 0u) ||
         ((timer_clock_hz % TIM2_CURRENT_TRIGGER_FREQUENCY_HZ) != 0u))
@@ -77,14 +80,37 @@ bool tim2_current_trigger_init(uint32_t timer_clock_hz)
         return false;
     }
 
-    return (TIM2->PSC == 0u) &&
-           (TIM2->AR == (uint16_t)(period_counts - 1u)) &&
-           (TIM2->CCDAT2 == (uint16_t)compare_counts) &&
-           ((TIM2->SMCTRL & (TIM_SMCTRL_TSEL | TIM_SMCTRL_SMSEL)) ==
-            TIM2_RESET_FROM_TIM3_UPDATE) &&
-           ((TIM2->CCEN & TIM_CCEN_CC2EN) != 0u) &&
-           ((TIM2->DINTEN & TIM_DINTEN_CC2IEN) != 0u) &&
-           ((TIM2->CTRL1 & TIM_CTRL1_CNTEN) != 0u);
+    if ((TIM2->PSC != 0u) ||
+        (TIM2->AR != (uint16_t)(period_counts - 1u)) ||
+        (TIM2->CCDAT2 != (uint16_t)compare_counts) ||
+        ((TIM2->SMCTRL & (TIM_SMCTRL_TSEL | TIM_SMCTRL_SMSEL)) !=
+         TIM2_RESET_FROM_TIM3_UPDATE) ||
+        ((TIM2->CCEN & TIM_CCEN_CC2EN) == 0u) ||
+        ((TIM2->DINTEN & TIM_DINTEN_CC2IEN) == 0u) ||
+        ((TIM2->CTRL1 & TIM_CTRL1_CNTEN) == 0u))
+    {
+        return false;
+    }
+
+    s_period_counts = (uint16_t)period_counts;
+    return true;
+}
+
+uint16_t tim2_current_trigger_counter(void)
+{
+    return s_period_counts != 0u ? TIM2->CNT : 0u;
+}
+
+uint16_t tim2_current_trigger_elapsed_ticks(uint16_t start, uint16_t end)
+{
+    if ((s_period_counts == 0u) ||
+        (start >= s_period_counts) || (end >= s_period_counts))
+    {
+        return 0u;
+    }
+    return end >= start ?
+        (uint16_t)(end - start) :
+        (uint16_t)(s_period_counts - start + end);
 }
 
 void TIM2_IRQHandler(void)

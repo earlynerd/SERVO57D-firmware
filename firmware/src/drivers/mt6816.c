@@ -6,12 +6,9 @@
 
 enum
 {
-    MT6816_READ_BIT = 0x80u,
-    MT6816_ANGLE_HIGH_REGISTER = 0x03u,
     MT6816_ANGLE_LOW_SHIFT = 2u,
     MT6816_NO_MAGNET_BIT = 1u << 1,
-    MT6816_OVER_SPEED_BIT = 1u << 3,
-    MT6816_BURST_LENGTH = 4u
+    MT6816_OVER_SPEED_BIT = 1u << 3
 };
 
 static bool parity_is_even(uint8_t register_03, uint8_t register_04)
@@ -61,39 +58,4 @@ mt6816_status_t mt6816_decode_registers(uint8_t register_03,
 
     *sample = candidate;
     return MT6816_STATUS_OK;
-}
-
-mt6816_status_t mt6816_read_angle(const spi_bus_t* bus,
-                                  mt6816_sample_t* sample,
-                                  spi_status_t* transport_status)
-{
-    static const uint8_t request[MT6816_BURST_LENGTH] = {
-        MT6816_READ_BIT | MT6816_ANGLE_HIGH_REGISTER,
-        0u,
-        0u,
-        0u,
-    };
-    uint8_t response[MT6816_BURST_LENGTH] = {0u};
-    spi_status_t status;
-
-    if ((bus == NULL) || (bus->exchange == NULL) ||
-        (sample == NULL) || (transport_status == NULL))
-    {
-        return MT6816_STATUS_INVALID_ARGUMENT;
-    }
-
-    status = bus->exchange(bus->context,
-                           request,
-                           response,
-                           MT6816_BURST_LENGTH);
-    *transport_status = status;
-    if (status != SPI_STATUS_OK)
-    {
-        return MT6816_STATUS_TRANSPORT_ERROR;
-    }
-
-    return mt6816_decode_registers(response[1],
-                                   response[2],
-                                   response[3],
-                                   sample);
 }

@@ -71,7 +71,7 @@ enum
 {
     COMMISSIONING_STATUS_SCHEMA_VERSION = 3u,
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
-    CURRENT_TRACE_SCHEMA_VERSION = 1u,
+    CURRENT_TRACE_SCHEMA_VERSION = 2u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 2u,
     VELOCITY_STATUS_SCHEMA_VERSION = 1u,
@@ -169,7 +169,7 @@ struct product_command_context
     configuration_store_t* configuration_store;
     uint32_t* raw_input_levels;
     uint32_t* input_levels;
-    const phase_current_loop_config_t* current_loop_config;
+    phase_current_loop_config_t* current_loop_config;
     uint16_t maximum_test_amplitude_counts;
     uint16_t test_amplitude_counts;
     uint32_t test_frequency_millihz;
@@ -1534,9 +1534,11 @@ static command_status_t position_get_status(
 
 static bool build_product_configuration(
     const motor_alignment_t* motor_alignment,
+    const phase_current_loop_config_t* current_loop_config,
     product_configuration_t* configuration)
 {
-    if ((motor_alignment == NULL) || (configuration == NULL) ||
+    if ((motor_alignment == NULL) || (current_loop_config == NULL) ||
+        (configuration == NULL) ||
         !motor_alignment->initialized)
     {
         return false;
@@ -1549,6 +1551,10 @@ static bool build_product_configuration(
         motor_alignment->config.electrical_cycles_per_revolution;
     motor_alignment_get_status(
         motor_alignment, &configuration->alignment);
+    configuration->current_loop_proportional_gain_q16_per_count =
+        current_loop_config->proportional_gain_q16_per_count;
+    configuration->current_loop_integral_gain_q16_per_count_per_step =
+        current_loop_config->integral_gain_q16_per_count_per_step;
     return product_configuration_is_valid(configuration);
 }
 
@@ -1572,7 +1578,7 @@ static bool configuration_write_allowed(
             (commissioning->supervisor->state == APP_STATE_DIAGNOSTIC)) &&
            (commissioning->supervisor->authority == APP_AUTHORITY_NONE) &&
            !app_supervisor_bridge_authorized(commissioning->supervisor) &&
-           !loop.active && (loop.fault_flags == 0u) &&
+           loop.initialized && !loop.active && (loop.fault_flags == 0u) &&
            !alignment_controller_is_active(
                 commissioning->alignment_controller) &&
            !aligned_torque_controller_is_active(
@@ -1603,16 +1609,19 @@ static command_status_t configuration_get_status(
     if ((commissioning == NULL) || (status == NULL) ||
         (commissioning->configuration_store == NULL) ||
         !build_product_configuration(
-            commissioning->motor_alignment, &active))
+            commissioning->motor_alignment,
+            commissioning->current_loop_config,
+            &active))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
 
     store = commissioning->configuration_store;
     memset(status, 0, sizeof(*status));
-    status->schema_version = 1u;
+    status->schema_version = 2u;
     status->active_slot = CONFIGURATION_STORE_INVALID_SLOT;
-    status->record_schema_version =
+    status->record_schema_version = store->record_valid ?
+        store->record_schema_version :
         CONFIGURATION_STORE_RECORD_SCHEMA_VERSION;
     status->active_encoder_counts_per_revolution =
         active.encoder_counts_per_revolution;
@@ -1625,6 +1634,18 @@ static command_status_t configuration_get_status(
     status->active_quarter_step_error_counts =
         active.alignment.quarter_step_error_counts;
     status->active_encoder_direction = active.alignment.encoder_direction;
+    status->default_current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16;
+    status->default_current_loop_integral_gain_q16_per_count_per_step =
+        PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16;
+    status->active_current_loop_proportional_gain_q16_per_count =
+        active.current_loop_proportional_gain_q16_per_count;
+    status->active_current_loop_integral_gain_q16_per_count_per_step =
+        active.current_loop_integral_gain_q16_per_count_per_step;
+    status->maximum_current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16;
+    status->maximum_current_loop_integral_gain_q16_per_count_per_step =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16;
     status->flags |= COMMAND_CONFIGURATION_FLAG_WRITE_SUPPORTED;
     if (store->initialized)
     {
@@ -1671,6 +1692,10 @@ static command_status_t configuration_get_status(
             stored.alignment.quarter_step_error_counts;
         status->stored_encoder_direction =
             stored.alignment.encoder_direction;
+        status->stored_current_loop_proportional_gain_q16_per_count =
+            stored.current_loop_proportional_gain_q16_per_count;
+        status->stored_current_loop_integral_gain_q16_per_count_per_step =
+            stored.current_loop_integral_gain_q16_per_count_per_step;
     }
     return COMMAND_STATUS_OK;
 }
@@ -1682,16 +1707,47 @@ static command_status_t configuration_save_active(void* context)
 
     if ((commissioning == NULL) ||
         !build_product_configuration(
-            commissioning->motor_alignment, &configuration))
+            commissioning->motor_alignment,
+            commissioning->current_loop_config,
+            &configuration))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
-    if (!configuration.alignment.valid ||
-        !configuration_write_allowed(commissioning))
+    if (!configuration_write_allowed(commissioning))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
 
+    board_bridge_force_low_zero();
+    return configuration_store_save(
+               commissioning->configuration_store,
+               &configuration) == CONFIGURATION_STORE_RESULT_OK ?
+        COMMAND_STATUS_OK : COMMAND_STATUS_INTERNAL_ERROR;
+}
+
+static command_status_t configuration_save_alignment_only(void* context)
+{
+    product_command_context_t* commissioning = context;
+    product_configuration_t configuration;
+
+    if ((commissioning == NULL) ||
+        !build_product_configuration(
+            commissioning->motor_alignment,
+            commissioning->current_loop_config,
+            &configuration))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!configuration_write_allowed(commissioning))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    /* Automatic alignment may persist its newly accepted geometry, but it is
+       not user authorization to promote volatile tuning. Merge the previous
+       stored gains (or compiled defaults for an empty store) before saving. */
+    configuration_store_restore_current_loop_gains(
+        commissioning->configuration_store, &configuration);
     board_bridge_force_low_zero();
     return configuration_store_save(
                commissioning->configuration_store,
@@ -1706,7 +1762,9 @@ static command_status_t configuration_clear_calibration(void* context)
 
     if ((commissioning == NULL) ||
         !build_product_configuration(
-            commissioning->motor_alignment, &configuration))
+            commissioning->motor_alignment,
+            commissioning->current_loop_config,
+            &configuration))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
@@ -1715,6 +1773,10 @@ static command_status_t configuration_clear_calibration(void* context)
         return COMMAND_STATUS_UNAVAILABLE;
     }
 
+    /* Clearing calibration modifies only motor geometry. Volatile tuning must
+       remain active without being promoted as a side effect. */
+    configuration_store_restore_current_loop_gains(
+        commissioning->configuration_store, &configuration);
     memset(&configuration.alignment, 0, sizeof(configuration.alignment));
     board_bridge_force_low_zero();
     if (configuration_store_save(
@@ -1730,6 +1792,82 @@ static command_status_t configuration_clear_calibration(void* context)
     }
     motor_alignment_clear(commissioning->motor_alignment);
     return COMMAND_STATUS_OK;
+}
+
+static command_status_t configuration_apply_current_loop_gains(
+    product_command_context_t* commissioning,
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step)
+{
+    phase_current_loop_config_t candidate;
+
+    if ((commissioning == NULL) ||
+        (commissioning->current_loop_config == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    candidate = *commissioning->current_loop_config;
+    candidate.proportional_gain_q16_per_count =
+        proportional_gain_q16_per_count;
+    candidate.integral_gain_q16_per_count_per_step =
+        integral_gain_q16_per_count_per_step;
+    if ((proportional_gain_q16_per_count < 0) ||
+        (proportional_gain_q16_per_count >
+         PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16) ||
+        (integral_gain_q16_per_count_per_step < 0) ||
+        (integral_gain_q16_per_count_per_step >
+         PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16) ||
+        !phase_current_loop_config_is_valid(&candidate))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    if (!configuration_write_allowed(commissioning))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    if (!current_loop_backend_reconfigure_gains(
+            proportional_gain_q16_per_count,
+            integral_gain_q16_per_count_per_step))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+
+    *commissioning->current_loop_config = candidate;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t configuration_set_current_loop_gains(
+    void* context,
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step)
+{
+    return configuration_apply_current_loop_gains(
+        context,
+        proportional_gain_q16_per_count,
+        integral_gain_q16_per_count_per_step);
+}
+
+static command_status_t configuration_revert_current_loop_gains(
+    void* context)
+{
+    product_command_context_t* commissioning = context;
+    product_configuration_t configuration;
+
+    if ((commissioning == NULL) ||
+        (commissioning->configuration_store == NULL) ||
+        !build_product_configuration(
+            commissioning->motor_alignment,
+            commissioning->current_loop_config,
+            &configuration))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    configuration_store_restore_current_loop_gains(
+        commissioning->configuration_store, &configuration);
+    return configuration_apply_current_loop_gains(
+        commissioning,
+        configuration.current_loop_proportional_gain_q16_per_count,
+        configuration.current_loop_integral_gain_q16_per_count_per_step);
 }
 
 static command_status_t commissioning_get_boot_status(
@@ -1862,7 +2000,27 @@ static command_status_t commissioning_get_current_trace(
     sample->current_b_measured_counts = trace.current_b_measured_counts;
     sample->phase_a_voltage_permille = trace.phase_a_voltage_permille;
     sample->phase_b_voltage_permille = trace.phase_b_voltage_permille;
+    sample->predicted_electrical_phase_q32 =
+        trace.predicted_electrical_phase_q32;
+    sample->phase_prediction_age_us = trace.phase_prediction_age_us;
+    sample->trigger_timer_count = trace.trigger_timer_count;
+    sample->trigger_to_dma_timer_ticks =
+        trace.trigger_to_dma_timer_ticks;
+    sample->dma_to_pwm_stage_cycles = trace.dma_to_pwm_stage_cycles;
+    sample->dma_to_trace_record_cycles =
+        trace.dma_to_trace_record_cycles;
+    sample->pwm_preload_margin_ticks = trace.pwm_preload_margin_ticks;
     return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_arm_current_trace(void* context)
+{
+    if (context == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    return current_loop_backend_trace_arm() ?
+        COMMAND_STATUS_OK : COMMAND_STATUS_UNAVAILABLE;
 }
 
 static void wait_milliseconds(uint32_t duration)
@@ -2081,11 +2239,12 @@ int main(void)
         ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 512u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         /*
-         * Nominal DMA-completion-to-next-preload-boundary interval at the
-         * retained 80%-carrier ADC trigger. Scope measurement remains the
-         * acceptance evidence for this compensation value.
+         * The 80%-carrier trigger completes DMA near 45 us. The measured
+         * control path stages its preload after the 50 us update, so the
+         * command becomes active at the following 100 us update. Predict from
+         * DMA completion to that measured application boundary.
          */
-        CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US = 7u,
+        CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US = 55u,
         /*
          * Prediction is allowed one nominal encoder period of dispatch
          * margin beyond the controllers' timestamp-to-timestamp feedback
@@ -2149,8 +2308,9 @@ int main(void)
                        TIM2_CURRENT_TRIGGER_PHASE_PERMILLE,
                    "phase voltage must leave a 5 us ADC quiet interval");
     _Static_assert(CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US <
-                       (1000000u / TIM3_BRIDGE_PWM_FREQUENCY_HZ),
-                   "phase-prediction lead must stay within one carrier");
+                       (2u * (1000000u /
+                              TIM3_BRIDGE_PWM_FREQUENCY_HZ)),
+                   "phase-prediction lead must stay within two carriers");
     _Static_assert(ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US <
                        CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US,
                    "phase prediction requires dispatch-age headroom");
@@ -2326,9 +2486,9 @@ int main(void)
         .reference_limit_counts = CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
         .hard_current_limit_counts = CURRENT_LOOP_HARD_LIMIT_COUNTS,
         .proportional_gain_q16_per_count =
-            2 * (int32_t)PHASE_CURRENT_LOOP_Q16_ONE,
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16,
         .integral_gain_q16_per_count_per_step =
-            (int32_t)PHASE_CURRENT_LOOP_Q16_ONE / 64,
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16,
         .phase_voltage_limit_permille =
             CURRENT_LOOP_PHASE_VOLTAGE_LIMIT_PERMILLE,
         .duty_margin_permille = CURRENT_LOOP_DUTY_MARGIN_PERMILLE,
@@ -2466,6 +2626,7 @@ int main(void)
             .get_boot_status = commissioning_get_boot_status,
             .get_encoder_status = commissioning_get_encoder_status,
             .get_current_trace = commissioning_get_current_trace,
+            .arm_current_trace = commissioning_arm_current_trace,
         },
         .alignment = {
             .context = &commissioning_context,
@@ -2482,6 +2643,10 @@ int main(void)
             .get_status = configuration_get_status,
             .save = configuration_save_active,
             .clear_calibration = configuration_clear_calibration,
+            .set_current_loop_gains =
+                configuration_set_current_loop_gains,
+            .revert_current_loop_gains =
+                configuration_revert_current_loop_gains,
         },
         .aligned_torque = {
             .context = &commissioning_context,
@@ -2532,15 +2697,23 @@ int main(void)
     (void)configuration_store_init(
         &configuration_store, &configuration_backend);
     if (configuration_store_get(
-            &configuration_store, &stored_configuration) &&
-        stored_configuration.alignment.valid &&
-        (stored_configuration.encoder_counts_per_revolution ==
-         motor_alignment.config.encoder_counts_per_revolution) &&
-        (stored_configuration.electrical_cycles_per_revolution ==
-         motor_alignment.config.electrical_cycles_per_revolution))
+            &configuration_store, &stored_configuration))
     {
-        (void)motor_alignment_restore(
-            &motor_alignment, &stored_configuration.alignment);
+        current_loop_config.proportional_gain_q16_per_count =
+            stored_configuration.
+                current_loop_proportional_gain_q16_per_count;
+        current_loop_config.integral_gain_q16_per_count_per_step =
+            stored_configuration.
+                current_loop_integral_gain_q16_per_count_per_step;
+        if (stored_configuration.alignment.valid &&
+            (stored_configuration.encoder_counts_per_revolution ==
+             motor_alignment.config.encoder_counts_per_revolution) &&
+            (stored_configuration.electrical_cycles_per_revolution ==
+             motor_alignment.config.electrical_cycles_per_revolution))
+        {
+            (void)motor_alignment_restore(
+                &motor_alignment, &stored_configuration.alignment);
+        }
     }
     if (!rotor_control_runtime_init(
             &rotor_control_runtime,
@@ -2873,7 +3046,8 @@ int main(void)
                 board_bridge_force_low_zero();
                 platform_panic(PANIC_INTERNAL_INVARIANT);
             }
-            (void)configuration_save_active(&commissioning_context);
+            (void)configuration_save_alignment_only(
+                &commissioning_context);
             diagnostics_due = true;
         }
         else if ((rotor_events &

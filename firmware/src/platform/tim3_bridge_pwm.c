@@ -175,6 +175,25 @@ bool tim3_bridge_pwm_stage_duties(
             ALL_CHANNEL_OUTPUTS_ENABLED);
 }
 
+bool tim3_bridge_pwm_get_preload_margin_ticks(uint16_t* margin_ticks)
+{
+    uint16_t counter;
+
+    if (!s_initialized || (margin_ticks == NULL) ||
+        (s_period_counts == 0u))
+    {
+        return false;
+    }
+
+    counter = TIM3->CNT;
+    if (counter >= s_period_counts)
+    {
+        return false;
+    }
+    *margin_ticks = (uint16_t)(s_period_counts - counter);
+    return true;
+}
+
 bool tim3_bridge_pwm_zero(void)
 {
     if (!s_initialized)

@@ -15,6 +15,17 @@ and fault bounds.
 
 ## Accepted baseline
 
+- Firmware 0.30.3 / protocol 1.13 is flashed. Firmware 0.30.1 corrected the
+  predictor's nominal 7 us lead to the measured 55 us DMA-to-application
+  interval. Matched +8 rev/s Kp=2/3/4 bursts then reduced velocity RMS error
+  from 0.797 to 0.621 to 0.460 rev/s and A/B current RMS error from about 146
+  to 100 to 87 counts without a control, timing, encoder, backend, reset, or
+  panic fault. Kp=4 remains the active bench candidate, not a universal motor
+  default.
+- Firmware 0.31.0 / protocol 1.14 is the unflashed production-tuning candidate.
+  It adds safe-state volatile current-gain apply/revert, active/stored/default
+  status, schema-1 configuration migration, explicit dual-slot persistence,
+  and a guided fixed-condition sweep with normalized artifacts and HTML plots.
 - Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
   bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
@@ -30,10 +41,13 @@ and fault bounds.
   signed position moves produced no future-age rejection; maximum successful
   prediction age remained 1,435-1,483 us against the 3,000 us contract, with
   preserved generation-3 calibration and no reset.
-- Firmware 0.29.3 / protocol 1.12 is the current source candidate. It closes
+- Firmware 0.29.3 / protocol 1.12 is flashed. It closes
   the remaining non-tuning project-review items: a traceable independent
   acceleration shutdown, explicit cascade deadline ordering, wide-range slew
   arithmetic, shared control-math semantics, and generated-artifact hygiene.
+  A bounded 0.1 rev/s smoke reported the 512 rev/s² policy, completed 40,001
+  current-loop updates, released all outputs, preserved calibration, and left
+  all fault/reset/panic channels clear.
 - The project-owned timer, ADC, modulation, current backend, drive supervisor,
   and direct-GPIO all-low `ZERO` mechanism remain the only bridge-authority
   path.
@@ -46,12 +60,14 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Flash firmware 0.29.3 and repeat one already bounded motion command.
-  Confirm identity, the reported 512 rev/s² aligned-actuator acceleration
-  boundary, ordinary release, preserved calibration, and zero new faults.
-- [ ] Measure the current-loop and predictor timing on hardware: ADC acquisition
-  instant, configured output lead, worst-case ISR/preload duration, switching
-  contamination, and remaining phase error at the 8–12 rev/s boundary.
+- [ ] Flash firmware 0.31.0 and bench-validate current-gain status, idle-only
+  volatile apply/revert, sweep-abort restoration, explicit save, schema-2
+  generation advance, and power-cycle restoration without disturbing alignment
+  or authority.
+- [ ] Run the guided fixed-current/frequency sweep across conservative staged
+  amplitudes and the live diagnostic frequency range; accept a current-loop
+  profile from tracking, phase, overshoot, voltage headroom, timing, motion, and
+  fault evidence rather than velocity RMS alone.
 - [ ] Improve high-electrical-frequency current tracking from those measurements,
   then stage signed velocity through ±2, ±4, ±5, ±8, ±12, and ±16 rev/s with
   current, voltage, prediction, supply, thermal, mechanical, and release
@@ -101,10 +117,12 @@ list only when measurements or a newly discovered prerequisite justify it.
 - Physical encoder/no-magnet injection is deferred indefinitely on the current
   board/motor assembly because the sensor cannot be disturbed non-destructively.
   Automated invalid/stale/total-silence fault convergence remains required.
-- Absolute position, homing, and the broader general-motion shell remain outside
-  the current focused product slice until the active current/speed/timing work
-  justifies their priority. Relative position remains the supported position
-  operation.
+- Absolute position, homing, persistent communications leases, general
+  multi-source arbitration, and step/direction integration remain outside the
+  current focused product slice until they justify fresh implementation through
+  the product supervisor/runtime. Relative position remains the supported
+  position operation. The standalone step/direction decoder stays retained and
+  tested; PMSM-oriented d/q control remains a later project.
 - Modbus RTU and publicly documented Makerbase command compatibility remain
   optional adapters. They do not replace the project-owned native command
   service or block core drive performance work.

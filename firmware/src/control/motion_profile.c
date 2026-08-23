@@ -59,29 +59,6 @@ bool motion_profile_set_target(motion_profile_t* profile,
     return true;
 }
 
-bool motion_profile_request_stop(motion_profile_t* profile,
-                                 const motion_profile_config_t* config)
-{
-    float stopping_distance;
-
-    if ((profile == NULL) || !profile->initialized ||
-        !motion_profile_config_is_valid(config) ||
-        !isfinite(profile->position_revolutions) ||
-        !isfinite(profile->velocity_revolutions_per_second))
-    {
-        return false;
-    }
-
-    stopping_distance =
-        (profile->velocity_revolutions_per_second *
-         fabsf(profile->velocity_revolutions_per_second)) /
-        (2.0f *
-         config->maximum_acceleration_revolutions_per_second_squared);
-    profile->target_position_revolutions =
-        profile->position_revolutions + stopping_distance;
-    return isfinite(profile->target_position_revolutions);
-}
-
 bool motion_profile_step(motion_profile_t* profile,
                          const motion_profile_config_t* config,
                          float elapsed_seconds)

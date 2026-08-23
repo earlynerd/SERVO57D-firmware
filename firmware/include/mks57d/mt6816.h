@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-#include "mks57d/spi_bus.h"
-
 enum
 {
     MT6816_ANGLE_RAW_MAX = 16383u,
@@ -34,8 +32,4 @@ mt6816_status_t mt6816_decode_registers(uint8_t register_03,
                                         uint8_t register_04,
                                         uint8_t register_05,
                                         mt6816_sample_t* sample);
-mt6816_status_t mt6816_read_angle(const spi_bus_t* bus,
-                                  mt6816_sample_t* sample,
-                                  spi_status_t* transport_status);
-
 #endif

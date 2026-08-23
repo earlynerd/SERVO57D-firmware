@@ -344,6 +344,9 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_GET_CURRENT_TRACE:
             *operation = COMMAND_OPERATION_GET_CURRENT_TRACE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_ARM_CURRENT_TRACE:
+            *operation = COMMAND_OPERATION_ARM_CURRENT_TRACE;
+            return true;
         case NATIVE_PROTOCOL_COMMAND_START_ALIGNMENT:
             *operation = COMMAND_OPERATION_START_ALIGNMENT;
             return true;
@@ -364,6 +367,12 @@ static bool map_command(uint16_t native_command,
             return true;
         case NATIVE_PROTOCOL_COMMAND_CLEAR_CALIBRATION:
             *operation = COMMAND_OPERATION_CLEAR_CALIBRATION;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_SET_CURRENT_LOOP_GAINS:
+            *operation = COMMAND_OPERATION_SET_CURRENT_LOOP_GAINS;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_REVERT_CURRENT_LOOP_GAINS:
+            *operation = COMMAND_OPERATION_REVERT_CURRENT_LOOP_GAINS;
             return true;
         case NATIVE_PROTOCOL_COMMAND_START_ALIGNED_TORQUE:
             *operation = COMMAND_OPERATION_START_ALIGNED_TORQUE;
@@ -639,7 +648,21 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              (uint16_t)trace->phase_a_voltage_permille);
                 write_u16_be(&response_frame->payload[20],
                              (uint16_t)trace->phase_b_voltage_permille);
-                payload_length = 22u;
+                write_u32_be(&response_frame->payload[22],
+                             trace->predicted_electrical_phase_q32);
+                write_u16_be(&response_frame->payload[26],
+                             trace->phase_prediction_age_us);
+                write_u16_be(&response_frame->payload[28],
+                             trace->trigger_timer_count);
+                write_u16_be(&response_frame->payload[30],
+                             trace->trigger_to_dma_timer_ticks);
+                write_u16_be(&response_frame->payload[32],
+                             trace->dma_to_pwm_stage_cycles);
+                write_u16_be(&response_frame->payload[34],
+                             trace->dma_to_trace_record_cycles);
+                write_u16_be(&response_frame->payload[36],
+                             trace->pwm_preload_margin_ticks);
+                payload_length = 38u;
                 break;
             }
 
@@ -739,7 +762,31 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                                  active_quarter_step_error_counts);
                 response_frame->payload[32] =
                     (uint8_t)status->active_encoder_direction;
-                payload_length = 33u;
+                write_u32_be(&response_frame->payload[33],
+                             (uint32_t)status->
+                                 default_current_loop_proportional_gain_q16_per_count);
+                write_u32_be(&response_frame->payload[37],
+                             (uint32_t)status->
+                                 default_current_loop_integral_gain_q16_per_count_per_step);
+                write_u32_be(&response_frame->payload[41],
+                             (uint32_t)status->
+                                 stored_current_loop_proportional_gain_q16_per_count);
+                write_u32_be(&response_frame->payload[45],
+                             (uint32_t)status->
+                                 stored_current_loop_integral_gain_q16_per_count_per_step);
+                write_u32_be(&response_frame->payload[49],
+                             (uint32_t)status->
+                                 active_current_loop_proportional_gain_q16_per_count);
+                write_u32_be(&response_frame->payload[53],
+                             (uint32_t)status->
+                                 active_current_loop_integral_gain_q16_per_count_per_step);
+                write_u32_be(&response_frame->payload[57],
+                             (uint32_t)status->
+                                 maximum_current_loop_proportional_gain_q16_per_count);
+                write_u32_be(&response_frame->payload[61],
+                             (uint32_t)status->
+                                 maximum_current_loop_integral_gain_q16_per_count_per_step);
+                payload_length = 65u;
                 break;
             }
 

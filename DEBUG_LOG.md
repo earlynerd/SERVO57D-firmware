@@ -428,3 +428,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** engineering-units-hidden-by-controller-native-telemetry
 - **Recently-touched?** yes — motion capture/status presentation and ADC scheduling were the active code paths.
 - **Status:** Bench accepted. The flashed image identifies as 0.28.0/protocol 1.10. Inactive schema-3 status reported 23.829 V at the 24 V supply setting. All 22 captured samples from a one-second 1 rev/s / 606 mA run held 23.776-23.815 V, 20,001 current-loop updates completed while the VBUS sample count advanced, current references and bridge duties returned to zero, authority released, and ADC, deadline, predictor, encoder, backend, supervisor, reset, and panic state remained clear.
+
+## 2026-08-22 — Phase predictor targeted a missed PWM update
+
+- **Observation:** The first firmware 0.30.0 +8 rev/s timing burst completed safely but measured the ADC trigger at 41.094 us, DMA entry 3.938 us later, and DMA-entry-to-compare staging at 20.578-21.141 us. The trace reported 33.031-33.594 us of preload margin after staging. Current-vector magnitude averaged 36.8% of reference and its mean phase error was -44.0 degrees; no burst sample reached the phase-voltage clamp. Evidence is retained in `scratch/velocity-runs/20260822-201713-p8p000rps-00495cnt-3000ms/`.
+- **Root cause:** `firmware/src/main.c` configured a 7 us output lead from the earlier unmeasured assumption that DMA-complete control would reach the 50 us update. The measured `firmware/src/platform/current_loop_backend.c` path stages after that update, so preload becomes active at 100 us. The guardian intentionally permits the intervening update, which kept the timing-contract error fault-free.
+- **Fix under test:** Firmware 0.30.1 predicts 55 us from DMA completion near 45 us to the measured 100 us application boundary. It does not change the ADC trigger, PWM schedule, current/voltage/duty limits, guardian, authority, or fault path. Native/Python tests and clean Debug/Release Arm builds pass.
+- **Class:** phase-prediction-output-boundary-mismatch
+- **Recently-touched?** yes — firmware 0.30.0 added the measurement channel used to inspect the existing 0.27.0 predictor timing assumption; its trace stores occur after PWM staging and did not create the missed boundary.
+- **Status:** Source correction validated; repeat the bounded +8 rev/s burst after flashing 0.30.1 before tuning the remaining current lag or attempting +12 rev/s.
+- **Time to fix:** one bounded hardware capture followed by a code-first timing audit and source validation.
+
+## 2026-08-22 — Tuning sweep aborted on one malformed RS-485 reply
+
+- **Observation:** A nine-trial current-loop sweep completed seven trials and the eighth motor run without bridge faults or resets, then aborted while downloading its 256-sample trace with `truncated COBS frame`; cleanup subsequently encountered one stale response before restoring the starting gains and diagnostic configuration.
+- **Root cause:** `tools/mks57d_rs485.py:635` consumed exactly one delimited frame per request and treated any malformed or stale frame as terminal, while the new trace download performs hundreds of consecutive idempotent reads and had no bounded recovery path.
+- **Fix:** The client now discards up to four malformed or mismatched frames while awaiting the requested response, and trace-sample reads alone retry transport failures up to three attempts; device-declared errors and all state-changing commands remain non-retrying.
+- **Class:** host-protocol-resynchronization
+- **Recently-touched?** yes — the high-resolution tuning downloader was added in the same session.

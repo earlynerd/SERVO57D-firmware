@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "mks57d/adc_sample.h"
+#include "mks57d/adc_limits.h"
 
 /* Schematic-derived analog front-end constants. The current amplifiers obey
    Vout = Vref + 6.65 * (Vkelvin+ - Vkelvin-), so the mid-rail bias has unity
@@ -29,14 +29,6 @@ typedef struct
 
 typedef struct
 {
-    float current_b_amperes;
-    float current_a_amperes;
-    float vbus_volts;
-    uint32_t capture_index;
-} adc_engineering_sample_t;
-
-typedef struct
-{
     uint32_t current_b_sum;
     uint32_t current_a_sum;
     uint32_t sample_count;
@@ -50,9 +42,6 @@ bool adc_calibration_build(adc_calibration_t* output,
                            float current_b_zero_raw,
                            float current_a_zero_raw);
 bool adc_calibration_is_valid(const adc_calibration_t* calibration);
-bool adc_sample_convert(const adc_sample_t* raw,
-                        const adc_calibration_t* calibration,
-                        adc_engineering_sample_t* output);
 bool adc_zero_calibrator_init(adc_zero_calibrator_t* calibrator,
                               float reference_voltage);
 bool adc_zero_calibrator_observe(adc_zero_calibrator_t* calibrator,

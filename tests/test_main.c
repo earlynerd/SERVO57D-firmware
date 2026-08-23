@@ -11,7 +11,6 @@
 #include "mks57d/adc_display.h"
 #include "mks57d/aligned_torque_controller.h"
 #include "mks57d/alignment_controller.h"
-#include "mks57d/application_core.h"
 #include "mks57d/angle_tracker.h"
 #include "mks57d/app_state.h"
 #include "mks57d/boot_self_test.h"
@@ -25,12 +24,8 @@
 #include "mks57d/dma_ring.h"
 #include "mks57d/electrical_phase_predictor.h"
 #include "mks57d/encoder_liveness.h"
-#include "mks57d/encoder_display.h"
-#include "mks57d/fault_latch.h"
 #include "mks57d/interrupt_priority.h"
-#include "mks57d/input_display.h"
 #include "mks57d/mt6816.h"
-#include "mks57d/motion_manager.h"
 #include "mks57d/native_protocol.h"
 #include "mks57d/motion_profile.h"
 #include "mks57d/motor_alignment.h"
@@ -39,8 +34,6 @@
 #include "mks57d/phase_current_reference.h"
 #include "mks57d/position_controller.h"
 #include "mks57d/rotating_current_test.h"
-#include "mks57d/pulse_input_display.h"
-#include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/step_direction.h"
 #include "mks57d/timebase_reconcile.h"
@@ -54,7 +47,6 @@ enum
 {
     MOCK_I2C_MAX_CALLS = 32u,
     MOCK_I2C_MAX_BYTES = 32u,
-    MOCK_SPI_MAX_BYTES = 8u,
     MOCK_PROTOCOL_CAPABILITIES = 0xA55Au,
     MOCK_CONFIGURATION_FLASH_WORDS_PER_SLOT =
         CONFIGURATION_STORE_PAGE_SIZE_BYTES / sizeof(uint32_t)
@@ -68,15 +60,6 @@ typedef struct
     size_t lengths[MOCK_I2C_MAX_CALLS];
     uint8_t bytes[MOCK_I2C_MAX_CALLS][MOCK_I2C_MAX_BYTES];
 } mock_i2c_t;
-
-typedef struct
-{
-    size_t call_count;
-    size_t length;
-    uint8_t transmit[MOCK_SPI_MAX_BYTES];
-    uint8_t response[MOCK_SPI_MAX_BYTES];
-    spi_status_t status;
-} mock_spi_t;
 
 typedef struct
 {
@@ -117,6 +100,7 @@ typedef struct
     size_t boot_status_calls;
     size_t encoder_status_calls;
     size_t current_trace_calls;
+    size_t current_trace_arm_calls;
     size_t alignment_start_calls;
     size_t alignment_status_calls;
     size_t drive_stop_calls;
@@ -124,6 +108,8 @@ typedef struct
     size_t configuration_status_calls;
     size_t configuration_save_calls;
     size_t calibration_clear_calls;
+    size_t current_loop_gains_set_calls;
+    size_t current_loop_gains_revert_calls;
     size_t aligned_torque_start_calls;
     size_t aligned_torque_status_calls;
     size_t velocity_start_calls;
@@ -142,35 +128,11 @@ typedef struct
     int32_t requested_position_maximum_acceleration_q16_16;
     uint16_t requested_position_current_limit_counts;
     uint32_t requested_position_duration_millis;
+    int32_t requested_current_loop_kp_q16;
+    int32_t requested_current_loop_ki_q16;
+    command_status_t current_loop_gains_set_status;
+    command_status_t current_loop_gains_revert_status;
 } mock_commissioning_t;
-
-static servo_core_config_t test_servo_config(void)
-{
-    const servo_core_config_t config = {
-        .motion_profile = {
-            .maximum_velocity_revolutions_per_second = 2.0f,
-            .maximum_acceleration_revolutions_per_second_squared = 4.0f,
-            .maximum_step_seconds = 0.002f,
-            .position_tolerance_revolutions = 0.0005f,
-            .velocity_tolerance_revolutions_per_second = 0.002f,
-        },
-        .velocity_controller = {
-            .proportional_gain = 2.0f,
-            .integral_gain_per_second = 8.0f,
-            .output_limit = 2.0f,
-            .integrator_limit = 2.0f,
-        },
-        .maximum_feedback_interval_us = 2000u,
-        .feedback_stale_timeout_us = 3000u,
-        .maximum_control_interval_us = 2000u,
-        .maximum_feedback_velocity_revolutions_per_second = 20.0f,
-        .position_gain_per_second = 8.0f,
-        .maximum_following_error_revolutions = 0.5f,
-        .maximum_current_amperes = 2.0f,
-    };
-
-    return config;
-}
 
 static velocity_controller_config_t test_velocity_controller_config(void)
 {
@@ -214,81 +176,6 @@ static position_controller_config_t test_position_controller_config(void)
     };
 
     return config;
-}
-
-static application_core_config_t test_application_config(
-    uint32_t lease_timeout_us,
-    uint32_t allowed_motion_sources)
-{
-    const application_core_config_t config = {
-        .servo = {
-            .motion_profile = {
-                .maximum_velocity_revolutions_per_second = 2.0f,
-                .maximum_acceleration_revolutions_per_second_squared = 4.0f,
-                .maximum_step_seconds = 0.002f,
-                .position_tolerance_revolutions = 0.0005f,
-                .velocity_tolerance_revolutions_per_second = 0.002f,
-            },
-            .velocity_controller = {
-                .proportional_gain = 2.0f,
-                .integral_gain_per_second = 8.0f,
-                .output_limit = 2.0f,
-                .integrator_limit = 2.0f,
-            },
-            .maximum_feedback_interval_us = 2000u,
-            .feedback_stale_timeout_us = 3000u,
-            .maximum_control_interval_us = 2000u,
-            .maximum_feedback_velocity_revolutions_per_second = 20.0f,
-            .position_gain_per_second = 8.0f,
-            .maximum_following_error_revolutions = 0.5f,
-            .maximum_current_amperes = 2.0f,
-        },
-        .motion = {
-            .remote_lease_timeout_us = lease_timeout_us,
-            .allowed_motion_sources = allowed_motion_sources,
-        },
-        .step_direction = {
-            .steps_per_revolution = 3200u,
-            .maximum_sample_interval_us = 2000u,
-            .maximum_step_rate_per_second = 160000.0f,
-        },
-    };
-
-    return config;
-}
-
-static servo_core_status_t observe_servo(
-    servo_core_t* core,
-    float position_revolutions,
-    float velocity_revolutions_per_second,
-    uint32_t timestamp_us)
-{
-    const rotor_observation_t observation = {
-        .position_revolutions = position_revolutions,
-        .velocity_revolutions_per_second =
-            velocity_revolutions_per_second,
-        .timestamp_us = timestamp_us,
-        .valid = true,
-    };
-
-    return servo_core_observe_rotor(core, &observation);
-}
-
-static application_core_status_t observe_application(
-    application_core_t* application,
-    float position_revolutions,
-    float velocity_revolutions_per_second,
-    uint32_t timestamp_us)
-{
-    const rotor_observation_t observation = {
-        .position_revolutions = position_revolutions,
-        .velocity_revolutions_per_second =
-            velocity_revolutions_per_second,
-        .timestamp_us = timestamp_us,
-        .valid = true,
-    };
-
-    return application_core_observe_rotor(application, &observation);
 }
 
 #define EXPECT_TRUE(expression)                                                     \
@@ -344,30 +231,6 @@ static i2c_status_t mock_i2c_write(void* context,
         return I2C_STATUS_DATA_NACK;
     }
     return I2C_STATUS_OK;
-}
-
-static spi_status_t mock_spi_exchange(void* context,
-                                      const uint8_t* transmit,
-                                      uint8_t* receive,
-                                      size_t length)
-{
-    mock_spi_t* mock = context;
-    size_t index;
-
-    if ((transmit == NULL) || (receive == NULL) ||
-        (length > MOCK_SPI_MAX_BYTES))
-    {
-        return SPI_STATUS_INVALID_ARGUMENT;
-    }
-
-    ++mock->call_count;
-    mock->length = length;
-    for (index = 0u; index < length; ++index)
-    {
-        mock->transmit[index] = transmit[index];
-        receive[index] = mock->response[index];
-    }
-    return mock->status;
 }
 
 static bool mock_protocol_send(void* context,
@@ -483,6 +346,60 @@ static configuration_store_backend_t mock_configuration_backend(
     return backend;
 }
 
+static uint32_t test_configuration_crc32(
+    const uint32_t* words,
+    size_t word_count)
+{
+    uint32_t crc = UINT32_MAX;
+    size_t word_index;
+
+    for (word_index = 0u; word_index < word_count; ++word_index)
+    {
+        unsigned int byte_index;
+
+        for (byte_index = 0u; byte_index < 4u; ++byte_index)
+        {
+            unsigned int bit;
+
+            crc ^= (uint8_t)(words[word_index] >> (byte_index * 8u));
+            for (bit = 0u; bit < 8u; ++bit)
+            {
+                crc = (crc & 1u) != 0u ?
+                    (crc >> 1u) ^ 0xEDB88320u : crc >> 1u;
+            }
+        }
+    }
+    return crc ^ UINT32_MAX;
+}
+
+static void mock_configuration_seed_schema1(
+    mock_configuration_flash_t* flash,
+    uint8_t slot,
+    const product_configuration_t* configuration,
+    uint32_t generation)
+{
+    uint32_t* words = flash->words[slot];
+
+    words[0] = 0x4D4B4346u;
+    words[1] = (1u << 16u) | 8u;
+    words[2] = generation;
+    words[3] =
+        (uint32_t)configuration->encoder_counts_per_revolution |
+        ((uint32_t)configuration->electrical_cycles_per_revolution << 16u);
+    words[4] =
+        (uint32_t)configuration->alignment.electrical_zero_raw |
+        ((uint32_t)configuration->alignment.
+            observed_quarter_step_counts << 16u);
+    words[5] =
+        (uint32_t)(uint16_t)configuration->alignment.
+            quarter_step_error_counts |
+        ((uint32_t)(uint8_t)configuration->alignment.encoder_direction <<
+         16u) |
+        (configuration->alignment.valid ? (1u << 24u) : 0u);
+    words[6] = test_configuration_crc32(words, 6u);
+    words[7] = 0x434D4954u;
+}
+
 static command_status_t mock_commissioning_get_status(
     void* context,
     command_commissioning_status_t* status)
@@ -566,6 +483,14 @@ static command_status_t mock_commissioning_get_current_trace(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_commissioning_arm_current_trace(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->current_trace_arm_calls;
+    return COMMAND_STATUS_OK;
+}
+
 static command_status_t mock_alignment_start(
     void* context,
     uint16_t alignment_current_counts)
@@ -633,6 +558,29 @@ static command_status_t mock_calibration_clear(void* context)
 
     ++mock->calibration_clear_calls;
     return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_current_loop_gains_set(
+    void* context,
+    int32_t proportional_gain_q16_per_count,
+    int32_t integral_gain_q16_per_count_per_step)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->current_loop_gains_set_calls;
+    mock->requested_current_loop_kp_q16 =
+        proportional_gain_q16_per_count;
+    mock->requested_current_loop_ki_q16 =
+        integral_gain_q16_per_count_per_step;
+    return mock->current_loop_gains_set_status;
+}
+
+static command_status_t mock_current_loop_gains_revert(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->current_loop_gains_revert_calls;
+    return mock->current_loop_gains_revert_status;
 }
 
 static command_status_t mock_aligned_torque_start(
@@ -757,6 +705,7 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_boot_status = mock_commissioning_get_boot_status,
             .get_encoder_status = mock_commissioning_get_encoder_status,
             .get_current_trace = mock_commissioning_get_current_trace,
+            .arm_current_trace = mock_commissioning_arm_current_trace,
         },
         .alignment = {
             .context = commissioning,
@@ -773,6 +722,8 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_status = mock_configuration_get_status,
             .save = mock_configuration_save,
             .clear_calibration = mock_calibration_clear,
+            .set_current_loop_gains = mock_current_loop_gains_set,
+            .revert_current_loop_gains = mock_current_loop_gains_revert,
         },
         .aligned_torque = {
             .context = commissioning,
@@ -968,23 +919,6 @@ static void test_drive_supervisor_rejects_state_authority_mismatch(void)
     EXPECT_TRUE(supervisor.authority == APP_AUTHORITY_NONE);
 }
 
-static void test_fault_latch_preserves_first_fault_and_accumulates_flags(void)
-{
-    fault_latch_t latch;
-
-    fault_latch_init(&latch);
-    EXPECT_TRUE(!fault_latch_is_active(&latch));
-    EXPECT_TRUE(latch.first == FAULT_SOURCE_NONE);
-
-    fault_latch_raise(&latch, FAULT_SOURCE_CLOCK);
-    fault_latch_raise(&latch, FAULT_SOURCE_CORE_EXCEPTION);
-
-    EXPECT_TRUE(fault_latch_is_active(&latch));
-    EXPECT_TRUE(latch.first == FAULT_SOURCE_CLOCK);
-    EXPECT_TRUE((latch.active & FAULT_SOURCE_CLOCK) != 0u);
-    EXPECT_TRUE((latch.active & FAULT_SOURCE_CORE_EXCEPTION) != 0u);
-}
-
 static void test_watchdog_policy_services_only_on_schedule(void)
 {
     watchdog_policy_t policy;
@@ -1080,6 +1014,8 @@ static void test_diagnostics_record_abi(void)
                  DIAGNOSTICS_CAPABILITY_VELOCITY_CONTROL) != 0u);
     EXPECT_TRUE((capabilities &
                  DIAGNOSTICS_CAPABILITY_FAULT_RECOVERY) != 0u);
+    EXPECT_TRUE((capabilities &
+                 DIAGNOSTICS_CAPABILITY_CURRENT_LOOP_TUNING) != 0u);
 }
 
 static void test_dma_channel_budget_contract(void)
@@ -1205,51 +1141,6 @@ static void test_mt6816_rejects_bad_parity_without_publishing(void)
     EXPECT_TRUE(sample.flags == 0x5Au);
 }
 
-static void test_mt6816_uses_one_coherent_burst(void)
-{
-    mock_spi_t mock = {
-        .response = {0xFFu, 0xA9u, 0x55u, 0x08u},
-        .status = SPI_STATUS_OK,
-    };
-    const spi_bus_t bus = {
-        .exchange = mock_spi_exchange,
-        .context = &mock,
-    };
-    mt6816_sample_t sample = {0};
-    spi_status_t transport_status = SPI_STATUS_NOT_READY;
-
-    EXPECT_TRUE(mt6816_read_angle(&bus,
-                                  &sample,
-                                  &transport_status) == MT6816_STATUS_OK);
-    EXPECT_TRUE(transport_status == SPI_STATUS_OK);
-    EXPECT_TRUE(mock.call_count == 1u);
-    EXPECT_TRUE(mock.length == 4u);
-    EXPECT_TRUE(mock.transmit[0] == 0x83u);
-    EXPECT_TRUE(mock.transmit[1] == 0x00u);
-    EXPECT_TRUE(mock.transmit[2] == 0x00u);
-    EXPECT_TRUE(mock.transmit[3] == 0x00u);
-    EXPECT_TRUE(sample.angle_raw == 0x2A55u);
-    EXPECT_TRUE((sample.flags & MT6816_FLAG_OVER_SPEED) != 0u);
-}
-
-static void test_mt6816_preserves_transport_failure(void)
-{
-    mock_spi_t mock = {.status = SPI_STATUS_RECEIVE_TIMEOUT};
-    const spi_bus_t bus = {
-        .exchange = mock_spi_exchange,
-        .context = &mock,
-    };
-    mt6816_sample_t sample = {.angle_raw = 77u};
-    spi_status_t transport_status = SPI_STATUS_OK;
-
-    EXPECT_TRUE(mt6816_read_angle(&bus,
-                                  &sample,
-                                  &transport_status) ==
-                MT6816_STATUS_TRANSPORT_ERROR);
-    EXPECT_TRUE(transport_status == SPI_STATUS_RECEIVE_TIMEOUT);
-    EXPECT_TRUE(sample.angle_raw == 77u);
-}
-
 static void test_boot_self_test_requires_every_gate(void)
 {
     boot_self_test_t self_test;
@@ -1343,9 +1234,8 @@ static void test_timebase_reconciliation_preserves_uint32_wrap(void)
                     1000u) == 560u);
 }
 
-static void test_adc_channel_and_sample_order_contract(void)
+static void test_adc_channel_contract(void)
 {
-    adc_sample_t sample;
     volatile unsigned int current_b_channel = ADC1_CURRENT_B_CHANNEL;
     volatile unsigned int current_a_channel = ADC1_CURRENT_A_CHANNEL;
     volatile unsigned int vbus_channel = ADC1_VBUS_CHANNEL;
@@ -1355,103 +1245,6 @@ static void test_adc_channel_and_sample_order_contract(void)
     EXPECT_TRUE(current_a_channel == 3u);
     EXPECT_TRUE(vbus_channel == 4u);
     EXPECT_TRUE(max_clock_hz == 16000000u);
-
-    EXPECT_TRUE(adc_sample_build(&sample,
-                                 101u,
-                                 202u,
-                                 303u,
-                                 17u));
-    EXPECT_TRUE(sample.current_b_raw == 101u);
-    EXPECT_TRUE(sample.current_a_raw == 202u);
-    EXPECT_TRUE(sample.vbus_raw == 303u);
-    EXPECT_TRUE(sample.capture_index == 17u);
-    EXPECT_TRUE(adc_sample_is_valid(&sample));
-}
-
-static void test_adc_sample_rejects_values_outside_12_bits(void)
-{
-    adc_sample_t sample = {
-        .current_b_raw = 11u,
-        .current_a_raw = 22u,
-        .vbus_raw = 33u,
-        .capture_index = 44u,
-    };
-
-    EXPECT_TRUE(adc_sample_build(&sample,
-                                 ADC_SAMPLE_RAW_MAX,
-                                 ADC_SAMPLE_RAW_MAX,
-                                 ADC_SAMPLE_RAW_MAX,
-                                 UINT32_MAX));
-    EXPECT_TRUE(adc_sample_is_valid(&sample));
-
-    EXPECT_TRUE(!adc_sample_build(&sample, 4096u, 2u, 3u, 5u));
-    EXPECT_TRUE(sample.current_b_raw == ADC_SAMPLE_RAW_MAX);
-    EXPECT_TRUE(sample.current_a_raw == ADC_SAMPLE_RAW_MAX);
-    EXPECT_TRUE(sample.vbus_raw == ADC_SAMPLE_RAW_MAX);
-    EXPECT_TRUE(sample.capture_index == UINT32_MAX);
-
-    sample.vbus_raw = 4096u;
-    EXPECT_TRUE(!adc_sample_is_valid(&sample));
-    EXPECT_TRUE(!adc_sample_is_valid(NULL));
-    EXPECT_TRUE(!adc_sample_build(NULL, 1u, 2u, 3u, 4u));
-}
-
-static void test_adc_calibration_uses_measured_front_end_scaling(void)
-{
-    adc_calibration_t calibration;
-    adc_engineering_sample_t engineering = {
-        .current_b_amperes = 10.0f,
-        .current_a_amperes = 20.0f,
-        .vbus_volts = 30.0f,
-        .capture_index = 40u,
-    };
-    adc_sample_t raw;
-    const float expected_amperes_per_count =
-        (ADC_NOMINAL_REFERENCE_VOLTS / (float)ADC_SAMPLE_RAW_MAX) /
-        (ADC_CURRENT_SHUNT_OHMS * ADC_CURRENT_SENSE_GAIN);
-    const float expected_vbus =
-        895.0f *
-        (ADC_NOMINAL_REFERENCE_VOLTS / (float)ADC_SAMPLE_RAW_MAX) *
-        ((ADC_VBUS_UPPER_RESISTANCE_OHMS +
-          ADC_VBUS_LOWER_RESISTANCE_OHMS) /
-         ADC_VBUS_LOWER_RESISTANCE_OHMS);
-
-    EXPECT_TRUE(!adc_calibration_build(NULL, 3.3f, 2053.0f, 2041.0f));
-    EXPECT_TRUE(!adc_calibration_build(&calibration,
-                                       0.0f,
-                                       2053.0f,
-                                       2041.0f));
-    EXPECT_TRUE(!adc_calibration_build(&calibration,
-                                       3.3f,
-                                       4096.0f,
-                                       2041.0f));
-    EXPECT_TRUE(adc_calibration_build(&calibration,
-                                      ADC_NOMINAL_REFERENCE_VOLTS,
-                                      2053.0f,
-                                      2041.0f));
-    EXPECT_TRUE(adc_calibration_is_valid(&calibration));
-
-    EXPECT_TRUE(adc_sample_build(&raw, 2053u, 2041u, 895u, 23u));
-    EXPECT_TRUE(adc_sample_convert(&raw, &calibration, &engineering));
-    EXPECT_TRUE(fabsf(engineering.current_b_amperes) < 0.000001f);
-    EXPECT_TRUE(fabsf(engineering.current_a_amperes) < 0.000001f);
-    EXPECT_TRUE(fabsf(engineering.vbus_volts - expected_vbus) < 0.00001f);
-    EXPECT_TRUE(engineering.capture_index == 23u);
-
-    EXPECT_TRUE(adc_sample_build(&raw, 2052u, 2042u, 895u, 24u));
-    EXPECT_TRUE(adc_sample_convert(&raw, &calibration, &engineering));
-    EXPECT_TRUE(fabsf(engineering.current_b_amperes +
-                      expected_amperes_per_count) < 0.000001f);
-    EXPECT_TRUE(fabsf(engineering.current_a_amperes -
-                      expected_amperes_per_count) < 0.000001f);
-    EXPECT_TRUE(fabsf(expected_amperes_per_count - 0.00606f) < 0.00001f);
-
-    raw.vbus_raw = ADC_SAMPLE_RAW_MAX + 1u;
-    EXPECT_TRUE(!adc_sample_convert(&raw, &calibration, &engineering));
-    EXPECT_TRUE(engineering.capture_index == 24u);
-    EXPECT_TRUE(!adc_sample_convert(NULL, &calibration, &engineering));
-    EXPECT_TRUE(!adc_sample_convert(&raw, NULL, &engineering));
-    EXPECT_TRUE(!adc_sample_convert(&raw, &calibration, NULL));
 }
 
 static void test_adc_zero_calibration_and_milliamp_conversion(void)
@@ -1511,16 +1304,6 @@ static void test_servo57d_oled_profile_is_valid(void)
     EXPECT_TRUE(config->column_offset == 28u);
     EXPECT_TRUE(config->multiplex_ratio == 0x27u);
     EXPECT_TRUE(config->start_line == 0u);
-}
-
-static bool encoder_display_pixel_is_set(const uint8_t* pixels,
-                                         size_t x,
-                                         size_t y)
-{
-    const size_t index =
-        ((y / 8u) * ENCODER_DISPLAY_WIDTH) + x;
-
-    return (pixels[index] & (uint8_t)(1u << (y % 8u))) != 0u;
 }
 
 static void test_adc_display_labels_channels_and_rejects_invalid_values(void)
@@ -1605,36 +1388,6 @@ static void test_adc_display_renders_both_signed_milliamp_values(void)
     EXPECT_TRUE(memcmp(values, invalid, sizeof(values)) != 0);
 }
 
-static void test_encoder_display_renders_position_and_invalid_state(void)
-{
-    uint8_t zero[ENCODER_DISPLAY_FRAME_BYTES];
-    uint8_t maximum[ENCODER_DISPLAY_FRAME_BYTES];
-    uint8_t invalid[ENCODER_DISPLAY_FRAME_BYTES];
-    uint8_t out_of_range[ENCODER_DISPLAY_FRAME_BYTES];
-
-    EXPECT_TRUE(!encoder_display_render(NULL, sizeof(zero), 0u, true));
-    EXPECT_TRUE(!encoder_display_render(zero, sizeof(zero) - 1u, 0u, true));
-    EXPECT_TRUE(encoder_display_render(zero, sizeof(zero), 0u, true));
-    EXPECT_TRUE(encoder_display_render(maximum,
-                                       sizeof(maximum),
-                                       MT6816_ANGLE_RAW_MAX,
-                                       true));
-    EXPECT_TRUE(encoder_display_render(invalid,
-                                       sizeof(invalid),
-                                       0u,
-                                       false));
-    EXPECT_TRUE(encoder_display_render(out_of_range,
-                                       sizeof(out_of_range),
-                                       MT6816_ANGLE_RAW_MAX + 1u,
-                                       true));
-
-    EXPECT_TRUE(memcmp(zero, maximum, sizeof(zero)) != 0);
-    EXPECT_TRUE(memcmp(invalid, out_of_range, sizeof(invalid)) == 0);
-    EXPECT_TRUE(encoder_display_pixel_is_set(zero, 7u, 3u));
-    EXPECT_TRUE(!encoder_display_pixel_is_set(invalid, 7u, 3u));
-    EXPECT_TRUE(encoder_display_pixel_is_set(invalid, 7u, 7u));
-}
-
 static void test_user_inputs_debounce_each_active_low_signal_independently(void)
 {
     user_inputs_debouncer_t debouncer = {0};
@@ -1674,76 +1427,6 @@ static void test_user_inputs_debounce_each_active_low_signal_independently(void)
     EXPECT_TRUE(user_inputs_debouncer_update(&debouncer, raw));
     EXPECT_TRUE((user_inputs_debounced_levels(&debouncer) &
                  USER_INPUT_STEP) == 0u);
-}
-
-static void test_input_display_labels_five_raw_levels(void)
-{
-    uint8_t all_high[INPUT_DISPLAY_FRAME_BYTES];
-    uint8_t all_low[INPUT_DISPLAY_FRAME_BYTES];
-    uint8_t invalid[INPUT_DISPLAY_FRAME_BYTES];
-
-    EXPECT_TRUE(!input_display_render(NULL,
-                                      sizeof(all_high),
-                                      USER_INPUT_MASK,
-                                      true));
-    EXPECT_TRUE(!input_display_render(all_high,
-                                      sizeof(all_high) - 1u,
-                                      USER_INPUT_MASK,
-                                      true));
-    EXPECT_TRUE(!input_display_render(all_high,
-                                      sizeof(all_high),
-                                      USER_INPUT_MASK | (1u << 12),
-                                      true));
-    EXPECT_TRUE(input_display_render(all_high,
-                                     sizeof(all_high),
-                                     USER_INPUT_MASK,
-                                     true));
-    EXPECT_TRUE(input_display_render(all_low,
-                                     sizeof(all_low),
-                                     0u,
-                                     true));
-    EXPECT_TRUE(input_display_render(invalid,
-                                     sizeof(invalid),
-                                     USER_INPUT_MASK,
-                                     false));
-    EXPECT_TRUE(memcmp(all_high, all_low, sizeof(all_high)) != 0);
-    EXPECT_TRUE(memcmp(all_high, invalid, sizeof(all_high)) != 0);
-    EXPECT_TRUE(memcmp(all_low, invalid, sizeof(all_low)) != 0);
-}
-
-static void test_pulse_input_display_labels_three_raw_levels(void)
-{
-    uint8_t all_high[PULSE_INPUT_DISPLAY_FRAME_BYTES];
-    uint8_t all_low[PULSE_INPUT_DISPLAY_FRAME_BYTES];
-    uint8_t invalid[PULSE_INPUT_DISPLAY_FRAME_BYTES];
-
-    EXPECT_TRUE(!pulse_input_display_render(NULL,
-                                            sizeof(all_high),
-                                            USER_INPUT_MASK,
-                                            true));
-    EXPECT_TRUE(!pulse_input_display_render(all_high,
-                                            sizeof(all_high) - 1u,
-                                            USER_INPUT_MASK,
-                                            true));
-    EXPECT_TRUE(!pulse_input_display_render(all_high,
-                                            sizeof(all_high),
-                                            USER_INPUT_MASK | (1u << 12),
-                                            true));
-    EXPECT_TRUE(pulse_input_display_render(all_high,
-                                           sizeof(all_high),
-                                           USER_INPUT_MASK,
-                                           true));
-    EXPECT_TRUE(pulse_input_display_render(all_low,
-                                           sizeof(all_low),
-                                           0u,
-                                           true));
-    EXPECT_TRUE(pulse_input_display_render(invalid,
-                                           sizeof(invalid),
-                                           USER_INPUT_MASK,
-                                           false));
-    EXPECT_TRUE(memcmp(all_high, all_low, sizeof(all_high)) != 0);
-    EXPECT_TRUE(memcmp(all_high, invalid, sizeof(all_high)) != 0);
-    EXPECT_TRUE(memcmp(all_low, invalid, sizeof(all_low)) != 0);
 }
 
 static void test_ssd1306_init_uses_one_bounded_command_transaction(void)
@@ -1800,7 +1483,13 @@ static void test_ssd1306_frame_uses_configured_visible_window(void)
 
 static void test_ssd1306_partial_pages_use_requested_window(void)
 {
-    uint8_t pixels[ENCODER_DISPLAY_FRAME_BYTES] = {0};
+    enum
+    {
+        PARTIAL_START_PAGE = 1u,
+        PARTIAL_PAGE_COUNT = 2u,
+        PARTIAL_FRAME_BYTES = 72u * PARTIAL_PAGE_COUNT
+    };
+    uint8_t pixels[PARTIAL_FRAME_BYTES] = {0};
     mock_i2c_t mock = {0};
     const i2c_bus_t bus = {
         .write = mock_i2c_write,
@@ -1810,8 +1499,8 @@ static void test_ssd1306_partial_pages_use_requested_window(void)
     EXPECT_TRUE(ssd1306_write_pages(
                     &bus,
                     &SSD1306_PANEL_SERVO57D,
-                    ENCODER_DISPLAY_START_PAGE,
-                    ENCODER_DISPLAY_PAGE_COUNT,
+                    PARTIAL_START_PAGE,
+                    PARTIAL_PAGE_COUNT,
                     pixels,
                     sizeof(pixels)) == I2C_STATUS_OK);
     EXPECT_TRUE(mock.call_count == 6u);
@@ -1911,6 +1600,62 @@ static void test_command_service_rejects_invalid_identity_payload(void)
     EXPECT_TRUE(response.kind == COMMAND_RESPONSE_NONE);
 }
 
+static void test_command_service_tuning_payload_and_busy_status(void)
+{
+    static const uint8_t gains[] = {
+        0x00u, 0x04u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0x04u, 0x00u,
+    };
+    static const uint8_t unexpected = 0u;
+    mock_commissioning_t commissioning = {0};
+    const command_service_context_t context = {
+        .configuration = {
+            .context = &commissioning,
+            .set_current_loop_gains = mock_current_loop_gains_set,
+            .revert_current_loop_gains = mock_current_loop_gains_revert,
+        },
+    };
+    command_request_t request = {
+        .operation = COMMAND_OPERATION_SET_CURRENT_LOOP_GAINS,
+        .payload = gains,
+        .payload_length = sizeof(gains) - 1u,
+    };
+    command_response_t response;
+
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_INVALID_PAYLOAD);
+    EXPECT_TRUE(commissioning.current_loop_gains_set_calls == 0u);
+
+    request.payload_length = sizeof(gains);
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_OK);
+    EXPECT_TRUE(response.kind == COMMAND_RESPONSE_NONE);
+    EXPECT_TRUE(commissioning.current_loop_gains_set_calls == 1u);
+    EXPECT_TRUE(commissioning.requested_current_loop_kp_q16 == 4 * 65536);
+    EXPECT_TRUE(commissioning.requested_current_loop_ki_q16 == 1024);
+
+    commissioning.current_loop_gains_set_status =
+        COMMAND_STATUS_UNAVAILABLE;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_UNAVAILABLE);
+    EXPECT_TRUE(commissioning.current_loop_gains_set_calls == 2u);
+
+    request.operation = COMMAND_OPERATION_REVERT_CURRENT_LOOP_GAINS;
+    request.payload = &unexpected;
+    request.payload_length = 1u;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_INVALID_PAYLOAD);
+    EXPECT_TRUE(commissioning.current_loop_gains_revert_calls == 0u);
+
+    commissioning.current_loop_gains_revert_status =
+        COMMAND_STATUS_UNAVAILABLE;
+    request.payload = NULL;
+    request.payload_length = 0u;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_UNAVAILABLE);
+    EXPECT_TRUE(commissioning.current_loop_gains_revert_calls == 1u);
+}
+
 static void test_native_protocol_ping_round_trip_handles_zero_bytes(void)
 {
     static const uint8_t payload[] = {0x11u, 0x00u, 0x22u};
@@ -1967,6 +1712,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     native_protocol_frame_t response;
     size_t wire_length;
     size_t index;
+    volatile uint8_t protocol_minor = NATIVE_PROTOCOL_VERSION_MINOR;
 
     EXPECT_TRUE(init_native_server(&server, &transmit));
     wire_length = encode_native_request(
@@ -2000,6 +1746,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
+    EXPECT_TRUE(protocol_minor == 14u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -2092,7 +1839,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .estimator_maximum_sample_interval_us = 0x25262728u,
         },
         .current_trace = {
-            .schema_version = 1u,
+            .schema_version = 2u,
             .captured_sample_count = 256u,
             .sample_index = 42u,
             .loop_sample_count = 0x01020304u,
@@ -2102,6 +1849,13 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .current_b_measured_counts = 47,
             .phase_a_voltage_permille = -100,
             .phase_b_voltage_permille = 99,
+            .predicted_electrical_phase_q32 = 0x12345678u,
+            .phase_prediction_age_us = 0x0123u,
+            .trigger_timer_count = 0x0234u,
+            .trigger_to_dma_timer_ticks = 0x0345u,
+            .dma_to_pwm_stage_cycles = 0x0456u,
+            .dma_to_trace_record_cycles = 0x0567u,
+            .pwm_preload_margin_ticks = 0x0678u,
         },
         .alignment_status = {
             .schema_version = 1u,
@@ -2132,11 +1886,11 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .maximum_current_error_counts = 8u,
         },
         .configuration_status = {
-            .schema_version = 1u,
+            .schema_version = 2u,
             .flags = 0xFFu,
             .last_result = 0u,
             .active_slot = 1u,
-            .record_schema_version = 1u,
+            .record_schema_version = 2u,
             .generation = 0x01020304u,
             .stored_encoder_counts_per_revolution = 16384u,
             .stored_electrical_cycles_per_revolution = 50u,
@@ -2150,6 +1904,22 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .active_observed_quarter_step_counts = 80u,
             .active_quarter_step_error_counts = -2,
             .active_encoder_direction = -1,
+            .default_current_loop_proportional_gain_q16_per_count =
+                4 * 65536,
+            .default_current_loop_integral_gain_q16_per_count_per_step =
+                1024,
+            .stored_current_loop_proportional_gain_q16_per_count =
+                3 * 65536,
+            .stored_current_loop_integral_gain_q16_per_count_per_step =
+                512,
+            .active_current_loop_proportional_gain_q16_per_count =
+                5 * 65536,
+            .active_current_loop_integral_gain_q16_per_count_per_step =
+                2048,
+            .maximum_current_loop_proportional_gain_q16_per_count =
+                16 * 65536,
+            .maximum_current_loop_integral_gain_q16_per_count_per_step =
+                65536,
         },
         .aligned_torque_status = {
             .schema_version = 2u,
@@ -2460,9 +2230,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.current_trace_calls == 1u);
     EXPECT_TRUE(commissioning.requested_trace_index == 42u);
-    EXPECT_TRUE(response.payload_length == 22u);
+    EXPECT_TRUE(response.payload_length == 38u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[1] == 2u);
     EXPECT_TRUE(response.payload[2] == 0x01u);
     EXPECT_TRUE(response.payload[3] == 0x00u);
     EXPECT_TRUE(response.payload[4] == 0u);
@@ -2473,6 +2243,32 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[11] == 0xCEu);
     EXPECT_TRUE(response.payload[20] == 0u);
     EXPECT_TRUE(response.payload[21] == 99u);
+    EXPECT_TRUE(response.payload[22] == 0x12u);
+    EXPECT_TRUE(response.payload[25] == 0x78u);
+    EXPECT_TRUE(response.payload[26] == 0x01u);
+    EXPECT_TRUE(response.payload[27] == 0x23u);
+    EXPECT_TRUE(response.payload[28] == 0x02u);
+    EXPECT_TRUE(response.payload[29] == 0x34u);
+    EXPECT_TRUE(response.payload[36] == 0x06u);
+    EXPECT_TRUE(response.payload[37] == 0x78u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        27u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_ARM_CURRENT_TRACE,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.current_trace_arm_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
 
     {
         static const uint8_t alignment_payload[] = {0x00u, 0x7Du};
@@ -2596,13 +2392,13 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.configuration_status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 33u);
+    EXPECT_TRUE(response.payload_length == 65u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[1] == 2u);
     EXPECT_TRUE(response.payload[2] == 0xFFu);
     EXPECT_TRUE(response.payload[4] == 1u);
     EXPECT_TRUE(response.payload[5] == 0u);
-    EXPECT_TRUE(response.payload[6] == 1u);
+    EXPECT_TRUE(response.payload[6] == 2u);
     EXPECT_TRUE(response.payload[7] == 1u);
     EXPECT_TRUE(response.payload[10] == 4u);
     EXPECT_TRUE(response.payload[11] == 0x40u);
@@ -2618,6 +2414,26 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[21] == 0xFFu);
     EXPECT_TRUE(response.payload[22] == 0x40u);
     EXPECT_TRUE(response.payload[32] == 0xFFu);
+    EXPECT_TRUE(response.payload[33] == 0x00u);
+    EXPECT_TRUE(response.payload[34] == 0x04u);
+    EXPECT_TRUE(response.payload[35] == 0x00u);
+    EXPECT_TRUE(response.payload[36] == 0x00u);
+    EXPECT_TRUE(response.payload[37] == 0x00u);
+    EXPECT_TRUE(response.payload[38] == 0x00u);
+    EXPECT_TRUE(response.payload[39] == 0x04u);
+    EXPECT_TRUE(response.payload[40] == 0x00u);
+    EXPECT_TRUE(response.payload[41] == 0x00u);
+    EXPECT_TRUE(response.payload[42] == 0x03u);
+    EXPECT_TRUE(response.payload[45] == 0x00u);
+    EXPECT_TRUE(response.payload[47] == 0x02u);
+    EXPECT_TRUE(response.payload[49] == 0x00u);
+    EXPECT_TRUE(response.payload[50] == 0x05u);
+    EXPECT_TRUE(response.payload[53] == 0x00u);
+    EXPECT_TRUE(response.payload[55] == 0x08u);
+    EXPECT_TRUE(response.payload[57] == 0x00u);
+    EXPECT_TRUE(response.payload[58] == 0x10u);
+    EXPECT_TRUE(response.payload[61] == 0x00u);
+    EXPECT_TRUE(response.payload[62] == 0x01u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -2636,6 +2452,52 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(commissioning.configuration_save_calls == 1u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    {
+        static const uint8_t gain_payload[] = {
+            0x00u, 0x05u, 0x00u, 0x00u,
+            0x00u, 0x00u, 0x08u, 0x00u,
+        };
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            0x0333u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_SET_CURRENT_LOOP_GAINS,
+            gain_payload,
+            sizeof(gain_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.current_loop_gains_set_calls == 1u);
+        EXPECT_TRUE(commissioning.requested_current_loop_kp_q16 ==
+                    5 * 65536);
+        EXPECT_TRUE(commissioning.requested_current_loop_ki_q16 == 2048);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            0x0334u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_REVERT_CURRENT_LOOP_GAINS,
+            NULL,
+            0u,
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.current_loop_gains_revert_calls == 1u);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -3404,6 +3266,10 @@ static product_configuration_t test_product_configuration(void)
             .encoder_direction = -1,
             .valid = true,
         },
+        .current_loop_proportional_gain_q16_per_count =
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16,
+        .current_loop_integral_gain_q16_per_count_per_step =
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16,
     };
 
     return configuration;
@@ -3418,6 +3284,10 @@ static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
     product_configuration_t loaded;
     configuration_store_backend_t backend;
 
+    configuration.current_loop_proportional_gain_q16_per_count =
+        5 * PHASE_CURRENT_LOOP_Q16_ONE;
+    configuration.current_loop_integral_gain_q16_per_count_per_step =
+        PHASE_CURRENT_LOOP_Q16_ONE / 32;
     mock_configuration_flash_init(&flash);
     backend = mock_configuration_backend(&flash);
     EXPECT_TRUE(configuration_store_init(&store, &backend) ==
@@ -3428,12 +3298,12 @@ static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
     EXPECT_TRUE(store.active_slot == 0u);
     EXPECT_TRUE(store.generation == 1u);
     EXPECT_TRUE(flash.erase_calls == 1u);
-    EXPECT_TRUE(flash.program_calls == 8u);
+    EXPECT_TRUE(flash.program_calls == 10u);
 
     EXPECT_TRUE(configuration_store_save(&store, &configuration) ==
                 CONFIGURATION_STORE_RESULT_OK);
     EXPECT_TRUE(flash.erase_calls == 1u);
-    EXPECT_TRUE(flash.program_calls == 8u);
+    EXPECT_TRUE(flash.program_calls == 10u);
 
     EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
                 CONFIGURATION_STORE_RESULT_OK);
@@ -3442,6 +3312,10 @@ static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
     EXPECT_TRUE(loaded.alignment.valid);
     EXPECT_TRUE(loaded.alignment.electrical_zero_raw == 9302u);
     EXPECT_TRUE(loaded.alignment.encoder_direction == -1);
+    EXPECT_TRUE(loaded.current_loop_proportional_gain_q16_per_count ==
+                5 * PHASE_CURRENT_LOOP_Q16_ONE);
+    EXPECT_TRUE(loaded.current_loop_integral_gain_q16_per_count_per_step ==
+                PHASE_CURRENT_LOOP_Q16_ONE / 32);
 }
 
 static void test_configuration_store_interrupted_update_keeps_old_slot(void)
@@ -3514,8 +3388,8 @@ static void test_configuration_store_crc_fallback_and_persistent_clear(void)
                 CONFIGURATION_STORE_RESULT_EMPTY);
     EXPECT_TRUE(configuration_store_save(&store, &original) ==
                 CONFIGURATION_STORE_RESULT_OK);
-    cleared.encoder_counts_per_revolution = 16384u;
-    cleared.electrical_cycles_per_revolution = 50u;
+    cleared = original;
+    memset(&cleared.alignment, 0, sizeof(cleared.alignment));
     EXPECT_TRUE(configuration_store_save(&store, &cleared) ==
                 CONFIGURATION_STORE_RESULT_OK);
     EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
@@ -3523,6 +3397,135 @@ static void test_configuration_store_crc_fallback_and_persistent_clear(void)
     EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
     EXPECT_TRUE(reloaded.generation == 2u);
     EXPECT_TRUE(!loaded.alignment.valid);
+    EXPECT_TRUE(loaded.current_loop_proportional_gain_q16_per_count ==
+                original.current_loop_proportional_gain_q16_per_count);
+}
+
+static void test_configuration_store_migrates_schema1_with_default_gains(void)
+{
+    mock_configuration_flash_t flash;
+    configuration_store_t store;
+    configuration_store_t reloaded;
+    product_configuration_t legacy = test_product_configuration();
+    product_configuration_t loaded;
+    configuration_store_backend_t backend;
+
+    mock_configuration_flash_init(&flash);
+    mock_configuration_seed_schema1(&flash, 0u, &legacy, 7u);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(store.record_schema_version == 1u);
+    EXPECT_TRUE(store.generation == 7u);
+    EXPECT_TRUE(configuration_store_get(&store, &loaded));
+    EXPECT_TRUE(loaded.current_loop_proportional_gain_q16_per_count ==
+                PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16);
+    EXPECT_TRUE(loaded.current_loop_integral_gain_q16_per_count_per_step ==
+                PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16);
+
+    /* Even an unchanged explicit save migrates the active schema-1 record. */
+    EXPECT_TRUE(configuration_store_save(&store, &loaded) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(store.active_slot == 1u);
+    EXPECT_TRUE(store.generation == 8u);
+    EXPECT_TRUE(store.record_schema_version ==
+                CONFIGURATION_STORE_RECORD_SCHEMA_VERSION);
+    EXPECT_TRUE(flash.erase_calls == 1u);
+    EXPECT_TRUE(flash.program_calls == 10u);
+
+    EXPECT_TRUE(configuration_store_init(&reloaded, &backend) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(reloaded.active_slot == 1u);
+    EXPECT_TRUE(reloaded.record_schema_version == 2u);
+    EXPECT_TRUE(configuration_store_get(&reloaded, &loaded));
+    EXPECT_TRUE(loaded.current_loop_proportional_gain_q16_per_count ==
+                PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16);
+}
+
+static void test_product_configuration_validates_current_loop_gain_bounds(void)
+{
+    product_configuration_t configuration = test_product_configuration();
+
+    configuration.current_loop_proportional_gain_q16_per_count = 0;
+    configuration.current_loop_integral_gain_q16_per_count_per_step = 0;
+    EXPECT_TRUE(product_configuration_is_valid(&configuration));
+    configuration.current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16;
+    configuration.current_loop_integral_gain_q16_per_count_per_step =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16;
+    EXPECT_TRUE(product_configuration_is_valid(&configuration));
+    configuration.current_loop_proportional_gain_q16_per_count = -1;
+    EXPECT_TRUE(!product_configuration_is_valid(&configuration));
+    configuration.current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16 + 1;
+    EXPECT_TRUE(!product_configuration_is_valid(&configuration));
+    configuration.current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16;
+    configuration.current_loop_integral_gain_q16_per_count_per_step = -1;
+    EXPECT_TRUE(!product_configuration_is_valid(&configuration));
+    configuration.current_loop_integral_gain_q16_per_count_per_step =
+        PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16 + 1;
+    EXPECT_TRUE(!product_configuration_is_valid(&configuration));
+}
+
+static void test_configuration_tuning_requires_explicit_promotion(void)
+{
+    mock_configuration_flash_t flash;
+    configuration_store_t store;
+    product_configuration_t stored = test_product_configuration();
+    product_configuration_t volatile_active = stored;
+    product_configuration_t alignment_save;
+    product_configuration_t reverted;
+    configuration_store_backend_t backend;
+
+    mock_configuration_flash_init(&flash);
+    backend = mock_configuration_backend(&flash);
+    EXPECT_TRUE(configuration_store_init(&store, &backend) ==
+                CONFIGURATION_STORE_RESULT_EMPTY);
+
+    volatile_active.current_loop_proportional_gain_q16_per_count =
+        6 * PHASE_CURRENT_LOOP_Q16_ONE;
+    configuration_store_restore_current_loop_gains(
+        &store, &volatile_active);
+    EXPECT_TRUE(volatile_active.current_loop_proportional_gain_q16_per_count ==
+                PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16);
+
+    stored.current_loop_proportional_gain_q16_per_count =
+        3 * PHASE_CURRENT_LOOP_Q16_ONE;
+    EXPECT_TRUE(configuration_store_save(&store, &stored) ==
+                CONFIGURATION_STORE_RESULT_OK);
+
+    volatile_active = stored;
+    volatile_active.current_loop_proportional_gain_q16_per_count =
+        5 * PHASE_CURRENT_LOOP_Q16_ONE;
+    EXPECT_TRUE(!configuration_store_matches(&store, &volatile_active));
+
+    /* This is the same merge used by automatic alignment and clear: accept
+       new geometry without promoting the volatile tuning experiment. */
+    alignment_save = volatile_active;
+    alignment_save.alignment.electrical_zero_raw = 9304u;
+    configuration_store_restore_current_loop_gains(
+        &store, &alignment_save);
+    EXPECT_TRUE(configuration_store_save(&store, &alignment_save) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_get(&store, &reverted));
+    EXPECT_TRUE(reverted.alignment.electrical_zero_raw == 9304u);
+    EXPECT_TRUE(reverted.current_loop_proportional_gain_q16_per_count ==
+                3 * PHASE_CURRENT_LOOP_Q16_ONE);
+    EXPECT_TRUE(!configuration_store_matches(&store, &volatile_active));
+
+    /* Explicit SAVE is the sole promotion operation for active tuning. */
+    volatile_active.alignment = alignment_save.alignment;
+    EXPECT_TRUE(configuration_store_save(&store, &volatile_active) ==
+                CONFIGURATION_STORE_RESULT_OK);
+    EXPECT_TRUE(configuration_store_matches(&store, &volatile_active));
+
+    reverted = volatile_active;
+    reverted.current_loop_proportional_gain_q16_per_count =
+        2 * PHASE_CURRENT_LOOP_Q16_ONE;
+    configuration_store_restore_current_loop_gains(&store, &reverted);
+    EXPECT_TRUE(reverted.current_loop_proportional_gain_q16_per_count ==
+                5 * PHASE_CURRENT_LOOP_Q16_ONE);
 }
 
 static alignment_controller_config_t test_alignment_controller_config(void)
@@ -3831,41 +3834,6 @@ static void test_motion_profile_respects_velocity_and_acceleration_limits(void)
     EXPECT_TRUE(fabsf(profile.position_revolutions - 1.0f) < 0.001f);
 }
 
-static void test_motion_profile_controlled_stop_decelerates_to_rest(void)
-{
-    const motion_profile_config_t config = {
-        .maximum_velocity_revolutions_per_second = 2.0f,
-        .maximum_acceleration_revolutions_per_second_squared = 4.0f,
-        .maximum_step_seconds = 0.002f,
-        .position_tolerance_revolutions = 0.0005f,
-        .velocity_tolerance_revolutions_per_second = 0.002f,
-    };
-    motion_profile_t profile;
-    float position_when_stop_requested;
-    float stop_target;
-    unsigned int iteration;
-
-    EXPECT_TRUE(motion_profile_init(&profile, 0.0f));
-    EXPECT_TRUE(motion_profile_set_target(&profile, 10.0f));
-    for (iteration = 0u; iteration < 500u; ++iteration)
-    {
-        EXPECT_TRUE(motion_profile_step(&profile, &config, 0.001f));
-    }
-    position_when_stop_requested = profile.position_revolutions;
-    EXPECT_TRUE(profile.velocity_revolutions_per_second > 1.9f);
-    EXPECT_TRUE(motion_profile_request_stop(&profile, &config));
-    stop_target = profile.target_position_revolutions;
-    EXPECT_TRUE(stop_target > position_when_stop_requested);
-
-    for (iteration = 0u; iteration < 2000u; ++iteration)
-    {
-        EXPECT_TRUE(motion_profile_step(&profile, &config, 0.001f));
-    }
-    EXPECT_TRUE(motion_profile_is_settled(&profile, &config));
-    EXPECT_TRUE(fabsf(profile.position_revolutions - stop_target) < 0.001f);
-    EXPECT_TRUE(profile.velocity_revolutions_per_second == 0.0f);
-}
-
 static void test_pi_controller_prevents_integrator_windup(void)
 {
     const pi_controller_config_t config = {
@@ -3896,126 +3864,6 @@ static void test_pi_controller_prevents_integrator_windup(void)
                                    &output));
     EXPECT_TRUE(output < 0.0f);
     EXPECT_TRUE(controller.integrator < 0.0f);
-}
-
-static void test_servo_core_latches_stale_rotor_feedback(void)
-{
-    const servo_core_config_t config = test_servo_config();
-    servo_core_t core;
-    servo_core_output_t output;
-
-    EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, 0u) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_step(&core, 1000u, &output) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_step(&core, 2000u, &output) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_step(&core, 4000u, &output) ==
-                SERVO_CORE_STATUS_FAULTED);
-    EXPECT_TRUE(!output.valid);
-    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
-    EXPECT_TRUE((output.fault_flags & SERVO_FAULT_STALE_FEEDBACK) != 0u);
-}
-
-static void test_servo_core_rejects_invalid_rotor_observations(void)
-{
-    const servo_core_config_t config = test_servo_config();
-    const rotor_observation_t duplicate_timestamp = {
-        .position_revolutions = 0.1f,
-        .velocity_revolutions_per_second = 1.0f,
-        .timestamp_us = 0u,
-        .valid = true,
-    };
-    servo_core_t core;
-
-    EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, 0u) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_observe_rotor(&core, &duplicate_timestamp) ==
-                SERVO_CORE_STATUS_FAULTED);
-    EXPECT_TRUE((core.fault_flags & SERVO_FAULT_INVALID_FEEDBACK) != 0u);
-    EXPECT_TRUE(core.feedback_position_revolutions == 0.0f);
-    EXPECT_TRUE(core.last_feedback_timestamp_us == 0u);
-}
-
-static void test_servo_core_latches_following_error(void)
-{
-    servo_core_config_t config = test_servo_config();
-    servo_core_t core;
-    servo_core_output_t output;
-    uint32_t timestamp_us = 0u;
-    unsigned int iteration;
-
-    config.maximum_following_error_revolutions = 0.005f;
-    EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
-                SERVO_CORE_STATUS_OK);
-
-    for (iteration = 0u;
-         (iteration < 500u) && !servo_core_is_faulted(&core);
-         ++iteration)
-    {
-        timestamp_us += 1000u;
-        EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
-                    SERVO_CORE_STATUS_OK);
-        (void)servo_core_step(&core, timestamp_us, &output);
-    }
-
-    EXPECT_TRUE(servo_core_is_faulted(&core));
-    EXPECT_TRUE((core.fault_flags & SERVO_FAULT_FOLLOWING_ERROR) != 0u);
-}
-
-static void test_servo_core_closes_position_loop_against_simple_plant(void)
-{
-    const servo_core_config_t config = test_servo_config();
-    servo_core_t core;
-    servo_core_output_t output;
-    float plant_position = 0.0f;
-    float plant_velocity = 0.0f;
-    float maximum_current = 0.0f;
-    uint32_t timestamp_us = 0u;
-    unsigned int iteration;
-
-    EXPECT_TRUE(servo_core_init(&core, &config));
-    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(servo_core_set_position_target(&core, 1.0f) ==
-                SERVO_CORE_STATUS_OK);
-
-    for (iteration = 0u; iteration < 8000u; ++iteration)
-    {
-        float acceleration;
-
-        timestamp_us += 1000u;
-        EXPECT_TRUE(observe_servo(&core,
-                                  plant_position,
-                                  plant_velocity,
-                                  timestamp_us) == SERVO_CORE_STATUS_OK);
-        EXPECT_TRUE(servo_core_step(&core, timestamp_us, &output) ==
-                    SERVO_CORE_STATUS_OK);
-        EXPECT_TRUE(output.valid);
-        EXPECT_TRUE(fabsf(output.torque_current_request_amperes) <=
-                    config.maximum_current_amperes);
-
-        if (fabsf(output.torque_current_request_amperes) > maximum_current)
-        {
-            maximum_current =
-                fabsf(output.torque_current_request_amperes);
-        }
-        acceleration =
-            (8.0f * output.torque_current_request_amperes) -
-            (2.0f * plant_velocity);
-        plant_velocity += acceleration * 0.001f;
-        plant_position += plant_velocity * 0.001f;
-    }
-
-    EXPECT_TRUE(!servo_core_is_faulted(&core));
-    EXPECT_TRUE(maximum_current <= config.maximum_current_amperes);
-    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
-    EXPECT_TRUE(fabsf(plant_velocity) < 0.05f);
 }
 
 static void test_velocity_controller_tracks_bounded_simple_plant(void)
@@ -4559,390 +4407,6 @@ static void test_current_controller_regulates_simple_rl_plant(void)
                        output.voltage_alpha_beta.beta) <= 4.0001f);
 }
 
-static bool apply_motion_action_to_servo(servo_core_t* core,
-                                         const motion_action_t* action)
-{
-    switch (action->kind)
-    {
-        case MOTION_ACTION_NONE:
-        case MOTION_ACTION_ENABLE:
-        case MOTION_ACTION_DISABLE:
-            return true;
-
-        case MOTION_ACTION_SET_POSITION_TARGET:
-            return servo_core_set_position_target(
-                       core,
-                       action->position_revolutions) ==
-                   SERVO_CORE_STATUS_OK;
-
-        case MOTION_ACTION_REQUEST_CONTROLLED_STOP:
-            return servo_core_request_stop(core) ==
-                   SERVO_CORE_STATUS_OK;
-
-        default:
-            return false;
-    }
-}
-
-static void test_motion_manager_enforces_authority_and_idempotency(void)
-{
-    const motion_manager_config_t config = {
-        .remote_lease_timeout_us = 100000u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE |
-                                  MOTION_SOURCE_MASK_MODBUS,
-    };
-    const motion_request_t enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 1u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    const motion_request_t move = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 2u,
-        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
-        .position_revolutions = 1.0f,
-    };
-    motion_request_t request;
-    motion_manager_t manager;
-    motion_manager_status_t status;
-    motion_action_t action;
-    uint32_t lease_deadline;
-
-    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_NOT_ENABLED);
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &enable,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(action.kind == MOTION_ACTION_ENABLE);
-    lease_deadline = manager.lease_deadline_us;
-
-    request = move;
-    request.source = MOTION_SOURCE_MODBUS;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      1000u,
-                                      0.0f,
-                                      &action) == MOTION_SUBMIT_BUSY);
-
-    request.source = MOTION_SOURCE_LOCAL;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      1000u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_SOURCE_DISABLED);
-
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      1000u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(action.kind == MOTION_ACTION_SET_POSITION_TARGET);
-    EXPECT_TRUE(action.position_revolutions == 1.0f);
-    lease_deadline = manager.lease_deadline_us;
-
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      50000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_DUPLICATE);
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    EXPECT_TRUE(manager.lease_deadline_us == lease_deadline);
-
-    request = move;
-    request.position_revolutions = 2.0f;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      50000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_CONFLICT);
-
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    60000u,
-                                    true,
-                                    false,
-                                    &action));
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.state == MOTION_STATE_READY);
-    EXPECT_TRUE(status.authority == MOTION_SOURCE_NATIVE);
-    EXPECT_TRUE(status.active_completion == MOTION_COMPLETION_NONE);
-    EXPECT_TRUE(status.last_command_id == 2u);
-    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_COMPLETED);
-}
-
-static void test_motion_manager_lease_expiry_stops_then_disables(void)
-{
-    const motion_manager_config_t config = {
-        .remote_lease_timeout_us = 100000u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
-    };
-    const motion_request_t enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 10u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    const motion_request_t move = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 11u,
-        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
-        .position_revolutions = 5.0f,
-    };
-    motion_manager_t manager;
-    motion_manager_status_t status;
-    motion_action_t action;
-
-    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &enable,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    99999u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    100000u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.state == MOTION_STATE_STOPPING);
-    EXPECT_TRUE(status.last_command_id == 11u);
-    EXPECT_TRUE(status.last_completion ==
-                MOTION_COMPLETION_ABORTED_LEASE);
-
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    101000u,
-                                    true,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_DISABLE);
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.state == MOTION_STATE_DISABLED);
-    EXPECT_TRUE(status.authority == MOTION_SOURCE_NONE);
-}
-
-static void test_motion_manager_keepalive_is_explicit_and_retries_stay_safe(void)
-{
-    const motion_manager_config_t config = {
-        .remote_lease_timeout_us = 100000u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
-    };
-    const motion_request_t enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 30u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    const motion_request_t move = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 31u,
-        .kind = MOTION_COMMAND_MOVE_ABSOLUTE,
-        .position_revolutions = 5.0f,
-    };
-    const motion_request_t keepalive = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 32u,
-        .kind = MOTION_COMMAND_KEEPALIVE,
-    };
-    motion_manager_t manager;
-    motion_manager_status_t status;
-    motion_action_t action;
-    uint32_t refreshed_deadline;
-
-    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &enable,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      1000u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &keepalive,
-                                      50000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    refreshed_deadline = manager.lease_deadline_us;
-    EXPECT_TRUE(refreshed_deadline == 150000u);
-
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &keepalive,
-                                      60000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_DUPLICATE);
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &move,
-                                      60000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_DUPLICATE);
-    EXPECT_TRUE(manager.lease_deadline_us == refreshed_deadline);
-
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    149999u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    150000u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_NATIVE);
-    EXPECT_TRUE(status.last_command_id == 31u);
-    EXPECT_TRUE(status.last_completion ==
-                MOTION_COMPLETION_ABORTED_LEASE);
-    EXPECT_TRUE(status.previous_command_source == MOTION_SOURCE_NATIVE);
-    EXPECT_TRUE(status.previous_command_id == 32u);
-    EXPECT_TRUE(status.previous_completion == MOTION_COMPLETION_COMPLETED);
-}
-
-static void test_motion_manager_lease_deadline_survives_timestamp_wrap(void)
-{
-    const motion_manager_config_t config = {
-        .remote_lease_timeout_us = 100u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
-    };
-    const motion_request_t enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 40u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    motion_manager_t manager;
-    motion_action_t action;
-
-    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &enable,
-                                      UINT32_MAX - 50u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(manager.lease_deadline_us == 49u);
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    UINT32_MAX,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    48u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_NONE);
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    49u,
-                                    false,
-                                    false,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
-}
-
-static void test_motion_manager_allows_foreign_stop_and_latches_fault(void)
-{
-    const motion_manager_config_t config = {
-        .remote_lease_timeout_us = 100000u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
-    };
-    motion_request_t request = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 20u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    motion_manager_t manager;
-    motion_manager_status_t status;
-    motion_action_t action;
-
-    EXPECT_TRUE(motion_manager_init(&manager, &config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      0u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    request.command_id = 21u;
-    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
-    request.position_revolutions = 3.0f;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      1000u,
-                                      0.0f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-
-    request.source = MOTION_SOURCE_LOCAL;
-    request.command_id = 22u;
-    request.kind = MOTION_COMMAND_STOP;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      2000u,
-                                      0.1f,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(action.kind == MOTION_ACTION_REQUEST_CONTROLLED_STOP);
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.active_command_source == MOTION_SOURCE_LOCAL);
-    EXPECT_TRUE(status.active_command_id == 22u);
-    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_NATIVE);
-    EXPECT_TRUE(status.last_command_id == 21u);
-    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_ABORTED_STOP);
-
-    EXPECT_TRUE(motion_manager_poll(&manager,
-                                    3000u,
-                                    false,
-                                    true,
-                                    &action));
-    EXPECT_TRUE(action.kind == MOTION_ACTION_DISABLE);
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.state == MOTION_STATE_FAULT);
-    EXPECT_TRUE(status.last_command_source == MOTION_SOURCE_LOCAL);
-    EXPECT_TRUE(status.last_command_id == 22u);
-    EXPECT_TRUE(status.last_completion == MOTION_COMPLETION_FAULTED);
-    EXPECT_TRUE(status.previous_command_source == MOTION_SOURCE_NATIVE);
-    EXPECT_TRUE(status.previous_command_id == 21u);
-    EXPECT_TRUE(status.previous_completion ==
-                MOTION_COMPLETION_ABORTED_STOP);
-    EXPECT_TRUE(!motion_manager_clear_fault(&manager, false, 0.1f));
-    EXPECT_TRUE(motion_manager_clear_fault(&manager, true, 0.1f));
-    motion_manager_get_status(&manager, &status);
-    EXPECT_TRUE(status.state == MOTION_STATE_DISABLED);
-}
-
 static void test_step_direction_reanchors_and_tracks_signed_counts(void)
 {
     const step_direction_config_t config = {
@@ -5048,382 +4512,6 @@ static void test_step_direction_rejects_rate_and_handles_counter_wrap(void)
                                        &output));
     EXPECT_TRUE(model.last_cumulative_steps == INT32_MIN + 4);
     EXPECT_TRUE(model.last_timestamp_us == 1000u);
-}
-
-static void test_motion_manager_reports_simulated_move_completion(void)
-{
-    const servo_core_config_t servo_config = test_servo_config();
-    const motion_manager_config_t manager_config = {
-        .remote_lease_timeout_us = 10000000u,
-        .allowed_motion_sources = MOTION_SOURCE_MASK_NATIVE,
-    };
-    motion_request_t request = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 30u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    servo_core_t core;
-    servo_core_output_t servo_output;
-    motion_manager_t manager;
-    motion_manager_status_t manager_status;
-    motion_action_t action;
-    float plant_position = 0.0f;
-    float plant_velocity = 0.0f;
-    uint32_t timestamp_us = 0u;
-    unsigned int iteration;
-
-    EXPECT_TRUE(servo_core_init(&core, &servo_config));
-    EXPECT_TRUE(observe_servo(&core, 0.0f, 0.0f, timestamp_us) ==
-                SERVO_CORE_STATUS_OK);
-    EXPECT_TRUE(motion_manager_init(&manager, &manager_config, 0.0f));
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      timestamp_us,
-                                      plant_position,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
-
-    request.command_id = 31u;
-    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
-    request.position_revolutions = 1.0f;
-    EXPECT_TRUE(motion_manager_submit(&manager,
-                                      &request,
-                                      timestamp_us,
-                                      plant_position,
-                                      &action) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
-
-    for (iteration = 0u; iteration < 8000u; ++iteration)
-    {
-        bool motion_complete;
-        float acceleration;
-
-        timestamp_us += 1000u;
-        EXPECT_TRUE(observe_servo(&core,
-                                  plant_position,
-                                  plant_velocity,
-                                  timestamp_us) == SERVO_CORE_STATUS_OK);
-        EXPECT_TRUE(servo_core_step(&core,
-                                    timestamp_us,
-                                    &servo_output) ==
-                    SERVO_CORE_STATUS_OK);
-        motion_complete =
-            servo_output.trajectory_settled &&
-            (fabsf(manager.target_position_revolutions -
-                   servo_output.measured_position_revolutions) < 0.005f) &&
-            (fabsf(servo_output.measured_velocity_revolutions_per_second) <
-             0.02f);
-        EXPECT_TRUE(motion_manager_poll(&manager,
-                                        timestamp_us,
-                                        motion_complete,
-                                        false,
-                                        &action));
-        EXPECT_TRUE(apply_motion_action_to_servo(&core, &action));
-
-        acceleration =
-            (8.0f * servo_output.torque_current_request_amperes) -
-            (2.0f * plant_velocity);
-        plant_velocity += acceleration * 0.001f;
-        plant_position += plant_velocity * 0.001f;
-    }
-
-    motion_manager_get_status(&manager, &manager_status);
-    EXPECT_TRUE(manager_status.state == MOTION_STATE_READY);
-    EXPECT_TRUE(manager_status.last_command_id == 31u);
-    EXPECT_TRUE(manager_status.last_completion ==
-                MOTION_COMPLETION_COMPLETED);
-    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
-}
-
-static void test_application_core_executes_remote_move(void)
-{
-    const application_core_config_t config = test_application_config(
-        10000000u,
-        MOTION_SOURCE_MASK_NATIVE);
-    motion_request_t request = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 40u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    application_core_t application;
-    application_core_output_t output;
-    float plant_position = 0.0f;
-    float plant_velocity = 0.0f;
-    uint32_t timestamp_us = 0u;
-    unsigned int iteration;
-
-    EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(observe_application(&application,
-                                    0.0f,
-                                    0.0f,
-                                    timestamp_us) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_step(&application,
-                                      timestamp_us,
-                                      &output) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(!output.control_enabled);
-    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
-
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &request,
-                                                timestamp_us) ==
-                MOTION_SUBMIT_ACCEPTED);
-    request.command_id = 41u;
-    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
-    request.position_revolutions = 1.0f;
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &request,
-                                                timestamp_us) ==
-                MOTION_SUBMIT_ACCEPTED);
-
-    for (iteration = 0u; iteration < 8000u; ++iteration)
-    {
-        float acceleration;
-
-        timestamp_us += 1000u;
-        EXPECT_TRUE(observe_application(&application,
-                                        plant_position,
-                                        plant_velocity,
-                                        timestamp_us) ==
-                    APPLICATION_CORE_STATUS_OK);
-        EXPECT_TRUE(application_core_step(&application,
-                                          timestamp_us,
-                                          &output) ==
-                    APPLICATION_CORE_STATUS_OK);
-        EXPECT_TRUE(output.control_enabled);
-        EXPECT_TRUE(fabsf(output.torque_current_request_amperes) <= 2.0f);
-
-        acceleration =
-            (8.0f * output.torque_current_request_amperes) -
-            (2.0f * plant_velocity);
-        plant_velocity += acceleration * 0.001f;
-        plant_position += plant_velocity * 0.001f;
-    }
-
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_READY);
-    EXPECT_TRUE(output.motion.last_command_id == 41u);
-    EXPECT_TRUE(output.motion.last_completion ==
-                MOTION_COMPLETION_COMPLETED);
-    EXPECT_TRUE(fabsf(plant_position - 1.0f) < 0.02f);
-}
-
-static void test_application_core_lease_stops_and_disables_plant(void)
-{
-    const application_core_config_t config = test_application_config(
-        100000u,
-        MOTION_SOURCE_MASK_NATIVE);
-    motion_request_t request = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 50u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    application_core_t application;
-    application_core_output_t output;
-    float plant_position = 0.0f;
-    float plant_velocity = 0.0f;
-    uint32_t timestamp_us = 0u;
-    unsigned int iteration;
-
-    EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(observe_application(&application,
-                                    0.0f,
-                                    0.0f,
-                                    timestamp_us) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &request,
-                                                timestamp_us) ==
-                MOTION_SUBMIT_ACCEPTED);
-    request.command_id = 51u;
-    request.kind = MOTION_COMMAND_MOVE_ABSOLUTE;
-    request.position_revolutions = 5.0f;
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &request,
-                                                timestamp_us) ==
-                MOTION_SUBMIT_ACCEPTED);
-
-    for (iteration = 0u; iteration < 3000u; ++iteration)
-    {
-        float acceleration;
-
-        timestamp_us += 1000u;
-        EXPECT_TRUE(observe_application(&application,
-                                        plant_position,
-                                        plant_velocity,
-                                        timestamp_us) ==
-                    APPLICATION_CORE_STATUS_OK);
-        EXPECT_TRUE(application_core_step(&application,
-                                          timestamp_us,
-                                          &output) ==
-                    APPLICATION_CORE_STATUS_OK);
-        acceleration =
-            (8.0f * output.torque_current_request_amperes) -
-            (2.0f * plant_velocity);
-        plant_velocity += acceleration * 0.001f;
-        plant_position += plant_velocity * 0.001f;
-        if (output.motion.state == MOTION_STATE_DISABLED)
-        {
-            break;
-        }
-    }
-
-    EXPECT_TRUE(iteration < 3000u);
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
-    EXPECT_TRUE(!output.control_enabled);
-    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
-    EXPECT_TRUE(output.motion.last_command_id == 51u);
-    EXPECT_TRUE(output.motion.last_completion ==
-                MOTION_COMPLETION_ABORTED_LEASE);
-    EXPECT_TRUE(plant_position < 0.25f);
-}
-
-static void test_application_core_maps_step_direction_stream(void)
-{
-    const application_core_config_t config = test_application_config(
-        100000u,
-        MOTION_SOURCE_MASK_STEP_DIRECTION);
-    const motion_request_t remote_enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 60u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    application_core_t application;
-    application_core_output_t output;
-    motion_submit_status_t submit_status;
-
-    EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &remote_enable,
-                                                0u) ==
-                MOTION_SUBMIT_SOURCE_DISABLED);
-    EXPECT_TRUE(application_core_update_step_direction(&application,
-                                                       0,
-                                                       false,
-                                                       0u,
-                                                       &submit_status));
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 1000u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_update_step_direction(&application,
-                                                       0,
-                                                       true,
-                                                       1000u,
-                                                       &submit_status));
-    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 2000u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_update_step_direction(&application,
-                                                       160,
-                                                       true,
-                                                       2000u,
-                                                       &submit_status));
-    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(application_core_step(&application, 2000u, &output) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(output.control_enabled);
-    EXPECT_TRUE(output.motion.authority == MOTION_SOURCE_STEP_DIRECTION);
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_MOVING);
-    EXPECT_TRUE(fabsf(output.motion.target_position_revolutions - 0.05f) <
-                0.0001f);
-
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 3000u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_update_step_direction(&application,
-                                                       160,
-                                                       false,
-                                                       3000u,
-                                                       &submit_status));
-    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(application_core_step(&application, 3000u, &output) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(!output.control_enabled);
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
-    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
-}
-
-static void test_application_core_fault_requires_safe_recovery(void)
-{
-    const application_core_config_t config = test_application_config(
-        100000u,
-        MOTION_SOURCE_MASK_NATIVE);
-    const motion_request_t enable = {
-        .source = MOTION_SOURCE_NATIVE,
-        .command_id = 70u,
-        .kind = MOTION_COMMAND_ENABLE,
-    };
-    application_core_t application;
-    application_core_output_t output;
-
-    EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_submit_motion(&application,
-                                                &enable,
-                                                0u) ==
-                MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(observe_application(&application,
-                                    0.0f,
-                                    21.0f,
-                                    1000u) ==
-                APPLICATION_CORE_STATUS_FAULTED);
-    EXPECT_TRUE(application_core_step(&application, 1000u, &output) ==
-                APPLICATION_CORE_STATUS_FAULTED);
-    EXPECT_TRUE(!output.control_enabled);
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_FAULT);
-    {
-        const rotor_observation_t recovery_observation = {
-            .position_revolutions = 0.0f,
-            .velocity_revolutions_per_second = 0.0f,
-            .timestamp_us = 2000u,
-            .valid = true,
-        };
-
-        EXPECT_TRUE(!application_core_recover(
-            &application, false, &recovery_observation));
-        EXPECT_TRUE(application_core_recover(
-            &application, true, &recovery_observation));
-    }
-    EXPECT_TRUE(application_core_step(&application, 2000u, &output) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(output.motion.state == MOTION_STATE_DISABLED);
-}
-
-static void test_application_core_invalid_step_stream_faults_immediately(void)
-{
-    const application_core_config_t config = test_application_config(
-        100000u,
-        MOTION_SOURCE_MASK_STEP_DIRECTION);
-    application_core_t application;
-    application_core_output_t output;
-    motion_submit_status_t submit_status;
-
-    EXPECT_TRUE(application_core_init(&application, &config));
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 0u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(application_core_update_step_direction(&application,
-                                                       0,
-                                                       true,
-                                                       0u,
-                                                       &submit_status));
-    EXPECT_TRUE(submit_status == MOTION_SUBMIT_ACCEPTED);
-    EXPECT_TRUE(application.control_enabled);
-    EXPECT_TRUE(observe_application(&application, 0.0f, 0.0f, 1000u) ==
-                APPLICATION_CORE_STATUS_OK);
-    EXPECT_TRUE(!application_core_update_step_direction(&application,
-                                                        1000,
-                                                        true,
-                                                        1000u,
-                                                        &submit_status));
-    EXPECT_TRUE(submit_status == MOTION_SUBMIT_FAULTED);
-    EXPECT_TRUE(!application.control_enabled);
-    EXPECT_TRUE(application.motion.state == MOTION_STATE_FAULT);
-    EXPECT_TRUE(application_core_step(&application, 1000u, &output) ==
-                APPLICATION_CORE_STATUS_FAULTED);
-    EXPECT_TRUE(output.torque_current_request_amperes == 0.0f);
 }
 
 static phase_current_loop_config_t test_phase_current_loop_config(void)
@@ -5540,6 +4628,25 @@ static void test_phase_current_loop_rejects_excess_reference(void)
     EXPECT_TRUE(!phase_current_loop_start(&loop));
 }
 
+static void test_phase_current_loop_rejects_out_of_policy_gains(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+
+    config.proportional_gain_q16_per_count =
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16;
+    config.integral_gain_q16_per_count_per_step =
+        PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16;
+    EXPECT_TRUE(phase_current_loop_config_is_valid(&config));
+    config.proportional_gain_q16_per_count =
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16 + 1;
+    EXPECT_TRUE(!phase_current_loop_config_is_valid(&config));
+    config.proportional_gain_q16_per_count =
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16;
+    config.integral_gain_q16_per_count_per_step =
+        PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16 + 1;
+    EXPECT_TRUE(!phase_current_loop_config_is_valid(&config));
+}
+
 static void test_phase_current_loop_anti_windup_recovers_from_saturation(void)
 {
     phase_current_loop_config_t config = test_phase_current_loop_config();
@@ -5548,7 +4655,7 @@ static void test_phase_current_loop_anti_windup_recovers_from_saturation(void)
     unsigned int step;
 
     config.proportional_gain_q16_per_count =
-        20 * (int32_t)PHASE_CURRENT_LOOP_Q16_ONE;
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16;
     EXPECT_TRUE(phase_current_loop_init(&loop, &config));
     EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
                                                         &config,
@@ -5923,7 +5030,6 @@ int main(void)
     test_drive_supervisor_owns_diagnostic_and_motion_authority();
     test_readiness_loss_deauthorizes_or_faults();
     test_drive_supervisor_rejects_state_authority_mismatch();
-    test_fault_latch_preserves_first_fault_and_accumulates_flags();
     test_watchdog_policy_services_only_on_schedule();
     test_watchdog_policy_latches_failed_health();
     test_watchdog_policy_rejects_foreground_deadline_miss();
@@ -5936,25 +5042,18 @@ int main(void)
     test_mt6816_decodes_angle_and_even_parity();
     test_mt6816_reports_sensor_warning_flags();
     test_mt6816_rejects_bad_parity_without_publishing();
-    test_mt6816_uses_one_coherent_burst();
-    test_mt6816_preserves_transport_failure();
     test_boot_self_test_requires_every_gate();
     test_boot_self_test_failure_is_latched();
     test_interrupt_priority_contract();
     test_timebase_reconciles_preempted_systick_epoch();
     test_timebase_reconciliation_clamps_stale_samples();
     test_timebase_reconciliation_preserves_uint32_wrap();
-    test_adc_channel_and_sample_order_contract();
-    test_adc_sample_rejects_values_outside_12_bits();
-    test_adc_calibration_uses_measured_front_end_scaling();
+    test_adc_channel_contract();
     test_adc_zero_calibration_and_milliamp_conversion();
     test_servo57d_oled_profile_is_valid();
     test_adc_display_labels_channels_and_rejects_invalid_values();
     test_adc_display_renders_both_signed_milliamp_values();
-    test_encoder_display_renders_position_and_invalid_state();
     test_user_inputs_debounce_each_active_low_signal_independently();
-    test_input_display_labels_five_raw_levels();
-    test_pulse_input_display_labels_three_raw_levels();
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();
     test_ssd1306_partial_pages_use_requested_window();
@@ -5962,6 +5061,7 @@ int main(void)
     test_native_protocol_crc_matches_standard_vector();
     test_native_protocol_codec_accepts_maximum_payload();
     test_command_service_rejects_invalid_identity_payload();
+    test_command_service_tuning_payload_and_busy_status();
     test_native_protocol_ping_round_trip_handles_zero_bytes();
     test_native_protocol_reports_identity_and_capabilities();
     test_native_protocol_commissioning_console_round_trip();
@@ -5981,17 +5081,15 @@ int main(void)
     test_configuration_store_persists_and_avoids_unchanged_writes();
     test_configuration_store_interrupted_update_keeps_old_slot();
     test_configuration_store_crc_fallback_and_persistent_clear();
+    test_configuration_store_migrates_schema1_with_default_gains();
+    test_product_configuration_validates_current_loop_gain_bounds();
+    test_configuration_tuning_requires_explicit_promotion();
     test_alignment_controller_commits_closed_sequence();
     test_alignment_controller_failure_preserves_calibration();
     test_alignment_controller_aborts_and_rejects_bad_feedback();
     test_alignment_controller_rejects_runtime_failures();
     test_motion_profile_respects_velocity_and_acceleration_limits();
-    test_motion_profile_controlled_stop_decelerates_to_rest();
     test_pi_controller_prevents_integrator_windup();
-    test_servo_core_latches_stale_rotor_feedback();
-    test_servo_core_rejects_invalid_rotor_observations();
-    test_servo_core_latches_following_error();
-    test_servo_core_closes_position_loop_against_simple_plant();
     test_velocity_controller_tracks_bounded_simple_plant();
     test_velocity_controller_rejects_bounds_and_faults_feedback();
     test_velocity_controller_deadline_clears_current();
@@ -6007,6 +5105,7 @@ int main(void)
     test_phase_current_loop_generates_low_zero_bridge_duties();
     test_phase_current_loop_hard_limit_latches_both_polarities();
     test_phase_current_loop_rejects_excess_reference();
+    test_phase_current_loop_rejects_out_of_policy_gains();
     test_phase_current_loop_anti_windup_recovers_from_saturation();
     test_rotating_current_test_generates_quadrature_references();
     test_phase_current_reference_maps_signed_quadrants();
@@ -6016,19 +5115,8 @@ int main(void)
     test_aligned_torque_accepts_motor_rated_evaluation_envelope();
     test_aligned_torque_wide_reversal_preserves_slew_limit();
     test_aligned_torque_tracking_target_reuses_bounded_actuator();
-    test_motion_manager_enforces_authority_and_idempotency();
-    test_motion_manager_lease_expiry_stops_then_disables();
-    test_motion_manager_keepalive_is_explicit_and_retries_stay_safe();
-    test_motion_manager_lease_deadline_survives_timestamp_wrap();
-    test_motion_manager_allows_foreign_stop_and_latches_fault();
     test_step_direction_reanchors_and_tracks_signed_counts();
     test_step_direction_rejects_rate_and_handles_counter_wrap();
-    test_motion_manager_reports_simulated_move_completion();
-    test_application_core_executes_remote_move();
-    test_application_core_lease_stops_and_disables_plant();
-    test_application_core_maps_step_direction_stream();
-    test_application_core_fault_requires_safe_recovery();
-    test_application_core_invalid_step_stream_faults_immediately();
 
     if (s_failures != 0u)
     {

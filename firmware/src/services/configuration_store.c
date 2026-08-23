@@ -8,9 +8,13 @@ enum
 {
     CONFIGURATION_RECORD_MAGIC = 0x4D4B4346u,
     CONFIGURATION_RECORD_COMMIT = 0x434D4954u,
-    CONFIGURATION_RECORD_WORD_COUNT = 8u,
-    CONFIGURATION_RECORD_CRC_WORD_INDEX = 6u,
-    CONFIGURATION_RECORD_COMMIT_WORD_INDEX = 7u,
+    CONFIGURATION_RECORD_SCHEMA1_VERSION = 1u,
+    CONFIGURATION_RECORD_SCHEMA1_WORD_COUNT = 8u,
+    CONFIGURATION_RECORD_SCHEMA1_CRC_WORD_INDEX = 6u,
+    CONFIGURATION_RECORD_SCHEMA1_COMMIT_WORD_INDEX = 7u,
+    CONFIGURATION_RECORD_WORD_COUNT = 10u,
+    CONFIGURATION_RECORD_CRC_WORD_INDEX = 8u,
+    CONFIGURATION_RECORD_COMMIT_WORD_INDEX = 9u,
     CONFIGURATION_RECORD_ALIGNMENT_VALID = 1u << 24
 };
 
@@ -25,6 +29,7 @@ typedef struct
 {
     product_configuration_t configuration;
     uint32_t generation;
+    uint16_t schema_version;
     uint32_t words[CONFIGURATION_RECORD_WORD_COUNT];
 } decoded_record_t;
 
@@ -75,7 +80,11 @@ static bool configurations_equal(const product_configuration_t* left,
             right->alignment.quarter_step_error_counts) &&
            (left->alignment.encoder_direction ==
             right->alignment.encoder_direction) &&
-           (left->alignment.valid == right->alignment.valid);
+           (left->alignment.valid == right->alignment.valid) &&
+           (left->current_loop_proportional_gain_q16_per_count ==
+            right->current_loop_proportional_gain_q16_per_count) &&
+           (left->current_loop_integral_gain_q16_per_count_per_step ==
+            right->current_loop_integral_gain_q16_per_count_per_step);
 }
 
 bool product_configuration_is_valid(
@@ -87,7 +96,14 @@ bool product_configuration_is_valid(
 
     if ((configuration == NULL) ||
         (configuration->encoder_counts_per_revolution < 8u) ||
-        (configuration->electrical_cycles_per_revolution == 0u))
+        (configuration->electrical_cycles_per_revolution == 0u) ||
+        (configuration->current_loop_proportional_gain_q16_per_count < 0) ||
+        (configuration->current_loop_proportional_gain_q16_per_count >
+         PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KP_Q16) ||
+        (configuration->current_loop_integral_gain_q16_per_count_per_step <
+         0) ||
+        (configuration->current_loop_integral_gain_q16_per_count_per_step >
+         PRODUCT_CONFIGURATION_MAXIMUM_CURRENT_LOOP_KI_Q16))
     {
         return false;
     }
@@ -154,6 +170,10 @@ static void encode_record(const product_configuration_t* configuration,
          16u) |
         (configuration->alignment.valid ?
              CONFIGURATION_RECORD_ALIGNMENT_VALID : 0u);
+    words[6] = (uint32_t)
+        configuration->current_loop_proportional_gain_q16_per_count;
+    words[7] = (uint32_t)
+        configuration->current_loop_integral_gain_q16_per_count_per_step;
     words[CONFIGURATION_RECORD_CRC_WORD_INDEX] = record_crc32(
         words, CONFIGURATION_RECORD_CRC_WORD_INDEX);
     words[CONFIGURATION_RECORD_COMMIT_WORD_INDEX] =
@@ -167,8 +187,13 @@ static bool read_record(const configuration_store_backend_t* backend,
 {
     size_t index;
     uint32_t header;
+    uint16_t schema_version;
+    size_t word_count;
+    size_t crc_word_index;
+    size_t commit_word_index;
 
-    for (index = 0u; index < CONFIGURATION_RECORD_WORD_COUNT; ++index)
+    memset(record, 0, sizeof(*record));
+    for (index = 0u; index < 2u; ++index)
     {
         if (!backend->read_word(
                 backend->context, slot, index, &record->words[index]))
@@ -177,25 +202,50 @@ static bool read_record(const configuration_store_backend_t* backend,
             return false;
         }
     }
-    if ((record->words[0] != CONFIGURATION_RECORD_MAGIC) ||
-        (record->words[CONFIGURATION_RECORD_COMMIT_WORD_INDEX] !=
-         CONFIGURATION_RECORD_COMMIT))
+    if (record->words[0] != CONFIGURATION_RECORD_MAGIC)
     {
         return false;
     }
     header = record->words[1];
-    if (((header >> 16u) !=
-         CONFIGURATION_STORE_RECORD_SCHEMA_VERSION) ||
-        ((header & 0xFFFFu) != CONFIGURATION_RECORD_WORD_COUNT) ||
-        (record->words[CONFIGURATION_RECORD_CRC_WORD_INDEX] !=
-         record_crc32(record->words,
-                      CONFIGURATION_RECORD_CRC_WORD_INDEX)) ||
+    schema_version = (uint16_t)(header >> 16u);
+    if ((schema_version == CONFIGURATION_RECORD_SCHEMA1_VERSION) &&
+        ((header & 0xFFFFu) == CONFIGURATION_RECORD_SCHEMA1_WORD_COUNT))
+    {
+        word_count = CONFIGURATION_RECORD_SCHEMA1_WORD_COUNT;
+        crc_word_index = CONFIGURATION_RECORD_SCHEMA1_CRC_WORD_INDEX;
+        commit_word_index = CONFIGURATION_RECORD_SCHEMA1_COMMIT_WORD_INDEX;
+    }
+    else if ((schema_version ==
+              CONFIGURATION_STORE_RECORD_SCHEMA_VERSION) &&
+             ((header & 0xFFFFu) == CONFIGURATION_RECORD_WORD_COUNT))
+    {
+        word_count = CONFIGURATION_RECORD_WORD_COUNT;
+        crc_word_index = CONFIGURATION_RECORD_CRC_WORD_INDEX;
+        commit_word_index = CONFIGURATION_RECORD_COMMIT_WORD_INDEX;
+    }
+    else
+    {
+        return false;
+    }
+    for (index = 2u; index < word_count; ++index)
+    {
+        if (!backend->read_word(
+                backend->context, slot, index, &record->words[index]))
+        {
+            *io_error = true;
+            return false;
+        }
+    }
+    if ((record->words[commit_word_index] !=
+         CONFIGURATION_RECORD_COMMIT) ||
+        (record->words[crc_word_index] !=
+         record_crc32(record->words, crc_word_index)) ||
         ((record->words[5] & CONFIGURATION_RECORD_RESERVED_MASK) != 0u))
     {
         return false;
     }
 
-    memset(&record->configuration, 0, sizeof(record->configuration));
+    record->schema_version = schema_version;
     record->generation = record->words[2];
     record->configuration.encoder_counts_per_revolution =
         (uint16_t)record->words[3];
@@ -211,6 +261,22 @@ static bool read_record(const configuration_store_backend_t* backend,
         (int8_t)(record->words[5] >> 16u);
     record->configuration.alignment.valid =
         (record->words[5] & CONFIGURATION_RECORD_ALIGNMENT_VALID) != 0u;
+    if (schema_version == CONFIGURATION_RECORD_SCHEMA1_VERSION)
+    {
+        record->configuration.current_loop_proportional_gain_q16_per_count =
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16;
+        record->configuration.
+            current_loop_integral_gain_q16_per_count_per_step =
+            PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16;
+    }
+    else
+    {
+        record->configuration.current_loop_proportional_gain_q16_per_count =
+            (int32_t)record->words[6];
+        record->configuration.
+            current_loop_integral_gain_q16_per_count_per_step =
+            (int32_t)record->words[7];
+    }
     return product_configuration_is_valid(&record->configuration);
 }
 
@@ -267,6 +333,7 @@ configuration_store_result_t configuration_store_init(
     {
         store->configuration = records[selected].configuration;
         store->generation = records[selected].generation;
+        store->record_schema_version = records[selected].schema_version;
         store->active_slot = selected;
         store->record_valid = true;
         store->last_result = CONFIGURATION_STORE_RESULT_OK;
@@ -302,6 +369,8 @@ configuration_store_result_t configuration_store_save(
         return CONFIGURATION_STORE_RESULT_INVALID_ARGUMENT;
     }
     if (store->record_valid &&
+        (store->record_schema_version ==
+         CONFIGURATION_STORE_RECORD_SCHEMA_VERSION) &&
         configurations_equal(&store->configuration, configuration))
     {
         store->last_result = CONFIGURATION_STORE_RESULT_OK;
@@ -342,6 +411,7 @@ configuration_store_result_t configuration_store_save(
 
     store->configuration = verified.configuration;
     store->generation = generation;
+    store->record_schema_version = verified.schema_version;
     store->active_slot = target_slot;
     store->valid_slot_mask |= (uint8_t)(1u << target_slot);
     store->record_valid = true;
@@ -369,4 +439,28 @@ bool configuration_store_matches(
     return (store != NULL) && (configuration != NULL) &&
            store->initialized && store->record_valid &&
            configurations_equal(&store->configuration, configuration);
+}
+
+void configuration_store_restore_current_loop_gains(
+    const configuration_store_t* store,
+    product_configuration_t* configuration)
+{
+    if (configuration == NULL)
+    {
+        return;
+    }
+
+    configuration->current_loop_proportional_gain_q16_per_count =
+        PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KP_Q16;
+    configuration->current_loop_integral_gain_q16_per_count_per_step =
+        PRODUCT_CONFIGURATION_DEFAULT_CURRENT_LOOP_KI_Q16;
+    if ((store != NULL) && store->initialized && store->record_valid)
+    {
+        configuration->current_loop_proportional_gain_q16_per_count =
+            store->configuration.
+                current_loop_proportional_gain_q16_per_count;
+        configuration->current_loop_integral_gain_q16_per_count_per_step =
+            store->configuration.
+                current_loop_integral_gain_q16_per_count_per_step;
+    }
 }

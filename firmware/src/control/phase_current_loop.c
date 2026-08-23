@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "mks57d/adc_sample.h"
+#include "mks57d/adc_limits.h"
 
 static int32_t absolute_i32(int32_t value)
 {
@@ -68,7 +68,11 @@ bool phase_current_loop_config_is_valid(
            (((uint32_t)config->current_b_zero_raw +
              config->hard_current_limit_counts) <= ADC_SAMPLE_RAW_MAX) &&
            (config->proportional_gain_q16_per_count >= 0) &&
+           (config->proportional_gain_q16_per_count <=
+            PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16) &&
            (config->integral_gain_q16_per_count_per_step >= 0) &&
+           (config->integral_gain_q16_per_count_per_step <=
+            PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16) &&
            (config->phase_voltage_limit_permille != 0u) &&
            (config->duty_margin_permille <
             PHASE_CURRENT_LOOP_DUTY_FULL_SCALE_PERMILLE) &&

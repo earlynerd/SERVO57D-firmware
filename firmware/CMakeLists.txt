@@ -1,24 +1,16 @@
 set(FIRMWARE_TARGET mks57d)
 
-set(MOTION_CANDIDATE_SOURCES
-    src/app/application_core.c
-    src/app/motion_manager.c
+set(FUTURE_CONTROL_SOURCES
     src/app/step_direction.c
     src/control/current_controller.c
-    src/control/motion_profile.c
-    src/control/pi_controller.c
-    src/control/position_controller.c
-    src/control/servo_core.c
-    src/control/velocity_controller.c
 )
 
-# Cross-compile only the motion modules that are not yet linked into the product
-# image. This is compile coverage for a candidate layer, not a second firmware
-# personality or an alternate bridge-authority path.
-add_library(mks57d_motion_candidate OBJECT ${MOTION_CANDIDATE_SOURCES})
-target_include_directories(mks57d_motion_candidate PRIVATE include)
-target_compile_features(mks57d_motion_candidate PRIVATE c_std_11)
-target_compile_options(mks57d_motion_candidate PRIVATE
+# Keep future input and PMSM-oriented control primitives warning-clean without
+# restoring the retired general application shell or a second firmware path.
+add_library(mks57d_future_control OBJECT ${FUTURE_CONTROL_SOURCES})
+target_include_directories(mks57d_future_control PRIVATE include)
+target_compile_features(mks57d_future_control PRIVATE c_std_11)
+target_compile_options(mks57d_future_control PRIVATE
     -mcpu=cortex-m4
     -mthumb
     -mfloat-abi=soft
@@ -56,15 +48,12 @@ set(PROJECT_SOURCES
     src/control/velocity_controller.c
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c
-    src/drivers/adc_sample.c
     src/drivers/dma_ring.c
-    src/drivers/encoder_display.c
-    src/drivers/input_display.c
     src/drivers/mt6816.c
-    src/drivers/pulse_input_display.c
     src/drivers/ssd1306.c
     src/drivers/user_inputs.c
     src/platform/adc1.c
+    src/platform/cycle_counter.c
     src/platform/current_loop_backend.c
     src/platform/configuration_flash.c
     src/platform/i2c1.c
@@ -81,7 +70,6 @@ set(PROJECT_SOURCES
     src/protocol/native_protocol.c
     src/safety/boot_self_test.c
     src/safety/encoder_liveness.c
-    src/safety/fault_latch.c
     src/safety/watchdog_policy.c
     src/services/configuration_store.c
 )
@@ -109,7 +97,7 @@ target_compile_definitions(${FIRMWARE_TARGET} PRIVATE
     MKS57D_FIRMWARE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
-add_custom_target(motion-candidate-arm DEPENDS mks57d_motion_candidate)
+add_custom_target(future-control-arm DEPENDS mks57d_future_control)
 
 target_compile_features(${FIRMWARE_TARGET} PRIVATE c_std_11)
 target_compile_options(${FIRMWARE_TARGET} PRIVATE
