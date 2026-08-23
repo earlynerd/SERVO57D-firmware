@@ -19,6 +19,12 @@ static int64_t magnitude_i32(int32_t value)
     return (value < 0) ? -(int64_t)value : (int64_t)value;
 }
 
+static uint64_t magnitude_i64(int64_t value)
+{
+    return (value < 0) ?
+        (uint64_t)(-(value + 1)) + 1u : (uint64_t)value;
+}
+
 static int16_t q16_16_to_i16(int32_t value)
 {
     if (value >= 0)
@@ -275,7 +281,8 @@ aligned_torque_event_t aligned_torque_controller_update(
              maximum_current_slew_counts_per_second *
          elapsed_us << Q16_SHIFT) /
         MICROSECONDS_PER_SECOND;
-    if (magnitude_i32((int32_t)remaining_q16_16) <= maximum_delta_q16_16)
+    if (magnitude_i64(remaining_q16_16) <=
+        (uint64_t)maximum_delta_q16_16)
     {
         controller->applied_q_current_q16_16 = target_q16_16;
         controller->status.state = ALIGNED_TORQUE_STATE_HOLDING;

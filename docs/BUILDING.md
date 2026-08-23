@@ -163,8 +163,8 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.29.2 / protocol 1.12 is the current source candidate; firmware
-0.29.1 / protocol 1.12 is the currently flashed evaluation build. The current
+Firmware 0.29.3 / protocol 1.12 is the current source candidate; firmware
+0.29.2 / protocol 1.12 is the currently flashed evaluation build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -184,6 +184,9 @@ torque status schema 2.
 Firmware 0.29.2 retains that protocol and those limits while reconciling the
 priority-15 SysTick epoch with higher-priority microsecond readers through a
 bounded monotonic publication.
+Firmware 0.29.3 retains protocol 1.12, makes the observed-acceleration shutdown
+traceable to the cascade slew envelope, and closes the remaining non-tuning
+review correctness and repository-hygiene findings.
 Firmware 0.27.1 includes the
 independent 3 ms encoder-production guard and adds bounded 20 kHz electrical-
 phase prediction, a 16 rev/s/2.999 A nominal motion evaluation envelope, and explicit
@@ -238,7 +241,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.29.2`, authoritative drive state, reset cause,
+22. Publishes firmware `0.29.3`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -336,10 +339,11 @@ debugger diagnostic ABI remains verified. Its flashed recovery gate passed and
 its retained predictor evidence isolated a later failure as unsigned -424 us
 from the preempted-SysTick epoch window.
 
-Firmware 0.29.2 / protocol 1.12 passes the same 18 Python tests and the rebuilt
-native suite, including regressions for the observed -424 us timestamp, the
-999 us missing-epoch boundary, the full-tick stale boundary, forward time, and
-uint32 wrap. Clean Debug and Release Arm post-link builds pass: Debug uses
-58,664 bytes Flash, Release uses 52,948 bytes, and both use 7,480 bytes SRAM1
-with no configuration-slot or SRAM2 allocation. The 240-byte debugger ABI is
-unchanged. Flash and alternating signed-motion confirmation remain open.
+Firmware 0.29.3 / protocol 1.12 passes the 20-test Python suite with two
+hardware-only skips, the rebuilt native suite, and strict GCC compilation of
+all 36 host sources. Regressions cover the wide signed current-reversal slew,
+shared control-math saturation, and inherited coherent-timebase cases. Clean
+Debug and Release Arm post-link builds pass: Debug uses 60,784 bytes Flash,
+Release uses 52,952 bytes, and both use 7,480 bytes SRAM1 with no configuration-
+slot or SRAM2 allocation. The 240-byte debugger ABI is unchanged. Hardware
+flash and bounded-motion smoke remain open.

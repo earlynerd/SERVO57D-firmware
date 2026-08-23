@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.29.2 source closes both winding-current loops at 20 kHz through the
+image. The current source closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`

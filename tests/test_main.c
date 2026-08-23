@@ -17,6 +17,7 @@
 #include "mks57d/boot_self_test.h"
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_store.h"
+#include "mks57d/control_math.h"
 #include "mks57d/current_controller.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
@@ -299,6 +300,20 @@ static application_core_status_t observe_application(
             ++s_failures;                                                           \
         }                                                                           \
     } while (false)
+
+static void test_control_math_shared_saturation_semantics(void)
+{
+    EXPECT_TRUE(finite_positive(1.0f));
+    EXPECT_TRUE(!finite_positive(0.0f));
+    EXPECT_TRUE(!finite_positive(NAN));
+    EXPECT_TRUE(clamp_symmetric(2.0f, 1.0f) == 1.0f);
+    EXPECT_TRUE(clamp_symmetric(-2.0f, 1.0f) == -1.0f);
+    EXPECT_TRUE(clamp_symmetric(0.5f, 1.0f) == 0.5f);
+    EXPECT_TRUE(float_to_q16_16(1.5f) == 98304);
+    EXPECT_TRUE(float_to_q16_16(32768.0f) == INT32_MAX);
+    EXPECT_TRUE(float_to_q16_16(-32768.0f) == INT32_MIN);
+    EXPECT_TRUE(q16_16_to_float(-98304) == -1.5f);
+}
 
 static i2c_status_t mock_i2c_write(void* context,
                                    uint8_t address_7bit,
@@ -5842,6 +5857,35 @@ static void test_aligned_torque_accepts_motor_rated_evaluation_envelope(void)
         &controller, 495, 5000u, 3u, 3000u, (5 << 16) + 1));
 }
 
+static void test_aligned_torque_wide_reversal_preserves_slew_limit(void)
+{
+    const aligned_torque_config_t config = {
+        .maximum_current_counts = INT16_MAX,
+        .maximum_current_slew_counts_per_second = 10000u,
+        .maximum_velocity_revolutions_per_second_q16_16 = 1 << 16,
+        .maximum_acceleration_revolutions_per_second2_q16_16 = 20 << 16,
+        .maximum_feedback_interval_us = 2000u,
+        .minimum_duration_millis = 3u,
+        .maximum_duration_millis = INT32_MAX,
+    };
+    aligned_torque_controller_t controller;
+    aligned_torque_status_t status;
+
+    EXPECT_TRUE(aligned_torque_controller_init(&controller, &config));
+    EXPECT_TRUE(aligned_torque_controller_start(
+        &controller, INT16_MAX, 200u, 0u, 1000u, 0));
+    controller.applied_q_current_q16_16 = INT16_MAX << 16;
+    controller.status.applied_q_current_counts = INT16_MAX;
+    EXPECT_TRUE(aligned_torque_controller_set_target(
+        &controller, -INT16_MAX));
+    EXPECT_TRUE(aligned_torque_controller_update(
+        &controller, 1u, 2000u, true, 0u, 0, true) ==
+        ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED);
+    aligned_torque_controller_get_status(&controller, &status);
+    EXPECT_TRUE(status.applied_q_current_counts == INT16_MAX - 10);
+    EXPECT_TRUE(status.state == ALIGNED_TORQUE_STATE_RAMPING);
+}
+
 static void test_aligned_torque_tracking_target_reuses_bounded_actuator(void)
 {
     const aligned_torque_config_t config = test_aligned_torque_config();
@@ -5872,6 +5916,7 @@ static void test_aligned_torque_tracking_target_reuses_bounded_actuator(void)
 
 int main(void)
 {
+    test_control_math_shared_saturation_semantics();
     test_reset_only_enters_diagnostic_after_passive_init();
     test_faults_converge_on_fault_state();
     test_fault_recovery_requires_explicit_safe_context();
@@ -5969,6 +6014,7 @@ int main(void)
     test_aligned_torque_rejects_unsafe_feedback_and_backend();
     test_aligned_torque_requires_feedback_after_seed_sample();
     test_aligned_torque_accepts_motor_rated_evaluation_envelope();
+    test_aligned_torque_wide_reversal_preserves_slew_limit();
     test_aligned_torque_tracking_target_reuses_bounded_actuator();
     test_motion_manager_enforces_authority_and_idempotency();
     test_motion_manager_lease_expiry_stops_then_disables();

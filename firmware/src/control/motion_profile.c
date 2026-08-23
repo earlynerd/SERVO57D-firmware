@@ -3,10 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 
-static bool finite_positive(float value)
-{
-    return isfinite(value) && (value > 0.0f);
-}
+#include "mks57d/control_math.h"
 
 static float clampf(float value, float lower, float upper)
 {

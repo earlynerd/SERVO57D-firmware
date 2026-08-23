@@ -618,6 +618,18 @@ finite deadline is acceptable. If any prediction fault occurs, preserve
 evidence. Do not increase the predictor horizon in response to another
 unsigned future-age value.
 
+This gate passes on the tested board. Firmware 0.29.2 completed three
+alternating +0.25/-0.25-revolution pairs at 0.5 rev/s, 1 rev/s², and 100 current
+counts. All six retained predictor rejection reason `none`; maximum successful
+age was 1,435-1,483 us against the unchanged 3,000 us limit. Every run ended
+with zero applied current, zero phase references, zero bridge duties, no
+predictor/backend/encoder/supervisor fault, no reset or panic, and preserved
+generation-3 calibration. The moves reached their finite deadline with
+repeatable endpoint errors of approximately -0.0021 to -0.00275 revolution in
+the positive direction and +0.0025 to +0.0027 revolution in the negative
+direction. That offset remains position-tuning evidence; it does not invalidate
+the coherent-timebase result.
+
 ### Expanded velocity evaluation gate
 
 Firmware 0.27.1 permits a direct velocity target through 16 rev/s, inner

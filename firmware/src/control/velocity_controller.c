@@ -5,36 +5,12 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "mks57d/control_math.h"
+
 enum
 {
-    Q16_SCALE = 1u << 16u,
     MICROSECONDS_PER_SECOND = 1000000u
 };
-
-static bool finite_positive(float value)
-{
-    return isfinite(value) && (value > 0.0f);
-}
-
-static float q16_16_to_float(int32_t value)
-{
-    return (float)value / (float)Q16_SCALE;
-}
-
-static int32_t float_to_q16_16(float value)
-{
-    const float maximum = 32767.9999847412109375f;
-
-    if (value >= maximum)
-    {
-        return INT32_MAX;
-    }
-    if (value <= -32768.0f)
-    {
-        return INT32_MIN;
-    }
-    return (int32_t)(value * (float)Q16_SCALE);
-}
 
 static int16_t round_to_i16(float value)
 {

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "mks57d/board.h"
+#include "mks57d/control_math.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
@@ -40,21 +41,6 @@ static void runtime_critical_exit(uint32_t previous)
     __set_BASEPRI(previous);
     __DSB();
     __ISB();
-}
-
-static int32_t float_to_q16_16(float value)
-{
-    const float maximum = 32767.9999847412109375f;
-
-    if (value >= maximum)
-    {
-        return INT32_MAX;
-    }
-    if (value <= -32768.0f)
-    {
-        return INT32_MIN;
-    }
-    return (int32_t)(value * 65536.0f);
 }
 
 static bool publish_aligned_q_reference(
@@ -388,6 +374,13 @@ static bool start_position(rotor_control_runtime_t* runtime,
     const rotor_observation_t observation = runtime_observation(runtime);
     const int32_t velocity_q16_16 = float_to_q16_16(
         runtime->angle_tracker.velocity_revolutions_per_second);
+
+    /*
+     * Cascade deadline invariant: position, velocity, and torque start from
+     * the same now/duration pair. update_position() evaluates the outer
+     * position deadline first, so ordinary expiry releases every inner layer;
+     * an earlier inner completion is therefore a contract fault.
+     */
 
     current_loop_backend_get_snapshot(&loop);
     if (runtime_active(runtime) || !loop.initialized || loop.active ||

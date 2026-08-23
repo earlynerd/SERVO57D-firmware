@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stddef.h>
 
+#include "mks57d/control_math.h"
+
 static bool finite_vector(stationary_vector_t value)
 {
     return isfinite(value.alpha) && isfinite(value.beta);
@@ -11,19 +13,6 @@ static bool finite_vector(stationary_vector_t value)
 static bool finite_rotating_vector(rotating_vector_t value)
 {
     return isfinite(value.d) && isfinite(value.q);
-}
-
-static float clamp_symmetric(float value, float limit)
-{
-    if (value > limit)
-    {
-        return limit;
-    }
-    if (value < -limit)
-    {
-        return -limit;
-    }
-    return value;
 }
 
 bool park_transform(stationary_vector_t stationary,

@@ -3,22 +3,11 @@
 #include <math.h>
 #include <stddef.h>
 
+#include "mks57d/control_math.h"
+
 static bool finite_nonnegative(float value)
 {
     return isfinite(value) && (value >= 0.0f);
-}
-
-static float clamp_symmetric(float value, float limit)
-{
-    if (value > limit)
-    {
-        return limit;
-    }
-    if (value < -limit)
-    {
-        return -limit;
-    }
-    return value;
 }
 
 bool pi_controller_config_is_valid(const pi_controller_config_t* config)

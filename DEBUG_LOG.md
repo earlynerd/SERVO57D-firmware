@@ -7,7 +7,7 @@
 - **Fix:** Firmware 0.29.2 retains the priority-15 SysTick and priority-2 current-loop ordering. `timebase_micros()` now reconciles each raw sample against one atomically published timestamp. A regression shorter than the 1,000 us SysTick period receives the missing epoch; a larger stale sample is clamped. Both raw snapshot and `LDREX`/`STREX` publication have four-attempt bounds; nested interrupt writers cannot overwrite a newer publication, and exhausted retries fall back without spinning. The normal uint32 microsecond wrap remains valid.
 - **Class:** preempted-systick-epoch-coherence-race
 - **Recently-touched?** no — firmware 0.29.1 added the telemetry that identified the defect, but the SysTick composition predates the predictor
-- **Status:** Resolved in source. Native regressions cover the observed -424 us case, the full-tick stale boundary, forward time, and uint32 wrap. All 18 Python tests, the rebuilt native suite, and clean Debug/Release Arm builds pass. Flash 0.29.2 and repeat alternating signed position moves to close the hardware gate.
+- **Status:** Resolved and bench-confirmed. Native regressions cover the observed -424 us case, the full-tick stale boundary, forward time, and uint32 wrap. Firmware 0.29.2 completed six alternating signed position moves with predictor rejection reason `none`, maximum successful age 1,435-1,483 us, ordinary terminal bridge release, preserved generation-3 calibration, and no predictor/backend/encoder/supervisor/reset/panic fault.
 
 ## 2026-08-22 — Post-recovery motion exposed a zero-headroom predictor-age contract
 

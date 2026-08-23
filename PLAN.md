@@ -15,7 +15,7 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.29.1 / protocol 1.12 is flashed. Its inherited drive baseline is
+- Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
   bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
   alignment, bounded torque, signed velocity, relative position, and physical
@@ -24,12 +24,16 @@ and fault bounds.
   request reaches the 2.999 A nominal q-demand and 70%-of-bus phase-voltage
   ceilings and exposes the next high-frequency current-tracking boundary without
   a control, encoder, backend, reset, or panic fault.
-- Firmware 0.29.1 clears following-error and propagated current-backend fault
-  chains in place without an MCU reset. Its predictor evidence separated
-  healthy successful ages through 1,475 us from a rejected unsigned -424 us
-  timestamp, identifying the preempted-SysTick epoch race. Firmware 0.29.2 /
-  protocol 1.12 is the current source candidate and reconciles that race without
-  raising SysTick above the current loop.
+- Firmware 0.29.2 clears following-error and propagated current-backend fault
+  chains in place without an MCU reset and reconciles the preempted-SysTick
+  epoch race without raising SysTick above the current loop. Six alternating
+  signed position moves produced no future-age rejection; maximum successful
+  prediction age remained 1,435-1,483 us against the 3,000 us contract, with
+  preserved generation-3 calibration and no reset.
+- Firmware 0.29.3 / protocol 1.12 is the current source candidate. It closes
+  the remaining non-tuning project-review items: a traceable independent
+  acceleration shutdown, explicit cascade deadline ordering, wide-range slew
+  arithmetic, shared control-math semantics, and generated-artifact hygiene.
 - The project-owned timer, ADC, modulation, current backend, drive supervisor,
   and direct-GPIO all-low `ZERO` mechanism remain the only bridge-authority
   path.
@@ -42,10 +46,9 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Flash firmware 0.29.2 and repeat alternating +0.25/-0.25-revolution
-  commands at 0.5 rev/s, 1 rev/s², and 100 counts. Require no stale/future-age
-  rejection, maximum successful prediction age no greater than 3,000 us,
-  ordinary terminal authority release, preserved calibration, and no reset.
+- [ ] Flash firmware 0.29.3 and repeat one already bounded motion command.
+  Confirm identity, the reported 512 rev/s² aligned-actuator acceleration
+  boundary, ordinary release, preserved calibration, and zero new faults.
 - [ ] Measure the current-loop and predictor timing on hardware: ADC acquisition
   instant, configured output lead, worst-case ISR/preload duration, switching
   contamination, and remaining phase error at the 8–12 rev/s boundary.
@@ -65,9 +68,10 @@ list only when measurements or a newly discovered prerequisite justify it.
   power-on/reset/debugger-halt/watchdog bridge waveforms, and injectable
   current/bus-voltage trip behavior before expanding the qualified electrical
   envelope.
-- [ ] Bench-validate the physical Right-button position stop and a loaded
-  following-error event with bounded current, common `ZERO` convergence, and
-  clean post-fault evidence.
+- [ ] Resolve the repeatable approximately ±0.0025-revolution low-speed endpoint
+  offset, then bench-validate the physical Right-button position stop and a
+  loaded following-error event with bounded current, common `ZERO` convergence,
+  and clean post-fault evidence.
 - [ ] Define and implement product policy for mechanical stall, partial encoder
   degradation, protection-grade overcurrent, and runaway detection beyond the
   existing total encoder-production, raw-current, and observed-speed guards.

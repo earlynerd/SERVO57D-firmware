@@ -3,23 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 
-static bool finite_positive(float value)
-{
-    return isfinite(value) && (value > 0.0f);
-}
-
-static float clamp_symmetric(float value, float limit)
-{
-    if (value > limit)
-    {
-        return limit;
-    }
-    if (value < -limit)
-    {
-        return -limit;
-    }
-    return value;
-}
+#include "mks57d/control_math.h"
 
 static void output_reset(servo_core_output_t* output, uint32_t fault_flags)
 {

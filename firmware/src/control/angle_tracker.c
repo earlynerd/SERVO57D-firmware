@@ -3,10 +3,7 @@
 #include <math.h>
 #include <stddef.h>
 
-static bool finite_positive(float value)
-{
-    return isfinite(value) && (value > 0.0f);
-}
+#include "mks57d/control_math.h"
 
 bool angle_tracker_config_is_valid(const angle_tracker_config_t* config)
 {

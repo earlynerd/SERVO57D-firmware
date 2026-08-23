@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.29.2 source implements the fast current path, production alignment,
+Status: firmware 0.29.3 source implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -29,6 +29,9 @@ the predictor's 3 ms observation/dispatch horizon and reports retained
 prediction-age rejection evidence.
 Firmware 0.29.2 makes the shared microsecond clock coherent when a higher-
 priority caller preempts the low-priority SysTick handler during epoch service.
+Firmware 0.29.3 makes the independent observed-acceleration shutdown traceable
+to twice the fastest inner reference slew and codifies the shared position,
+velocity, and torque deadline ordering.
 
 ## Goals
 
@@ -390,6 +393,9 @@ The slower control path is cascaded:
 5. The fast loop independently clamps both current references.
 
 Following error, velocity, acceleration, current, voltage request, and duty cycle each retain independent limits. Saturation at one layer does not disable checks in another layer.
+Position, velocity, and aligned-torque layers start from the same timestamp and
+finite duration. Position is evaluated first and owns ordinary deadline release;
+an earlier inner-layer completion is a cascade-contract fault.
 
 ## PWM and ADC scheduling
 

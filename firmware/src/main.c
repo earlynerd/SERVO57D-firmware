@@ -17,6 +17,7 @@
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_flash.h"
 #include "mks57d/configuration_store.h"
+#include "mks57d/control_math.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/encoder_liveness.h"
@@ -222,21 +223,6 @@ static bool position_request_or_control_active(
            (commands->position_commands->start_requested ||
             position_controller_is_active(
                 commands->position_commands->position_controller));
-}
-
-static int32_t float_to_q16_16(float value)
-{
-    const float maximum = 32767.9999847412109375f;
-
-    if (value >= maximum)
-    {
-        return INT32_MAX;
-    }
-    if (value <= -32768.0f)
-    {
-        return INT32_MIN;
-    }
-    return (int32_t)(value * 65536.0f);
 }
 
 static uint32_t current_test_initial_phase(uint8_t selected_leg)
@@ -2086,7 +2072,13 @@ int main(void)
         ALIGNED_TORQUE_MAXIMUM_CURRENT_SLEW_COUNTS_PER_SECOND = 10000u,
         /* The estimator is now the observed-speed boundary for motion. */
         ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 20u << 16,
-        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 1000u << 16,
+        /*
+         * Independent observed-motion shutdown with twofold headroom over
+         * the fastest permitted velocity-reference slew. This remains well
+         * above the approximately 7.6 rev/s^2 single-count estimator step at
+         * the nominal 1 kHz sample rate.
+         */
+        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 512u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         /*
          * Nominal DMA-completion-to-next-preload-boundary interval at the
@@ -2192,6 +2184,21 @@ int main(void)
     _Static_assert(POSITION_MAXIMUM_ACCELERATION_Q16_16 * 4u <=
                        VELOCITY_MAXIMUM_ACCELERATION_Q16_16,
                    "inner velocity slew requires fourfold profile headroom");
+    _Static_assert(VELOCITY_MAXIMUM_ACCELERATION_Q16_16 * 2u ==
+                       ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16,
+                   "observed acceleration shutdown requires twofold slew headroom");
+    _Static_assert(POSITION_MINIMUM_DURATION_MS >=
+                       VELOCITY_MINIMUM_DURATION_MS,
+                   "position duration is unsupported by the velocity layer");
+    _Static_assert(POSITION_MAXIMUM_DURATION_MS <=
+                       VELOCITY_MAXIMUM_DURATION_MS,
+                   "position duration exceeds the velocity layer contract");
+    _Static_assert(POSITION_MINIMUM_DURATION_MS >=
+                       ALIGNED_TORQUE_MINIMUM_DURATION_MS,
+                   "position duration is unsupported by the torque layer");
+    _Static_assert(POSITION_MAXIMUM_DURATION_MS <=
+                       ALIGNED_TORQUE_MAXIMUM_DURATION_MS,
+                   "position duration exceeds the torque layer contract");
     _Static_assert(ENCODER_PROGRESS_TIMEOUT_US >
                        ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
                    "encoder progress guard must allow snapshot observation");

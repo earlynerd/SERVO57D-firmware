@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.29.2 source implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.29.3 source implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -95,7 +95,7 @@ The current image implements:
   accepted 1 kHz observation supplies measured phase, filtered mechanical
   velocity, direction, and timestamp; each 20 kHz current event extrapolates to
   the following preload boundary, regenerates the q-axis A/B references, and
-  faults through the common `ZERO` path if observation age exceeds 2 ms.
+  faults through the common `ZERO` path if observation age exceeds 3 ms.
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
   diagnostic and motion authority, and bridge deauthorization on faults.

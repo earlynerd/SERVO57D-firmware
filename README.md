@@ -5,14 +5,14 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.29.2 / native protocol 1.12 is the current source candidate. It
-retains operator-acknowledged in-place fault recovery and the separated 2 ms
-controller/3 ms predictor timing contracts, and makes the microsecond timebase
-coherent when the priority-2 current ISR preempts the priority-15 SysTick
-handler. Firmware 0.29.1 / protocol 1.12 is flashed. It bench-confirmed recovery
-without reset and supplied typed predictor evidence showing that a later signed
-move failed because the old timebase could report `now` 424 us before the
-encoder observation, not because encoder production was stale.
+Firmware 0.29.3 / native protocol 1.12 is the current source candidate. It
+closes the remaining non-tuning review findings with a traceable 512 rev/s²
+observed-acceleration shutdown, an explicit shared cascade-deadline contract,
+wide-range current-slew arithmetic, and one shared set of safety-relevant
+control-math helpers. Firmware 0.29.2 / protocol 1.12 is flashed. Six
+alternating signed position moves bench-confirmed its coherent microsecond
+timebase: maximum successful prediction age remained 1,435-1,483 us with no
+predictor, backend, encoder, supervisor, reset, or panic fault.
 
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
 deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
@@ -23,10 +23,10 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is flashing 0.29.2 and repeating alternating signed
-position moves to close the coherent-timebase gate, followed by high-electrical-frequency current tracking, measured
-predictor/output timing, negative-direction speed staging, and the remaining
-position fault/stop gates. Exact live, validated, evaluation, and hard limits are owned by
+The next control work is flashing the 0.29.3 review-closeout image, followed by
+measured current-loop and predictor/output timing, high-electrical-frequency
+current tracking, negative-direction speed staging, and the remaining position
+fault/stop gates. Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).
 

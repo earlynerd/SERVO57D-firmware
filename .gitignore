@@ -16,6 +16,7 @@
 *.lst
 *.map
 *.o
+*.obj
 
 # Local development environments
 /.venv/
