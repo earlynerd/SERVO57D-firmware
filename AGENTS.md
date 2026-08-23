@@ -51,6 +51,9 @@ across many files.
 
 ## Working rules
 
+- On Windows, run native tests with
+  `pwsh -File tools/build.ps1 -Target host-tests`; do not chain a bare host
+  configure/build/CTest sequence from an ordinary PowerShell session.
 - Do not execute binaries from `vendor/local/` unless the user explicitly requests it.
 - Do not extract, disassemble, or attempt to reproduce Makerbase firmware or its bootloader.
 - Route bridge switching through the project-owned current/motion authority

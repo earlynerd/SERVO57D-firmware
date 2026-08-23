@@ -126,6 +126,10 @@ regulate velocity. The evaluation shutdown policy permits 20 rev/s (1,200 RPM),
 1,000 rev/s² observed acceleration, and 10,000 counts/s current slew so poor
 tracking and phase-prediction/estimator boundaries can be measured instead of preflighted
 away.
+On firmware 0.29.1 / protocol 1.12, `torque-status` also reports the last
+predictor rejection reason and age, the maximum successful prediction age in
+the run, and the configured 3,000 us horizon. The host remains compatible with
+the shorter protocol-1.11/schema-1 response, where those fields are unavailable.
 
 Firmware 0.26.0 / protocol 1.9 retains the qualified velocity service and adds
 relative position. Firmware 0.26.1 keeps the same host protocol and makes the
@@ -185,6 +189,11 @@ PWM/current backend, resets controller operation latches, and returns to
 uncommanded `DIAGNOSTIC`; normal fresh samples restore `READY`, or a persistent
 condition faults again. `stop` is deliberately separate and never clears a
 fault latch.
+
+Firmware 0.29.1 / protocol 1.12 keeps that recovery operation unchanged and
+adds aligned-torque status schema 2. After a motion or predictor fault, run
+`torque-status` before `clear-faults` to retain the typed rejection reason and
+age; a successful recovery starts a fresh predictor evidence window.
 
 `position-status` passively reports target/reference/measured position,
 profile/corrected/measured velocity, requested/applied current, state, result,

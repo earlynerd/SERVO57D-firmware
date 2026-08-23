@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.29.0 source implements the fast current path, production alignment,
+Status: firmware 0.29.2 source implements the fast current path, production alignment,
 safe-state configuration maintenance, the first aligned torque-current motion
 client, and a deterministic 1 kHz timer/SPI-DMA/PendSV rotor service. Edge-aligned
 20 kHz PWM, TIM2-relative 80%-carrier ADC start, DMA-completion fixed-point
@@ -24,6 +24,11 @@ remain first; foreground alone consumes the later VBUS result.
 Firmware 0.29.0 keeps fault acknowledgment in foreground: it establishes
 direct-GPIO `ZERO` before rebuilding ADC/DMA, TIM3/current-loop, rotor-runtime,
 and supervisor state. No ISR clears its own latch.
+Firmware 0.29.1 separates the controllers' 2 ms timestamp-interval check from
+the predictor's 3 ms observation/dispatch horizon and reports retained
+prediction-age rejection evidence.
+Firmware 0.29.2 makes the shared microsecond clock coherent when a higher-
+priority caller preempts the low-priority SysTick handler during epoch service.
 
 ## Goals
 
@@ -47,7 +52,7 @@ There is one normal writer for each real-time data object. The safety subsystem 
 
 ## NVIC policy
 
-The Nations device header defines four implemented NVIC priority bits, providing 16 programmable priority levels. The passive foundation initializes and reads back PRIGROUP value `3`: four preemption bits and no subpriority bits. A lower numerical value has higher urgency. Compile-time assertions preserve the priority ordering below, and timebase initialization verifies SysTick at priority 15 before returning success.
+The Nations device header defines four implemented NVIC priority bits, providing 16 programmable priority levels. The passive foundation initializes and reads back PRIGROUP value `3`: four preemption bits and no subpriority bits. A lower numerical value has higher urgency. Compile-time assertions preserve the priority ordering below, and timebase initialization verifies SysTick at priority 15 before returning success. `timebase_micros()` reconciles the hardware fraction and software epoch through a bounded exclusive-access publication, so current control retains priority without observing the one-tick handler-service gap as backward time.
 
 Subpriorities are deliberately avoided. They change ordering between simultaneously pending interrupts without allowing preemption, which obscures the timing model without helping the fast loop.
 
@@ -100,6 +105,7 @@ Every ISR must meet these rules:
 | Configuration | Foreground configuration service | Control initialization | Immutable while running; changes require a safe-state transaction |
 | Debugger diagnostic record | Foreground diagnostics service | Debugger and future telemetry service | Versioned sequence-numbered snapshot; readers accept matching even sequences |
 | RS-485 RX circular bytes | DMA channel 4 | Foreground transport consumer | Monotonic produced/consumed counts; cursor laps discard and account the oldest bytes |
+| Microsecond timestamp | SysTick plus any interrupt/foreground caller | Encoder, current backend, liveness, and control | Four-attempt raw snapshot plus four-attempt exclusive monotonic publication; one sub-period epoch regression is reconciled and larger stale samples clamp |
 | RS-485 TX staging frame | Foreground transport API | DMA channel 5, then USART1 shifter | Fixed buffer is immutable while busy; USART TXC releases PC13 and ownership |
 
 Volatile qualification alone is not a synchronization mechanism. Multiword structures use a sequence counter or buffer handoff, and monotonic fault bits use an actually atomic operation or separate writer-owned slots.
@@ -337,8 +343,12 @@ and publishes a timestamped measured-phase/filtered-velocity seed. On each
 20 kHz DMA completion the backend extrapolates phase to the following PWM
 preload boundary, adds 90 degrees, and regenerates A/B current references before
 the already-qualified A/B PI step. The predictor is fixed-point, includes a
-nominal 7 us output lead, permits at most 2,000 us of observation age, and
-immediately forces `ZERO` on invalid or stale prediction. The 0.25 velocity loop commands
+nominal 7 us output lead, permits at most 3,000 us of observation age, and
+immediately forces `ZERO` on invalid or stale prediction. One nominal encoder
+period of PendSV dispatch margin separates that horizon from the controllers'
+2 ms timestamp-interval check; the predictor may never outlive the independent
+3 ms encoder-production guard. The
+0.25 velocity loop commands
 that production actuator with its own target, acceleration, current, feedback-
 age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
 separate active work requiring its own modulation and timing evidence. The 0.26 position

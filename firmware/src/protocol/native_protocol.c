@@ -792,7 +792,16 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              status->maximum_duration_millis);
                 write_u32_be(&response_frame->payload[59],
                              status->backend_fault_flags);
-                payload_length = 63u;
+                response_frame->payload[63] =
+                    status->phase_prediction_reject_reason;
+                write_u32_be(&response_frame->payload[64],
+                             status->rejected_phase_prediction_age_us);
+                write_u16_be(
+                    &response_frame->payload[68],
+                    status->maximum_observed_phase_prediction_age_us);
+                write_u16_be(&response_frame->payload[70],
+                             status->maximum_phase_prediction_age_us);
+                payload_length = 72u;
                 break;
             }
 

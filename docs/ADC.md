@@ -1,6 +1,6 @@
 # ADC Bring-up
 
-Status: firmware 0.29.0 retains the TIM2 compare at 80% of each 20 kHz carrier to
+Status: firmware 0.29.2 retains the TIM2 compare at 80% of each 20 kHz carrier to
 software-start the two-rank `currentB/currentA` sequence from a bounded ISR.
 The current-loop channels use 16 MHz, 7.5-cycle sampling and one two-halfword DMA
 transaction per sequence; transfer completion owns the fast fixed-point loop.

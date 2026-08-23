@@ -1,12 +1,12 @@
 # MT6816 Encoder Bring-up
 
-Status: firmware 0.29.0 source releases encoder reads at 1 kHz from TIM6, performs
+Status: firmware 0.29.2 source releases encoder reads at 1 kHz from TIM6, performs
 bounded CS setup/hold timing with TIM7, transfers the four-byte SPI1 frame
 through DMA channels 2/3, and defers decode/runtime publication through PendSV.
 Accepted samples receive microsecond timestamps and feed the shared mechanical angle/velocity estimator,
 automatic-alignment and aligned-torque controllers, firmware 0.25.1's bounded
 velocity controller, and firmware 0.26.0's relative-position controller. Native
-protocol 1.11 retains encoder schema 2 and exposes raw health,
+protocol 1.12 retains encoder schema 2 and exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy
 evidence. The 1 kHz schedule passed its
@@ -18,6 +18,8 @@ first active feedback update. Firmware 0.26.1 independently requires foreground
 evidence that accepted production has advanced within 3 ms. Firmware 0.27.1
 uses each accepted electrical phase, filtered velocity, direction, and timestamp
 as a seed for bounded 20 kHz phase advance in the current backend.
+Firmware 0.29.2 makes those timestamps monotonic across the priority-15 SysTick
+epoch and priority-2 current-loop preemption boundary.
 
 ## Evidence and confidence
 
@@ -97,9 +99,11 @@ genuinely advanced sample is observed.
 Aligned torque, velocity, and position still update their demands from accepted
 1 kHz observations. The current backend independently advances electrical phase
 at each 20 kHz current event, using the filtered mechanical velocity and measured
-alignment direction. It refuses observations older than 2 ms and routes invalid
-or stale prediction through the common fault/`ZERO` path; the configured 7 us
-preload lead remains a scope-measurement gate.
+alignment direction. Controllers refuse feedback timestamp intervals over 2 ms;
+the predictor permits observation age through 3 ms so the completed sample can
+cross bounded PendSV dispatch, but it may not outlive the independent 3 ms
+production guard. Invalid or stale prediction routes through the common fault/
+`ZERO` path; the configured 7 us preload lead remains a scope-measurement gate.
 
 The 1 kHz reader reports its latest and maximum accepted-sample intervals. The
 estimator's 20 ms accepted-sample interval threshold

@@ -586,36 +586,37 @@ the run completed 20,001 current-loop updates. Post-run status reported
 bridge duties, no authority, and no ADC, deadline, predictor, encoder, backend, supervisor,
 reset, or panic fault.
 
-### Firmware 0.29.0 in-place fault-recovery gate
+### Firmware 0.29.2 coherent-timebase gate
 
-After flashing 0.29.0, confirm identity reports protocol 1.11. Cause only a
-bounded, understood software fault for the first gate; a position following
-error is suitable because it already converges on `ZERO` without requiring an
-electrical fault injection. Preserve the terminal position, velocity, encoder,
-and drive status, then issue:
+Firmware 0.29.1 proved following-error acknowledgment, calibration
+preservation, no-reset recovery, propagated backend-fault recovery, and
+`no_fault` idempotence. One later move ran for its complete three-second
+deadline, but the following mirrored move retained predictor age
+`0xFFFFFE58`: unsigned -424 us while encoder intervals remained 1,000-1,014 us.
+This identifies the preempted-SysTick epoch race rather than true stale
+feedback. After flashing 0.29.2, confirm identity reports protocol 1.12 and the
+drive returns to `READY` with generation-3 calibration and no fault/reset/panic
+evidence.
+
+Run three alternating pairs through the same low-energy position path that
+exposed the race, preserving every automatic capture:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 clear-faults
+py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rps 0.5 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 5000 --interval 0.05 --jsonl
+py tools/mks57d_rs485.py --port COM14 torque-status
+py tools/mks57d_rs485.py --port COM14 position --revolutions -0.25 --max-rps 0.5 --acceleration-rps2 1 --current-limit-counts 100 --duration-ms 5000 --interval 0.05 --jsonl
+py tools/mks57d_rs485.py --port COM14 torque-status
 ```
 
-The user command is the recovery acknowledgment. Do not release the Right
-button, move the shaft, or otherwise manufacture a healthy precondition merely
-to make the firmware accept it. Require JSON result `cleared`, zero remaining
-fault sources, no reset, and a transition through uncommanded `DIAGNOSTIC` to
-`READY` as fresh current and encoder samples arrive. Then run a low-energy
-bounded position or velocity command and require ordinary completion without
-power cycling or resetting the MCU. Repeating `clear-faults` with no latched
-fault should return `no_fault` without disturbing a healthy operation.
-
-The recovery attempt establishes direct-GPIO `ZERO`, restarts ADC/DMA, rebuilds
-TIM3/current-loop state, and resets the estimator/controller operation latches;
-accepted alignment and persistent configuration must remain unchanged. A
-condition that is actually still present is expected to fault again when the
-normal monitor observes it. A `blocked` result is a failed reset transaction to
-investigate, not a declaration that the initiating fault class cannot be
-recovered. Do not create an overcurrent, power-stage, or supply fault solely for
-this gate without the corresponding injection fixture and immediate supply
-cutoff.
+Each run must end with ordinary authority/current/duty release, no
+predictor/backend/encoder/supervisor fault, no reset or panic, and preserved
+calibration. Schema 2 must report rejection reason `none` and maximum successful
+prediction age no greater than the configured 3,000 us. Settled completion is
+useful position evidence but is not required to prove clock coherence; a clean
+finite deadline is acceptable. If any prediction fault occurs, preserve
+`torque-status` before `clear-faults`, because recovery clears per-run predictor
+evidence. Do not increase the predictor horizon in response to another
+unsigned future-age value.
 
 ### Expanded velocity evaluation gate
 

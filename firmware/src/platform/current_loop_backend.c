@@ -31,8 +31,11 @@ static int16_t s_last_reference_b_counts;
 static int16_t s_aligned_q_reference_counts;
 static uint32_t s_predicted_electrical_phase_q32;
 static uint32_t s_phase_prediction_age_us;
+static uint32_t s_maximum_observed_phase_prediction_age_us;
+static uint32_t s_rejected_phase_prediction_age_us;
 static uint32_t s_guardian_generation;
 static uint32_t s_guardian_empty_updates;
+static uint8_t s_phase_prediction_reject_reason;
 static volatile bool s_initialized;
 static volatile bool s_active;
 static bool s_phase_prediction_active;
@@ -77,26 +80,65 @@ static bool predict_aligned_reference(
     uint32_t* predicted_electrical_phase_q32,
     uint32_t* prediction_age_us,
     int16_t* current_a_reference_counts,
-    int16_t* current_b_reference_counts)
+    int16_t* current_b_reference_counts,
+    current_loop_phase_prediction_reject_t* rejection_reason)
 {
     uint32_t phase_q32;
 
+    if (rejection_reason != NULL)
+    {
+        *rejection_reason = CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
+    }
     if (!electrical_phase_predictor_predict(
             predictor,
             now_us,
             &phase_q32,
-            prediction_age_us) ||
-        !phase_current_reference_from_polar(
+            prediction_age_us))
+    {
+        if (rejection_reason != NULL)
+        {
+            *rejection_reason =
+                ((predictor != NULL) && predictor->initialized &&
+                 predictor->observation_valid) ?
+                    CURRENT_LOOP_PHASE_PREDICTION_REJECT_STALE :
+                    CURRENT_LOOP_PHASE_PREDICTION_REJECT_OBSERVATION_INVALID;
+        }
+        return false;
+    }
+    if (!phase_current_reference_from_polar(
             q_current_reference_counts,
             phase_q32 + QUARTER_CYCLE_PHASE_Q32,
             current_a_reference_counts,
             current_b_reference_counts))
     {
+        if (rejection_reason != NULL)
+        {
+            *rejection_reason =
+                CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING;
+        }
         return false;
     }
 
     *predicted_electrical_phase_q32 = phase_q32;
     return true;
+}
+
+static void record_prediction_age(uint32_t prediction_age_us)
+{
+    s_phase_prediction_age_us = prediction_age_us;
+    if (prediction_age_us >
+        s_maximum_observed_phase_prediction_age_us)
+    {
+        s_maximum_observed_phase_prediction_age_us = prediction_age_us;
+    }
+}
+
+static void record_prediction_rejection(
+    current_loop_phase_prediction_reject_t reason,
+    uint32_t prediction_age_us)
+{
+    s_phase_prediction_reject_reason = (uint8_t)reason;
+    s_rejected_phase_prediction_age_us = prediction_age_us;
 }
 
 static void adc_current_event(adc1_status_t status,
@@ -107,7 +149,9 @@ static void adc_current_event(adc1_status_t status,
     int16_t current_a_reference_counts;
     int16_t current_b_reference_counts;
     uint32_t predicted_phase_q32;
-    uint32_t prediction_age_us;
+    uint32_t prediction_age_us = 0u;
+    current_loop_phase_prediction_reject_t rejection_reason =
+        CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
 
     (void)context;
     if (status != ADC1_STATUS_OK)
@@ -133,8 +177,11 @@ static void adc_current_event(adc1_status_t status,
                 &predicted_phase_q32,
                 &prediction_age_us,
                 &current_a_reference_counts,
-                &current_b_reference_counts))
+                &current_b_reference_counts,
+                &rejection_reason))
         {
+            record_prediction_rejection(
+                rejection_reason, prediction_age_us);
             fault_from_interrupt(
                 CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION);
             return;
@@ -156,7 +203,7 @@ static void adc_current_event(adc1_status_t status,
         s_last_reference_a_counts = current_a_reference_counts;
         s_last_reference_b_counts = current_b_reference_counts;
         s_predicted_electrical_phase_q32 = predicted_phase_q32;
-        s_phase_prediction_age_us = prediction_age_us;
+        record_prediction_age(prediction_age_us);
     }
     if (!phase_current_loop_step(&s_loop,
                                  &s_config,
@@ -260,6 +307,10 @@ bool current_loop_backend_init(
     s_aligned_q_reference_counts = 0;
     s_predicted_electrical_phase_q32 = 0u;
     s_phase_prediction_age_us = 0u;
+    s_maximum_observed_phase_prediction_age_us = 0u;
+    s_rejected_phase_prediction_age_us = 0u;
+    s_phase_prediction_reject_reason =
+        CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
@@ -343,7 +394,9 @@ bool current_loop_backend_set_aligned_q_reference(
     uint32_t previous;
     const uint32_t now_us = timebase_micros();
     int32_t q_magnitude = q_current_reference_counts;
-    bool candidate_valid;
+    current_loop_phase_prediction_reject_t rejection_reason =
+        CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
+    bool candidate_valid = true;
     bool accepted = false;
 
     if (!s_initialized ||
@@ -357,22 +410,35 @@ bool current_loop_backend_set_aligned_q_reference(
     }
 
     candidate = s_phase_predictor;
-    candidate_valid =
-        ((uint32_t)q_magnitude <= s_config.reference_limit_counts) &&
-        electrical_phase_predictor_set_observation(
-            &candidate,
-            electrical_phase_q32,
-            mechanical_velocity_revolutions_per_second_q16_16,
-            encoder_direction,
-            encoder_timestamp_us) &&
-        predict_aligned_reference(
-            &candidate,
-            q_current_reference_counts,
-            now_us,
-            &predicted_phase_q32,
-            &prediction_age_us,
-            &current_a_reference_counts,
-            &current_b_reference_counts);
+    if ((uint32_t)q_magnitude > s_config.reference_limit_counts)
+    {
+        candidate_valid = false;
+        rejection_reason =
+            CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_RANGE;
+    }
+    else if (!electrical_phase_predictor_set_observation(
+                 &candidate,
+                 electrical_phase_q32,
+                 mechanical_velocity_revolutions_per_second_q16_16,
+                 encoder_direction,
+                 encoder_timestamp_us))
+    {
+        candidate_valid = false;
+        rejection_reason =
+            CURRENT_LOOP_PHASE_PREDICTION_REJECT_OBSERVATION_INVALID;
+    }
+    else if (!predict_aligned_reference(
+                 &candidate,
+                 q_current_reference_counts,
+                 now_us,
+                 &predicted_phase_q32,
+                 &prediction_age_us,
+                 &current_a_reference_counts,
+                 &current_b_reference_counts,
+                 &rejection_reason))
+    {
+        candidate_valid = false;
+    }
 
     previous = control_critical_enter();
     if (s_fault_flags == CURRENT_LOOP_BACKEND_FAULT_NONE)
@@ -387,7 +453,7 @@ bool current_loop_backend_set_aligned_q_reference(
             s_phase_prediction_active = true;
             s_aligned_q_reference_counts = q_current_reference_counts;
             s_predicted_electrical_phase_q32 = predicted_phase_q32;
-            s_phase_prediction_age_us = prediction_age_us;
+            record_prediction_age(prediction_age_us);
             s_last_reference_a_counts = current_a_reference_counts;
             s_last_reference_b_counts = current_b_reference_counts;
             accepted = true;
@@ -397,6 +463,11 @@ bool current_loop_backend_set_aligned_q_reference(
             const uint32_t phase_fault =
                 s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
 
+            if (!candidate_valid)
+            {
+                record_prediction_rejection(
+                    rejection_reason, prediction_age_us);
+            }
             s_active = false;
             s_fault_flags |= candidate_valid ?
                 (phase_fault != 0u ? phase_fault :
@@ -432,6 +503,10 @@ bool current_loop_backend_start(void)
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
+    s_maximum_observed_phase_prediction_age_us = 0u;
+    s_rejected_phase_prediction_age_us = 0u;
+    s_phase_prediction_reject_reason =
+        CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     if (!phase_current_loop_start(&s_loop))
     {
         s_fault_flags |= CURRENT_LOOP_BACKEND_FAULT_INTERNAL;
@@ -537,6 +612,10 @@ bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
     s_aligned_q_reference_counts = 0;
     s_predicted_electrical_phase_q32 = 0u;
     s_phase_prediction_age_us = 0u;
+    s_maximum_observed_phase_prediction_age_us = 0u;
+    s_rejected_phase_prediction_age_us = 0u;
+    s_phase_prediction_reject_reason =
+        CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
     s_guardian_primed = false;
@@ -582,10 +661,16 @@ void current_loop_backend_get_snapshot(
     snapshot->electrical_phase_rate_q32_per_us =
         s_phase_predictor.electrical_phase_rate_q32_per_us;
     snapshot->phase_prediction_age_us = s_phase_prediction_age_us;
+    snapshot->maximum_observed_phase_prediction_age_us =
+        s_maximum_observed_phase_prediction_age_us;
+    snapshot->rejected_phase_prediction_age_us =
+        s_rejected_phase_prediction_age_us;
     snapshot->maximum_phase_prediction_age_us =
         s_phase_predictor.config.maximum_prediction_age_us;
     snapshot->phase_prediction_output_lead_us =
         s_phase_predictor.config.output_lead_us;
+    snapshot->phase_prediction_reject_reason =
+        s_phase_prediction_reject_reason;
     snapshot->initialized = s_initialized;
     snapshot->active = s_active;
     snapshot->phase_prediction_active = s_phase_prediction_active;

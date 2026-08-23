@@ -114,9 +114,9 @@ ctest --preset host-debug
 
 Do not treat a bare `cmake --build --preset host-debug` from an ordinary
 PowerShell session as the canonical Windows host build. `cl.exe` may be present
-on `PATH` while Visual Studio's developer environment is not loaded. In that
-state CMake configures successfully and compilation starts, but MSVC cannot find
-standard headers and reports misleading errors such as:
+on `PATH` while Visual Studio's developer environment is not loaded. Without
+the repository's configure-time guard, that state reaches compilation before
+MSVC reports misleading missing-standard-header errors such as:
 
 ```text
 fatal error C1083: Cannot open include file: 'stdbool.h': No such file or directory
@@ -129,6 +129,12 @@ source or repository include paths are broken. Run:
 pwsh -File tools/build.ps1 -Target host-tests
 ```
 
+The host configuration detects this incomplete MSVC environment, removes only
+the stale `build/host-debug/tests/host_unit_tests.exe`, and fails with the
+wrapper command before generation completes. This prevents a subsequently
+invoked CTest from reporting an older executable as the result of a failed
+current build.
+
 The wrapper locates Visual Studio, enters its developer-command environment,
 then configures, builds, and runs CTest. `-Target all` builds the Debug Arm
 image plus host tests; it does not build the Release preset. Complete validation
@@ -139,16 +145,29 @@ cmake --preset firmware-release
 cmake --build --preset firmware-release
 ```
 
-A bare CMake host build is appropriate only in a shell that was already
-launched from a Visual Studio Developer PowerShell or Developer Command Prompt.
+To make the individual CMake commands work in an existing ordinary PowerShell
+session, dot-source the same environment importer used by the wrapper:
+
+```powershell
+. .\tools\import-msvc-environment.ps1
+cmake --preset host-debug
+cmake --build --preset host-debug
+ctest --preset host-debug
+```
+
+Dot-sourcing is required because an ordinarily invoked PowerShell script cannot
+modify its parent shell's environment. The imported values affect only the
+current PowerShell process and its children. A bare CMake host build is also
+appropriate from a Visual Studio Developer PowerShell or Developer Command
+Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.29.0 / protocol 1.11 is the current source candidate; firmware
-0.28.0 / protocol 1.10 remains the currently flashed evaluation build. The
-source candidate retains the 0.27.1 identity, readiness, live-policy,
-calibration restore, and bounded positive-
-velocity smoke checks pass through a 12 rev/s request. At 24 V, +8 rev/s reaches
+Firmware 0.29.2 / protocol 1.12 is the current source candidate; firmware
+0.29.1 / protocol 1.12 is the currently flashed evaluation build. The current
+motion baseline retains the 0.27.1 identity, readiness, live-policy,
+calibration restore, and bounded positive-velocity smoke checks through a
+12 rev/s request. At 24 V, +8 rev/s reaches
 target without q-current clipping; +12 rev/s reaches the 2.999 A nominal
 demand and the 70%-of-bus phase-voltage ceiling (16.8 V at the nominal 24 V
 setting) and plateaus near 10 rev/s, without a
@@ -158,6 +177,13 @@ Firmware 0.28.0 retains the 0.27.1 motion envelope and adds automatic-injected V
 host electrical units. Firmware 0.29.0 adds explicit in-place fault recovery
 through a direct-GPIO `ZERO`, ADC/DMA plus PWM/current-backend rebuild, and
 controller/supervisor reset without erasing calibration or reset history.
+Firmware 0.29.1 separates the controllers' 2 ms feedback-interval contract
+from a 3 ms fast-predictor horizon, no later than the independent encoder-
+production deadline, and reports typed predictor rejection evidence in aligned-
+torque status schema 2.
+Firmware 0.29.2 retains that protocol and those limits while reconciling the
+priority-15 SysTick epoch with higher-priority microsecond readers through a
+bounded monotonic publication.
 Firmware 0.27.1 includes the
 independent 3 ms encoder-production guard and adds bounded 20 kHz electrical-
 phase prediction, a 16 rev/s/2.999 A nominal motion evaluation envelope, and explicit
@@ -168,13 +194,16 @@ position-cascade headroom without changing the wire layout. It:
 3. Initializes the full SRAM2 bank with stores, clears its parity-error status, and does not allocate from it.
 4. Verifies PA6, PA7, PB0, PB1, and PB7 begin input/no-pull in the reset-safe board state. This is an initial-state gate, not a permanent reservation of the bridge pins.
 5. Configures the active-high PD0 status LED output.
-6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15.
+6. Starts a 1 kHz SysTick timebase at the lowest programmable priority, 15;
+   its microsecond view uses bounded raw-snapshot and exclusive-publication
+   retries so current control may preempt epoch service without observing
+   backward time.
 7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at 500 kHz or lower. TIM6 releases a 1 kHz MT6816 transaction, TIM7 owns bounded CS timing, SPI1 DMA channels 2/3 move the frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
-12. Parses native v1.11 COBS/CRC frames in foreground and replies to valid
+12. Parses native v1.12 COBS/CRC frames in foreground and replies to valid
     address-1 discovery, boot, raw/estimated encoder, current-diagnostic,
     automatic-alignment, generic-STOP, persistent-configuration, and aligned
     q-current, signed velocity, relative-position, and explicit fault-recovery requests,
@@ -209,7 +238,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.29.0`, authoritative drive state, reset cause,
+22. Publishes firmware `0.29.2`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -292,8 +321,25 @@ ADC, deadline, encoder, backend, reset, and panic state.
 
 Firmware 0.29.0 / protocol 1.11 passes 16 Python console tests and the rebuilt
 native C suite, including byte-exact typed `CLEAR_FAULTS` coverage. Clean Debug
-and Release Arm post-link builds pass: Debug uses 58,160 bytes Flash, Release
-uses 52,352 bytes, and both use 7,464 bytes SRAM1 with no configuration-slot or
-SRAM2 allocation. The 240-byte debugger diagnostic ABI remains verified. This
-is the current source candidate; following-error clear and subsequent-command
-hardware validation remain pending flash.
+and Release Arm post-link builds use 58,160/52,352 bytes Flash and 7,464 bytes
+SRAM1. Its flashed image bench-confirms following-error acknowledgment,
+calibration preservation, no-reset recovery, propagated backend-fault recovery,
+and `no_fault` idempotence. The first later bounded move exposed the separate
+zero-headroom predictor-age defect.
+
+Firmware 0.29.1 / protocol 1.12 passes 18 Python console tests and the rebuilt
+native C suite, including byte-exact 72-byte aligned-torque status and rejected-
+age boundary coverage. Clean Debug and Release Arm post-link builds pass: Debug
+uses 58,540 bytes Flash, Release uses 52,844 bytes, and both use 7,476 bytes
+SRAM1 with no configuration-slot or SRAM2 allocation. The unchanged 240-byte
+debugger diagnostic ABI remains verified. Its flashed recovery gate passed and
+its retained predictor evidence isolated a later failure as unsigned -424 us
+from the preempted-SysTick epoch window.
+
+Firmware 0.29.2 / protocol 1.12 passes the same 18 Python tests and the rebuilt
+native suite, including regressions for the observed -424 us timestamp, the
+999 us missing-epoch boundary, the full-tick stale boundary, forward time, and
+uint32 wrap. Clean Debug and Release Arm post-link builds pass: Debug uses
+58,664 bytes Flash, Release uses 52,948 bytes, and both use 7,480 bytes SRAM1
+with no configuration-slot or SRAM2 allocation. The 240-byte debugger ABI is
+unchanged. Flash and alternating signed-motion confirmation remain open.

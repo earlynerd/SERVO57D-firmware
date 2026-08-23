@@ -72,7 +72,7 @@ enum
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 1u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
-    ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 1u,
+    ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 2u,
     VELOCITY_STATUS_SCHEMA_VERSION = 1u,
     POSITION_STATUS_SCHEMA_VERSION = 1u,
     FAULT_RECOVERY_STATUS_SCHEMA_VERSION = 1u,
@@ -1104,6 +1104,14 @@ static command_status_t aligned_torque_get_status(
     status->maximum_duration_millis = commissioning->aligned_torque_controller->
         config.maximum_duration_millis;
     status->backend_fault_flags = loop.fault_flags;
+    status->phase_prediction_reject_reason =
+        loop.phase_prediction_reject_reason;
+    status->rejected_phase_prediction_age_us =
+        loop.rejected_phase_prediction_age_us;
+    status->maximum_observed_phase_prediction_age_us =
+        (uint16_t)loop.maximum_observed_phase_prediction_age_us;
+    status->maximum_phase_prediction_age_us =
+        (uint16_t)loop.maximum_phase_prediction_age_us;
     return COMMAND_STATUS_OK;
 }
 
@@ -2087,6 +2095,12 @@ int main(void)
          */
         CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US = 7u,
         /*
+         * Prediction is allowed one nominal encoder period of dispatch
+         * margin beyond the controllers' timestamp-to-timestamp feedback
+         * interval, but never beyond the independent total-production guard.
+         */
+        CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US = 3000u,
+        /*
          * Three milliseconds allows one reference update before the deadline
          * even when the first accepted 1 kHz feedback sample arrives at the
          * full two-millisecond feedback-age limit.
@@ -2145,6 +2159,15 @@ int main(void)
     _Static_assert(CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US <
                        (1000000u / TIM3_BRIDGE_PWM_FREQUENCY_HZ),
                    "phase-prediction lead must stay within one carrier");
+    _Static_assert(ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US <
+                       CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US,
+                   "phase prediction requires dispatch-age headroom");
+    _Static_assert(CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US <=
+                       ENCODER_PROGRESS_TIMEOUT_US,
+                   "phase prediction may not outlive encoder production");
+    _Static_assert(CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US <=
+                       UINT16_MAX,
+                   "reported phase-prediction age limit exceeds the wire field");
     _Static_assert(ALIGNED_TORQUE_MAXIMUM_CURRENT_COUNTS <=
                        CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
                     "torque policy exceeds the current backend contract");
@@ -2311,7 +2334,7 @@ int main(void)
         .output_lead_us =
             CURRENT_LOOP_PHASE_PREDICTION_OUTPUT_LEAD_US,
         .maximum_prediction_age_us =
-            ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US,
+            CURRENT_LOOP_PHASE_PREDICTION_MAXIMUM_AGE_US,
         .maximum_mechanical_velocity_q16_16 =
             ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16,
     };

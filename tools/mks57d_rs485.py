@@ -96,6 +96,14 @@ FAULT_NAMES = {
     20: "phase_prediction",
 }
 
+PHASE_PREDICTION_REJECT_NAMES = {
+    0: "none",
+    1: "observation_invalid",
+    2: "stale",
+    3: "reference_out_of_range",
+    4: "reference_mapping_failed",
+}
+
 FAULT_RECOVERY_RESULT_NAMES = {
     0: "cleared",
     1: "no_fault",
@@ -352,7 +360,8 @@ ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
 CONFIGURATION_STATUS_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
-ALIGNED_TORQUE_STATUS_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
+ALIGNED_TORQUE_STATUS_V1_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIII")
+ALIGNED_TORQUE_STATUS_V2_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIIIBIHH")
 VELOCITY_STATUS_BODY = struct.Struct(">BBBBIiiihhHIIiiiHHiiI")
 POSITION_STATUS_BODY = struct.Struct(">BBBBIiiiiiihhHIIiiii")
 FAULT_RECOVERY_STATUS_BODY = struct.Struct(">BBIII")
@@ -1067,7 +1076,10 @@ def query_configuration(client: Client) -> dict[str, Any]:
 
 def query_aligned_torque(client: Client) -> dict[str, Any]:
     body = client.transact(COMMAND_GET_ALIGNED_TORQUE_STATUS)
-    if len(body) != ALIGNED_TORQUE_STATUS_BODY.size:
+    if len(body) not in {
+        ALIGNED_TORQUE_STATUS_V1_BODY.size,
+        ALIGNED_TORQUE_STATUS_V2_BODY.size,
+    }:
         raise ProtocolError(
             "aligned-torque-status response has an unexpected length"
         )
@@ -1094,7 +1106,22 @@ def query_aligned_torque(client: Client) -> dict[str, Any]:
         minimum_duration_millis,
         maximum_duration_millis,
         backend_fault_flags,
-    ) = ALIGNED_TORQUE_STATUS_BODY.unpack(body)
+    ) = ALIGNED_TORQUE_STATUS_V1_BODY.unpack(
+        body[: ALIGNED_TORQUE_STATUS_V1_BODY.size]
+    )
+    phase_prediction_reject_reason = 0
+    rejected_phase_prediction_age_us = None
+    maximum_observed_phase_prediction_age_us = None
+    maximum_phase_prediction_age_us = None
+    if len(body) == ALIGNED_TORQUE_STATUS_V2_BODY.size:
+        (
+            phase_prediction_reject_reason,
+            rejected_phase_prediction_age_us,
+            maximum_observed_phase_prediction_age_us,
+            maximum_phase_prediction_age_us,
+        ) = struct.unpack(
+            ">BIHH", body[ALIGNED_TORQUE_STATUS_V1_BODY.size :]
+        )
     return {
         "schema": schema,
         "state": TORQUE_STATE_NAMES.get(state, f"state_{state}"),
@@ -1123,6 +1150,17 @@ def query_aligned_torque(client: Client) -> dict[str, Any]:
         "elapsed_millis": elapsed_millis,
         "remaining_millis": remaining_millis,
         "backend_fault_flags_hex": f"0x{backend_fault_flags:08X}",
+        "phase_prediction": {
+            "reject_reason": PHASE_PREDICTION_REJECT_NAMES.get(
+                phase_prediction_reject_reason,
+                f"reason_{phase_prediction_reject_reason}",
+            ),
+            "rejected_age_us": rejected_phase_prediction_age_us,
+            "maximum_observed_age_us": (
+                maximum_observed_phase_prediction_age_us
+            ),
+            "maximum_age_us": maximum_phase_prediction_age_us,
+        },
         "policy": {
             "maximum_current_counts": maximum_current_counts,
             "maximum_current_nominal_milliamperes": round(

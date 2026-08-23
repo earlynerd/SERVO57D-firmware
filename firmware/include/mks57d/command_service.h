@@ -297,6 +297,10 @@ typedef struct
     uint32_t minimum_duration_millis;
     uint32_t maximum_duration_millis;
     uint32_t backend_fault_flags;
+    uint8_t phase_prediction_reject_reason;
+    uint32_t rejected_phase_prediction_age_us;
+    uint16_t maximum_observed_phase_prediction_age_us;
+    uint16_t maximum_phase_prediction_age_us;
 } command_aligned_torque_status_t;
 
 enum

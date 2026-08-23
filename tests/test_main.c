@@ -18,6 +18,7 @@
 #include "mks57d/command_service.h"
 #include "mks57d/configuration_store.h"
 #include "mks57d/current_controller.h"
+#include "mks57d/current_loop_backend.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
@@ -41,6 +42,7 @@
 #include "mks57d/servo_core.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/step_direction.h"
+#include "mks57d/timebase_reconcile.h"
 #include "mks57d/user_inputs.h"
 #include "mks57d/velocity_controller.h"
 #include "mks57d/watchdog_policy.h"
@@ -1286,6 +1288,46 @@ static void test_interrupt_priority_contract(void)
     EXPECT_TRUE(timekeeping == 15u);
 }
 
+static void test_timebase_reconciles_preempted_systick_epoch(void)
+{
+    const uint32_t observation_us = 1000424u;
+    const uint32_t raw_now_us = 1000000u;
+    const uint32_t corrected_now_us =
+        timebase_reconcile_microseconds(
+            observation_us, raw_now_us, 1000u);
+
+    EXPECT_TRUE(corrected_now_us == 1001000u);
+    EXPECT_TRUE((corrected_now_us - observation_us) == 576u);
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    1000999u, 1000000u, 1000u) == 1001000u);
+}
+
+static void test_timebase_reconciliation_clamps_stale_samples(void)
+{
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    5000u, 3000u, 1000u) == 5000u);
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    5000u, 4000u, 1000u) == 5000u);
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    5000u, 5000u, 1000u) == 5000u);
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    5000u, 5100u, 1000u) == 5100u);
+}
+
+static void test_timebase_reconciliation_preserves_uint32_wrap(void)
+{
+    const uint32_t before_wrap = UINT32_MAX - 15u;
+    const uint32_t after_wrap = 32u;
+    const uint32_t missing_epoch_sample = before_wrap - 424u;
+
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    before_wrap, after_wrap, 1000u) == after_wrap);
+    EXPECT_TRUE(timebase_reconcile_microseconds(
+                    before_wrap,
+                    missing_epoch_sample,
+                    1000u) == 560u);
+}
+
 static void test_adc_channel_and_sample_order_contract(void)
 {
     adc_sample_t sample;
@@ -2095,7 +2137,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .active_encoder_direction = -1,
         },
         .aligned_torque_status = {
-            .schema_version = 1u,
+            .schema_version = 2u,
             .state = 2u,
             .result = 0u,
             .flags = 0x3Fu,
@@ -2118,6 +2160,11 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .minimum_duration_millis = 3u,
             .maximum_duration_millis = INT32_MAX,
             .backend_fault_flags = 0xA1B2C3D4u,
+            .phase_prediction_reject_reason =
+                CURRENT_LOOP_PHASE_PREDICTION_REJECT_STALE,
+            .rejected_phase_prediction_age_us = 0x01020304u,
+            .maximum_observed_phase_prediction_age_us = 0x0ABCu,
+            .maximum_phase_prediction_age_us = 3000u,
         },
         .velocity_status = {
             .schema_version = 1u,
@@ -2633,9 +2680,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.aligned_torque_status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 63u);
+    EXPECT_TRUE(response.payload_length == 72u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[1] == 2u);
     EXPECT_TRUE(response.payload[2] == 2u);
     EXPECT_TRUE(response.payload[4] == 0x3Fu);
     EXPECT_TRUE(response.payload[5] == 0x01u);
@@ -2677,6 +2724,14 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[58] == 0xFFu);
     EXPECT_TRUE(response.payload[59] == 0xA1u);
     EXPECT_TRUE(response.payload[62] == 0xD4u);
+    EXPECT_TRUE(response.payload[63] ==
+                CURRENT_LOOP_PHASE_PREDICTION_REJECT_STALE);
+    EXPECT_TRUE(response.payload[64] == 0x01u);
+    EXPECT_TRUE(response.payload[67] == 0x04u);
+    EXPECT_TRUE(response.payload[68] == 0x0Au);
+    EXPECT_TRUE(response.payload[69] == 0xBCu);
+    EXPECT_TRUE(response.payload[70] == 0x0Bu);
+    EXPECT_TRUE(response.payload[71] == 0xB8u);
 
     {
         static const uint8_t velocity_payload[] = {
@@ -3233,6 +3288,7 @@ static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
     EXPECT_TRUE(age_us == 2000u);
     EXPECT_TRUE(!electrical_phase_predictor_predict(
         &predictor, 1500u, &forward_phase, &age_us));
+    EXPECT_TRUE(age_us == 2001u);
 
     EXPECT_TRUE(electrical_phase_predictor_set_observation(
         &predictor, 0u, 4 << 16, -1, 1000u));
@@ -5840,6 +5896,9 @@ int main(void)
     test_boot_self_test_requires_every_gate();
     test_boot_self_test_failure_is_latched();
     test_interrupt_priority_contract();
+    test_timebase_reconciles_preempted_systick_epoch();
+    test_timebase_reconciliation_clamps_stale_samples();
+    test_timebase_reconciliation_preserves_uint32_wrap();
     test_adc_channel_and_sample_order_contract();
     test_adc_sample_rejects_values_outside_12_bits();
     test_adc_calibration_uses_measured_front_end_scaling();

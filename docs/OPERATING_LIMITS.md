@@ -1,9 +1,15 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.29.0 / protocol 1.11 is the current source candidate, while
-firmware 0.28.0 / protocol 1.10 is flashed and passes identity, readiness, live-policy,
-generation-3 calibration restore, and bounded positive-velocity confirmation
-through a 12 rev/s request. It includes the phase predictor and independent
+Status: firmware 0.29.2 / protocol 1.12 is the current source candidate, while
+firmware 0.29.1 / protocol 1.12 is flashed. The flashed image inherits the
+identity, readiness, generation-3 calibration, VBUS, and bounded positive-
+velocity evidence through a 12 rev/s request. Its fault-recovery command clears
+following-error and current-backend chains without resetting, but a later
+bounded move exposed the former matched 2 ms controller/predictor ceiling.
+Firmware 0.29.1 separated that horizon and retained evidence proving a later
+rejection was unsigned -424 us from a preempted SysTick epoch, not true stale
+encoder production. Firmware 0.29.2 reconciles that clock race while preserving
+the 2 ms controller and 3 ms predictor/liveness bounds. The firmware includes an independent
 encoder-liveness guard and permits velocity evaluation through 16 rev/s
 (960 RPM). At 24 V, +8 rev/s reaches target without q-current clipping;
 +12 rev/s saturates q-demand and phase voltage in most samples and plateaus near
@@ -45,7 +51,7 @@ point is evidence, not automatically a request ceiling.
 
 ## Current firmware inventory
 
-| Quantity | Firmware 0.29.0 source value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.29.2 source value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Bus-voltage scale | 13.22 mV/count nominal | Tested-board 3.3 V ADC reference and fitted 15.4 kOhm/1 kOhm divider | Automatic-injected PA3 ADC acquisition and host conversion | Inactive 0.28.0 status reported 23.829 V at the 24 V supply setting; all 22 active samples held 23.776-23.815 V with advancing samples and no ADC/deadline fault |
@@ -58,7 +64,7 @@ point is evidence, not automatically a request ceiling.
 | Aligned-actuator observed velocity | 20 rev/s, 1,200 RPM | Independent motion shutdown aligned with the current estimator plausibility boundary, not a command target | `aligned_torque_controller` | Leaves transient room above the 16 rev/s command range; raise with the estimator work required for 3,000+ RPM |
 | Mechanical acceleration during open torque | 1,000 rev/s² observed | Evaluation ceiling chosen above expected filtered-estimator transients, not a motor command or performance rating | `aligned_torque_controller` | Prevents the initial 20 rev/s² candidate from masking current/speed boundaries; must become motor/application configuration with the closed velocity loop |
 | Accepted feedback interval | 2,000 us maximum | Timing policy for the nominal 1 kHz encoder schedule, permitting one late interval | `aligned_torque_controller` | Active hardware observations were about 981-1,001 us; remeasure under outer-loop load |
-| Fast electrical-phase prediction | Every 50 us; 2,000 us maximum observation age; 7 us nominal output lead; observations through 20 rev/s | Implementation timing contract derived from the 20 kHz ADC-completion/preload pipeline | `electrical_phase_predictor` through `current_loop_backend` | Host-tested at 4 rev/s/50-cycle geometry, both directions, stale rejection, and timer wrap; bench-exercised without predictor/backend fault through a +12 rev/s request. Scope the true current DMA-completion-to-preload lead, quantify encoder-angle acquisition versus its completion timestamp, and record worst-case ISR cycles while improving high-frequency current tracking |
+| Fast electrical-phase prediction | Every 50 us; 3,000 us maximum observation age; 7 us nominal output lead; observations through 20 rev/s | Timing contract: one nominal 1 ms dispatch margin beyond the controllers' 2 ms timestamp interval, never beyond the independent 3 ms production-liveness guard | `electrical_phase_predictor` through `current_loop_backend` | Schema-2 evidence measured successful ages through 1,475 us and isolated a false unsigned -424 us stale age to the old timebase. Flash 0.29.2 and repeat alternating signed moves; then scope acquisition, preload lead, and worst-case ISR cycles |
 | Encoder production progress | 3,000 us maximum without a newly observed accepted sample | Independent total-silence guard: the 2 ms controller limit plus one nominal 1 ms foreground snapshot opportunity | `encoder_liveness` and the foreground supervisor prerequisite | Host-tested across stale state, recovery, sample-counter wrap, and microsecond-timer wrap; ordinary 0.27.1 identity/readiness and bounded-motion smoke passed with 998-1,002 us active capture intervals and no liveness fault |
 | Estimator velocity filter | `alpha = 0.125` per accepted 1 kHz sample | Implementation configuration; approximately eight samples of smoothing, not a hardware limit | `angle_tracker` | Load-bearing outer-loop behavior that must be measured/tuned as velocity increases |
 | Estimator motion plausibility | 20 rev/s, 1,200 RPM maximum | Implementation threshold for rejecting implausible sample-to-sample motion | `angle_tracker` | Defines the present architecture boundary and leaves 20% room above the 16 rev/s command range; raising it toward at least 50 rev/s is active speed work |

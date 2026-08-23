@@ -1,5 +1,23 @@
 # Debug Log
 
+## 2026-08-22 — Preempted SysTick handler published a future encoder timestamp
+
+- **Observation:** Flashed firmware 0.29.1 passed intentional following-error recovery and one later three-second +0.25-revolution move, then a mirrored -0.25-revolution move faulted `current_loop_phase_prediction` near 60 ms at only 36.4 mA demand and 0.143 V phase effort. Retained schema-2 telemetry reported rejection reason `stale` and age `4294966872 us` (`0xFFFFFE58`), which is exactly unsigned -424 us. Encoder production remained healthy at 1,000-1,014 us, the largest successful predictor age was 1,475 us, calibration generation 3 remained intact, and there was no reset or panic.
+- **Root cause:** `timebase_micros()` combined the software millisecond epoch with the fractional SysTick down-counter. It compensated while SysTick was pending, but SysTick runs at priority 15: after exception entry clears the pending bit and before `SysTick_Handler()` increments the epoch, the priority-2 ADC/current ISR can preempt and combine the old millisecond with the reloaded fractional counter. The encoder observation therefore appeared 424 us in the future. SysTick `VAL` is a single 24-bit register; this was not a torn high/low register read.
+- **Fix:** Firmware 0.29.2 retains the priority-15 SysTick and priority-2 current-loop ordering. `timebase_micros()` now reconciles each raw sample against one atomically published timestamp. A regression shorter than the 1,000 us SysTick period receives the missing epoch; a larger stale sample is clamped. Both raw snapshot and `LDREX`/`STREX` publication have four-attempt bounds; nested interrupt writers cannot overwrite a newer publication, and exhausted retries fall back without spinning. The normal uint32 microsecond wrap remains valid.
+- **Class:** preempted-systick-epoch-coherence-race
+- **Recently-touched?** no — firmware 0.29.1 added the telemetry that identified the defect, but the SysTick composition predates the predictor
+- **Status:** Resolved in source. Native regressions cover the observed -424 us case, the full-tick stale boundary, forward time, and uint32 wrap. All 18 Python tests, the rebuilt native suite, and clean Debug/Release Arm builds pass. Flash 0.29.2 and repeat alternating signed position moves to close the hardware gate.
+
+## 2026-08-22 — Post-recovery motion exposed a zero-headroom predictor-age contract
+
+- **Observation:** Firmware 0.29.0 cleared an intentionally induced position following-error in place with cleared sources `supervisor|velocity|position`, zero blockers, zero remaining sources, preserved generation-3 alignment, and no MCU reset. The first later qualified +0.25-revolution move then latched `current_loop_phase_prediction` after 6,988 clean current-loop updates. After clearing that complete backend/torque/velocity/position/supervisor chain, a reduced-telemetry repeat faulted the same way near 1.07 seconds. Captured encoder intervals remained 1,000-1,014 us, phase effort stayed at or below 0.79 V, and demand stayed at or below 127 mA. A final clear succeeded and a repeated clear returned `no_fault`.
+- **Root-cause evidence:** Firmware 0.29.0 assigned the predictor the same 2,000 us maximum age as the outer controllers' accepted feedback interval and faulted on any one prediction beyond it. Encoder samples are timestamped at SPI completion but reach the controller/predictor through priority-12 PendSV, so the reported timestamp-to-timestamp encoder interval does not include dispatch latency. The matched limits left no processing margin.
+- **Fix:** Firmware 0.29.1 retains the controllers' 2,000 us timestamp-interval contract, gives the 20 kHz predictor a 3,000 us horizon no later than the independent encoder-production guard, and statically enforces that ordering. Protocol 1.12 aligned-torque schema 2 preserves the last rejection reason/age across fault shutdown and reports the maximum successful/configured ages; a new run or successful recovery clears the per-run evidence.
+- **Class:** matched-feedback-and-predictor-deadline-no-headroom
+- **Recently-touched?** no — firmware 0.29.0 exercised the path after recovery, but the matched 2 ms predictor/controller timing contract predates the recovery implementation
+- **Status:** Recovery acknowledgment/rearm, backend-fault clearing, calibration preservation, no-reset behavior, and `no_fault` idempotence are bench-confirmed. Firmware 0.29.1 proved that ordinary successful prediction ages stay below the separated 3 ms horizon, then its retained evidence exposed the distinct SysTick coherence defect recorded above.
+
 ## 2026-08-22 — Faulted motion could not be acknowledged without resetting
 
 - **Observation:** A position following-error correctly stopped in the common `ZERO` state, but `stop` did not clear the fault and the CLI had no clear/acknowledge operation, so the operator could not continue without resetting the controller.
@@ -7,7 +25,7 @@
 - **Fix:** Firmware 0.29.0 / protocol 1.11 adds `CLEAR_FAULTS` and `clear-faults`. The operator command is sufficient assertion that the initiating condition is gone. Recovery establishes `ZERO`, restarts ADC/DMA, rebuilds TIM3/current-loop/predictor state, resets runtime controller latches, and acknowledges the supervisor while preserving alignment/configuration and reset history. All implemented fault owners have an in-place reset attempt; only a concrete reset-transaction failure returns `blocked`, and a condition that persists faults again normally.
 - **Class:** missing-production-fault-acknowledgment-and-rearm
 - **Recently-touched?** no — fault convergence existed, but the production recovery half of the lifecycle had never been wired
-- **Status:** Resolved in source. Sixteen Python tests, the native C suite, and clean Debug/Release Arm builds pass. Following-error clear and subsequent-command hardware validation remain pending flash.
+- **Status:** Bench-confirmed for following-error acknowledgment, propagated backend-fault clearing, calibration preservation, no-reset behavior, and `no_fault` idempotence. A later bounded command exposed the separate predictor-age defect recorded above, so full post-recovery motion validation remains pending its correction.
 - **Time to fix:** one implementation, test, and documentation pass
 
 ## 2026-08-22 — Total encoder-production silence could retain active current demand

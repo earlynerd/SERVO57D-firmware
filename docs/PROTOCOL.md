@@ -1,7 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.11 is implemented in firmware 0.29.0 source; protocol
-1.10 in flashed firmware 0.28.0 remains backward-decodable by the host.
+Status: native protocol 1.12 is implemented in firmware 0.29.2 source and
+flashed firmware 0.29.1; protocol 1.11 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
 power-loss-safe motor-configuration storage, bounded aligned q-current, and the
@@ -121,7 +121,7 @@ from causing reply storms.
 | `0x0301` | `SAVE_CONFIGURATION` | Empty | Empty |
 | `0x0302` | `CLEAR_CALIBRATION` | Empty | Empty |
 | `0x0400` | `START_ALIGNED_TORQUE` | Signed q-current counts `i16`, duration milliseconds `u32` | Empty |
-| `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-1 aligned-torque state, evidence, and complete policy block described below |
+| `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-2 aligned-torque state, prediction rejection evidence, and complete policy block described below |
 | `0x0500` | `START_VELOCITY` | Signed target mechanical velocity Q16.16 rev/s `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
 | `0x0501` | `GET_VELOCITY_STATUS` | Empty | Schema-1 velocity state, evidence, and policy block described below |
 | `0x0600` | `START_POSITION_RELATIVE` | Signed relative displacement Q16.16 revolutions `i32`, positive maximum velocity Q16.16 rev/s `i32`, positive maximum acceleration Q16.16 rev/s² `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
@@ -168,6 +168,11 @@ bus-scaled commanded average phase volts as the primary engineering units.
 Firmware 0.29.0 / protocol 1.11 adds `CLEAR_FAULTS` without changing any
 existing command or response layout. The host console exposes it directly as
 `clear-faults`.
+
+Firmware 0.29.1 / protocol 1.12 appends phase-prediction rejection reason,
+rejected age, maximum successful age, and configured maximum age to aligned-
+torque status schema 2. Every schema-1 field and offset is unchanged, and the
+host decodes both schemas.
 
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
@@ -261,9 +266,13 @@ and slews signed q-current, then publishes measured electrical phase, filtered
 mechanical velocity, direction, and timestamp to the backend. Every 20 kHz
 current event extrapolates phase to the next preload boundary and regenerates
 the A/B phase references through the same bounded current PI and bridge shutdown
-path used by alignment and the production diagnostic. Prediction age is limited
-to 2,000 us and invalid/stale prediction faults to `ZERO`. Positive q-current maps to
-`A=-Iq*sin(theta), B=Iq*cos(theta)` under the accepted motor convention.
+path used by alignment and the production diagnostic. The outer controllers
+still accept at most 2,000 us between feedback timestamps. The 20 kHz predictor
+allows age through 3,000 us so completion-to-PendSV dispatch has one nominal
+encoder period of bounded headroom, but never outlives the independent 3,000 us
+encoder-production guard. Invalid or older prediction faults to `ZERO`.
+Positive q-current maps to `A=-Iq*sin(theta), B=Iq*cos(theta)` under the
+accepted motor convention.
 
 The 0.23.2 evaluation policy is ±495 counts (±2.999 A nominal on the tested
 current front end), 10,000 counts/s current slew (about 60.59 A/s), 5 mechanical
@@ -285,13 +294,14 @@ authority; invalid phase/timing, overspeed, overacceleration, backend loss,
 reference rejection, current-loop fault, or readiness loss enters the common
 fault/ZERO path.
 
-`GET_ALIGNED_TORQUE_STATUS` returns this 62-byte schema-1 body after the common
-status byte. All signed values use two's complement and all multi-byte fields
-are big-endian.
+`GET_ALIGNED_TORQUE_STATUS` schema 2 returns a 71-byte body after the common
+status byte. Its first 62 bytes retain the schema-1 layout; schema 2 appends
+nine bytes of predictor evidence. All signed values use two's complement and
+all multi-byte fields are big-endian.
 
-| Body offset | Type | Aligned-torque schema-1 field |
+| Body offset | Type | Aligned-torque common-prefix field |
 | ---: | --- | --- |
-| 0 | `u8` | Schema version, currently 1 |
+| 0 | `u8` | Schema version: 1 for the 62-byte body, 2 for the 71-byte body |
 | 1 | `u8` | State: idle, ramping, holding, complete, stopped, or failed |
 | 2 | `u8` | Result: none, deadline, stopped, phase invalid, feedback timing, overspeed, overacceleration, backend inactive, or reference rejected |
 | 3 | `u8` | Active/authority/backend/alignment/phase/demand-at-target flags |
@@ -312,6 +322,21 @@ are big-endian.
 | 50 | `u32` | Minimum duration milliseconds |
 | 54 | `u32` | Maximum duration milliseconds |
 | 58 | `u32` | Current-backend fault flags |
+
+The schema-2 suffix is:
+
+| Body offset | Type | Aligned-torque schema-2 field |
+| ---: | --- | --- |
+| 62 | `u8` | Last phase-prediction rejection: 0 none, 1 invalid observation, 2 stale, 3 reference out of range, 4 reference mapping failed |
+| 63 | `u32` | Prediction age at the last rejection, microseconds; zero when no age was available |
+| 67 | `u16` | Maximum successful prediction age observed during the current backend run, microseconds |
+| 69 | `u16` | Configured maximum prediction age, microseconds; currently 3,000 |
+
+The rejection evidence survives ordinary fault shutdown so it can be read
+after the bridge has reached `ZERO`. A new backend run or successful recovery
+clears it. Schema 1's 62-byte body and 63-byte complete successful response
+remain decodable for firmware 0.29.0 and earlier; schema 2's complete successful
+response is 72 bytes.
 
 `START_VELOCITY` is accepted only from supervisor `READY` under the same
 alignment, encoder, current-backend, Right-button, and exclusivity gates as aligned

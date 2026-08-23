@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.29.0 source implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.29.2 source implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV now own the
@@ -24,6 +24,11 @@ Firmware 0.28.0 appends automatic-injected PA3 VBUS acquisition and protocol
 1.10 status telemetry without moving the regular DMA/current-control event.
 Firmware 0.29.0 adds foreground-owned operator fault acknowledgment and an
 in-place `ZERO`/ADC/PWM/current-backend/runtime/supervisor recovery transaction.
+Firmware 0.29.1 separates controller feedback timing from bounded predictor
+dispatch age and publishes the evidence needed to inspect predictor rejection.
+Firmware 0.29.2 reconciles the preempted-SysTick epoch gap through a bounded
+monotonic microsecond publication while retaining the established priority
+ordering.
 
 ## Design priorities
 
@@ -54,7 +59,8 @@ The current image implements:
 - The initial stack and ordinary runtime sections confined to SRAM1; SRAM2 receives a store-only parity initialization and remains unavailable for allocation.
 - Project-owned core-exception and unclaimed-interrupt panic handling with a `.noinit` panic code.
 - Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
-- A 1 kHz monotonic SysTick timebase.
+- A 1 kHz SysTick timebase whose microsecond view uses bounded atomic
+  reconciliation across nested interrupt priorities and normal uint32 wrap.
 - A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder on a
   timestamped 1 kHz TIM6/TIM7/SPI-DMA schedule with PendSV-deferred decode,

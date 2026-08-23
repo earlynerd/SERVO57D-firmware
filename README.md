@@ -5,11 +5,14 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.29.0 / native protocol 1.11 is the current source candidate. It adds
-explicit operator-acknowledged in-place fault recovery; its host and native
-tests and Debug/Release Arm builds pass, while its hardware recovery gate
-remains pending. Firmware 0.28.0 / protocol 1.10 is the flashed hardware
-baseline.
+Firmware 0.29.2 / native protocol 1.12 is the current source candidate. It
+retains operator-acknowledged in-place fault recovery and the separated 2 ms
+controller/3 ms predictor timing contracts, and makes the microsecond timebase
+coherent when the priority-2 current ISR preempts the priority-15 SysTick
+handler. Firmware 0.29.1 / protocol 1.12 is flashed. It bench-confirmed recovery
+without reset and supplied typed predictor evidence showing that a later signed
+move failed because the old timebase could report `now` 424 us before the
+encoder observation, not because encoder production was stale.
 
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
 deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
@@ -20,10 +23,10 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is high-electrical-frequency current tracking and measured
-predictor/output timing, followed by negative-direction speed staging,
-0.29.0 in-place recovery validation, and the remaining position fault/stop
-gates. Exact live, validated, evaluation, and hard limits are owned by
+The next control work is flashing 0.29.2 and repeating alternating signed
+position moves to close the coherent-timebase gate, followed by high-electrical-frequency current tracking, measured
+predictor/output timing, negative-direction speed staging, and the remaining
+position fault/stop gates. Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).
 
@@ -59,8 +62,8 @@ py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 ```
 
-On firmware 0.29.0 / protocol 1.11, an operator can acknowledge and attempt
-in-place recovery after removing a fault's initiating condition:
+On firmware 0.29.0 or newer, an operator can acknowledge and attempt in-place
+recovery after removing a fault's initiating condition:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 clear-faults

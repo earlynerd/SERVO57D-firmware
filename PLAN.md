@@ -15,7 +15,8 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.28.0 / protocol 1.10 is flashed and bench-proven for the current
+- Firmware 0.29.1 / protocol 1.12 is flashed. Its inherited drive baseline is
+  bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
   alignment, bounded torque, signed velocity, relative position, and physical
   VBUS/phase-voltage telemetry.
@@ -23,9 +24,12 @@ and fault bounds.
   request reaches the 2.999 A nominal q-demand and 70%-of-bus phase-voltage
   ceilings and exposes the next high-frequency current-tracking boundary without
   a control, encoder, backend, reset, or panic fault.
-- Firmware 0.29.0 / protocol 1.11 is the current source candidate. Its explicit
-  operator-acknowledged in-place fault recovery passes host/native tests and
-  clean Arm builds; hardware recovery validation remains active work.
+- Firmware 0.29.1 clears following-error and propagated current-backend fault
+  chains in place without an MCU reset. Its predictor evidence separated
+  healthy successful ages through 1,475 us from a rejected unsigned -424 us
+  timestamp, identifying the preempted-SysTick epoch race. Firmware 0.29.2 /
+  protocol 1.12 is the current source candidate and reconciles that race without
+  raising SysTick above the current loop.
 - The project-owned timer, ADC, modulation, current backend, drive supervisor,
   and direct-GPIO all-low `ZERO` mechanism remain the only bridge-authority
   path.
@@ -38,6 +42,10 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
+- [ ] Flash firmware 0.29.2 and repeat alternating +0.25/-0.25-revolution
+  commands at 0.5 rev/s, 1 rev/s², and 100 counts. Require no stale/future-age
+  rejection, maximum successful prediction age no greater than 3,000 us,
+  ordinary terminal authority release, preserved calibration, and no reset.
 - [ ] Measure the current-loop and predictor timing on hardware: ADC acquisition
   instant, configured output lead, worst-case ISR/preload duration, switching
   contamination, and remaining phase error at the 8–12 rev/s boundary.
@@ -57,10 +65,6 @@ list only when measurements or a newly discovered prerequisite justify it.
   power-on/reset/debugger-halt/watchdog bridge waveforms, and injectable
   current/bus-voltage trip behavior before expanding the qualified electrical
   envelope.
-- [ ] Flash firmware 0.29.0 and validate in-place recovery from following error
-  and a recoverable current-backend fault: issue `clear-faults`, observe
-  `DIAGNOSTIC` to `READY`, and complete a later bounded command without an MCU
-  reset or restored authority.
 - [ ] Bench-validate the physical Right-button position stop and a loaded
   following-error event with bounded current, common `ZERO` convergence, and
   clean post-fault evidence.

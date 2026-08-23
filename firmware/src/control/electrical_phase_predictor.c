@@ -127,6 +127,10 @@ bool electrical_phase_predictor_predict(
     }
 
     age_us = now_us - predictor->observation_timestamp_us;
+    if (prediction_age_us != NULL)
+    {
+        *prediction_age_us = age_us;
+    }
     if (age_us > predictor->config.maximum_prediction_age_us)
     {
         return false;
@@ -138,10 +142,6 @@ bool electrical_phase_predictor_predict(
         (int64_t)prediction_interval_us;
     *electrical_phase_q32 =
         predictor->observed_electrical_phase_q32 + (uint32_t)phase_delta;
-    if (prediction_age_us != NULL)
-    {
-        *prediction_age_us = age_us;
-    }
     return true;
 }
 

@@ -1,5 +1,6 @@
 import csv
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -260,6 +261,52 @@ class VelocityCaptureTests(unittest.TestCase):
         self.assertIsNone(status["adc"]["bus_voltage_volts"])
         self.assertIsNone(
             status["loop"]["phase_voltage_command_volts"]["a"]
+        )
+
+    def test_torque_status_reports_phase_prediction_rejection(self) -> None:
+        body = bytearray(console.ALIGNED_TORQUE_STATUS_V1_BODY.size)
+        body[0] = 2
+        body.extend(struct.pack(">BIHH", 2, 3001, 2875, 3000))
+        client = mock.Mock()
+        client.transact.return_value = bytes(body)
+
+        status = console.query_aligned_torque(client)
+
+        self.assertEqual(status["schema"], 2)
+        self.assertEqual(
+            status["phase_prediction"]["reject_reason"], "stale"
+        )
+        self.assertEqual(
+            status["phase_prediction"]["rejected_age_us"], 3001
+        )
+        self.assertEqual(
+            status["phase_prediction"]["maximum_observed_age_us"],
+            2875,
+        )
+        self.assertEqual(
+            status["phase_prediction"]["maximum_age_us"], 3000
+        )
+
+    def test_torque_status_keeps_schema_one_compatibility(self) -> None:
+        body = bytearray(console.ALIGNED_TORQUE_STATUS_V1_BODY.size)
+        body[0] = 1
+        client = mock.Mock()
+        client.transact.return_value = bytes(body)
+
+        status = console.query_aligned_torque(client)
+
+        self.assertEqual(status["schema"], 1)
+        self.assertEqual(
+            status["phase_prediction"]["reject_reason"], "none"
+        )
+        self.assertIsNone(
+            status["phase_prediction"]["rejected_age_us"]
+        )
+        self.assertIsNone(
+            status["phase_prediction"]["maximum_observed_age_us"]
+        )
+        self.assertIsNone(
+            status["phase_prediction"]["maximum_age_us"]
         )
 
     def test_fault_recovery_status_decodes_sources_and_blockers(self) -> None:

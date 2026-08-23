@@ -1,7 +1,7 @@
 # Firmware
 
 This directory contains the buildable N32L406CBL7 current-regulated product
-image. Firmware 0.29.0 source closes both winding-current loops at 20 kHz through the
+image. Firmware 0.29.2 source closes both winding-current loops at 20 kHz through the
 authoritative drive supervisor, acquires the encoder through a deterministic
 1 kHz timer/SPI-DMA/PendSV service, persists measured motor alignment, and
 provides bounded signed encoder-aligned q-current as the first production `RUN`
@@ -24,7 +24,7 @@ deadline/polarity, physical Right-button stop, and hand-loaded
 saturation/recovery evidence remains accepted. Firmware 0.26.1 adds a 3 ms
 foreground encoder-progress guard; it is host-tested and Arm-build validated,
 and firmware 0.27.1 adds bounded 20 kHz electrical-phase prediction with a
-2 ms freshness limit and nominal 7 us output lead, plus a 16 rev/s evaluation
+nominal 7 us output lead, plus a 16 rev/s evaluation
 command range with correction headroom. Firmware 0.27.1 passes identity,
 readiness, live-policy, calibration restore, and bounded positive-
 velocity confirmation through a 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -48,6 +48,19 @@ controller operation state, preserves motor alignment/configuration and reset
 history, and returns the supervisor to uncommanded `DIAGNOSTIC`. The operator
 command itself is sufficient acknowledgment; a condition that persists faults
 again through its ordinary monitor.
+That image is flashed and bench-confirms following-error acknowledgment,
+calibration preservation, no-reset recovery, propagated backend-fault recovery,
+and `no_fault` idempotence. Its first later bounded move exposed a predictor-
+age fault because the predictor and controller shared the same 2 ms boundary
+without dispatch headroom. Firmware 0.29.1 / protocol 1.12 retains the
+controllers' 2 ms timestamp-interval check, gives the 20 kHz predictor a 3 ms
+horizon no later than encoder-production liveness, and appends typed rejection
+reason/age plus maximum successful/configured age to aligned-torque status.
+The flashed 0.29.1 evidence then identified a separate unsigned -424 us
+timestamp caused by priority-2 current control preempting priority-15 SysTick
+between hardware reload and software epoch publication. Firmware 0.29.2 keeps
+that priority ordering and reconciles the microsecond clock through bounded
+exclusive-access publication.
 
 The 0.22.0 storage and protocol implementation passes host failure-injection
 tests and Debug/Release Arm builds. First-save, unchanged-save, power-cycle
@@ -69,12 +82,12 @@ expanded-current hardware gates remain pending.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
 - The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
 - PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
-- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.10 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy, velocity state/policy, position state/policy, and VBUS telemetry; its existing estimator-ready flag is asserted only while this progress evidence is live.
+- SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads on a deterministic 1 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; PendSV decodes each completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.12 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy and predictor evidence, velocity state/policy, position state/policy, and VBUS telemetry; its existing estimator-ready flag is asserted only while this progress evidence is live.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA
   channel 5 provides bounded TX, and PC13 returns low only after final line
   completion. A foreground COBS/CRC parser replies only to valid address-1
   discovery, telemetry, and current-loop requests; no bytes are transmitted
-  automatically. Status and STOP remain available while a test is active.
+  automatically. Status, STOP, and explicit fault recovery remain available.
 - A bounded 333.3 kHz I2C1 PA4/PA5 transport updates the fitted SSD1306-compatible 72-by-40 panel. The current-loop display refreshes its two-page view at 5 Hz.
 - TIM2 resets from each TIM3 update and raises a compare interrupt at 80% of
   the carrier; that bounded ISR software-starts a 16 MHz, 7.5-cycle PA1/PA2
@@ -87,7 +100,7 @@ expanded-current hardware gates remain pending.
   DMA event and is consumed by foreground telemetry.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
 - Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second run; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
-- DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, maps bounded q-current into fresh A/B references, runs the fixed-point A/B PI controllers, and stages low-zero sign-magnitude TIM3 preloads. Prediction is limited to 2 ms old and includes a nominal 7 us lead to the following PWM preload boundary; stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
+- DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, maps bounded q-current into fresh A/B references, runs the fixed-point A/B PI controllers, and stages low-zero sign-magnitude TIM3 preloads. Controllers reject feedback timestamp intervals over 2 ms; the fast predictor permits age through 3 ms to cover bounded PendSV dispatch, never beyond the independent encoder-production deadline, and includes a nominal 7 us lead to the following PWM preload boundary. Stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
 - Firmware 0.18.2 uses `Kp=2`, retains `Ki=1/64` per 20 kHz step, and records the first 256 successful loop outputs for post-run tuning analysis. At 12 V, a 303 mA startup step has 6.53 ms 10-90% rise time, 8% overshoot, and 14.0 mA tail RMS error. A 606 mA / 15 Hz run tracked -17.78 RPM versus -18 RPM commanded. A 757 mA / 20 Hz, five-second run completed 100,000 loop updates and 1.97 revolutions versus 2.00 commanded with no fault or reset and about 3.0 V peak commanded phase effort against the nominal 8.4 V ceiling.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.

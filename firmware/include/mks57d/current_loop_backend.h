@@ -23,6 +23,15 @@ typedef enum
     CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION = 1u << 20
 } current_loop_backend_fault_t;
 
+typedef enum
+{
+    CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE = 0u,
+    CURRENT_LOOP_PHASE_PREDICTION_REJECT_OBSERVATION_INVALID = 1u,
+    CURRENT_LOOP_PHASE_PREDICTION_REJECT_STALE = 2u,
+    CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_RANGE = 3u,
+    CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING = 4u
+} current_loop_phase_prediction_reject_t;
+
 typedef struct
 {
     phase_current_loop_output_t latest_output;
@@ -33,8 +42,11 @@ typedef struct
     uint32_t predicted_electrical_phase_q32;
     int32_t electrical_phase_rate_q32_per_us;
     uint32_t phase_prediction_age_us;
+    uint32_t maximum_observed_phase_prediction_age_us;
+    uint32_t rejected_phase_prediction_age_us;
     uint32_t maximum_phase_prediction_age_us;
     uint16_t phase_prediction_output_lead_us;
+    uint8_t phase_prediction_reject_reason;
     bool initialized;
     bool active;
     bool phase_prediction_active;
