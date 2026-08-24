@@ -462,5 +462,7 @@ Firmware 0.37.0 / protocol 1.18 passes the native suite and all 56 Python tests
 with two hardware/reference skips. Clean Debug/Release Arm post-link builds use
 63,924/58,820 bytes Flash and 11,696 bytes SRAM1; neither configuration slot nor
 SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Hardware
-flash and signed direct-velocity confirmation at the new 16 rev/s² default
-remain open.
+flash and positive direct-velocity confirmation pass at the new 16 rev/s²
+default: +4 rev/s completed smoothly and quietly with clean timing, normal
+release, and no fault, missed update, reset, or panic. Negative-sign confirmation
+remains open.

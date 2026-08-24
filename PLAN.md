@@ -15,69 +15,39 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.35.1 / protocol 1.17 is flashed. Its high-resolution current
-  captures show continuous 20 kHz sample sequence, 4.25-4.375 us
-  trigger-to-DMA time, 13.734-14.359 us DMA-to-stage time, and
-  39.281-39.906 us preload margin without faults. The tuning ramp and expanded
-  Ki search range are available on the bench. Paired 303 mA, Kp=9/Ki=0.5
-  captures through 200 Hz bench-confirm the new rotating diagnostic: at 200 Hz
-  lag fell from 39.09 to -0.01 degrees and RMS current error from 149.4 to
-  7.9 mA. Worst DMA-to-stage time was 21.73 us, minimum preload margin was
-  30.59 us, and missed-update, fault, reset, and panic evidence remained clear.
-- Firmware 0.30.3 corrected the
-  predictor's nominal 7 us lead to the measured 55 us DMA-to-application
-  interval. Matched +8 rev/s Kp=2/3/4 bursts then reduced velocity RMS error
-  from 0.797 to 0.621 to 0.460 rev/s and A/B current RMS error from about 146
-  to 100 to 87 counts without a control, timing, encoder, backend, reset, or
-  panic fault. Kp=4 remains the active bench candidate, not a universal motor
-  default.
-- Firmware 0.36.0 / protocol 1.17 is the performance/control source candidate;
-  firmware 0.35.1 remains flashed. The candidate retains the rotating-current
-  diagnostic search ceiling of 1,000 electrical Hz, retaining at
-  least 20 current-loop updates and four encoder observations per electrical
-  cycle at the endpoint. This is evaluation permission for lower-inductance
-  motors, not qualification of the attached motor.
-  It retains 0.31.0's safe-state volatile current-gain apply/revert,
-  active/stored/default status, schema-1 migration, explicit persistence, and
-  guided sweep. It also stages an 8 MHz MT6816 transport and deterministic
-  4 kHz rotor release, timestamps observations at CS assertion, preserves the
-  filter and settling time contracts, and enables `-O2` deferred control plus
-  Cortex-M4F single-precision hardware. An informal 4 kHz run is encouraging,
-  not yet qualification evidence. Normal fast control now leaves optional
-  trace timing dormant, and the rotor/foreground publication path uses compact
-  4 kHz progress plus 100 Hz/event-driven full snapshots and 1 ms safety
-  housekeeping without changing the immediate ISR/runtime fault paths. Its
-  rotating-current diagnostic can ramp to each target before the full tuning
-  hold window and now advances at 20 kHz rather than 1 kHz. Schema-4 status
-  exposes isolated missed PWM updates without weakening the existing deadline
-  fault. The diagnostic controller selector keeps stationary A/B PI as its
-  compatibility default and adds fixed-point d/q PI with sample-angle Park and 55 us
-  application-angle inverse Park. Schema-5 status reports that selection, and
-  the tuner produces d/q waveforms and metrics. Firmware 0.36.0 promotes that
-  fixed-point d/q controller into production aligned-q torque, velocity, and
-  position while retaining stationary control for static vectors and alignment.
-- Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
-  bench-proven for the current
-  20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
-  alignment, bounded torque, signed velocity, relative position, and physical
-  VBUS/phase-voltage telemetry.
+- Firmware 0.37.0 / protocol 1.18 is the current source and flashed baseline.
+  It runs the fixed-point rotating d/q controller in the production aligned-q
+  torque, velocity, and position path, retains stationary A/B control for
+  alignment and static vectors, and preserves the project-owned 20 kHz current
+  backend, deterministic 4 kHz rotor service, supervisor authority, finite
+  deadlines, independent electrical/motion limits, and common `ZERO` release.
+- The active bench configuration retains generation-3 alignment and uses
+  volatile Kp=9/Ki=0.5 current gains. Stored gains remain Kp=4/Ki=1/64, so the
+  configuration is intentionally dirty and persistence across a power cycle
+  remains an explicit open gate.
+- Firmware 0.37.0 has clean initial signed production-motion evidence. Signed
+  30.3 mA, 100 ms torque pulses reversed q demand and released normally. Paired
+  ±4 rev/s launches at 16 rev/s² and a 606 mA permission measured 0.073 and
+  0.132 rev/s RMS error. The negative run's armed trace retained 256 consecutive
+  20 kHz samples, 4.25-4.31 us trigger-to-DMA time, 22.47-22.97 us
+  DMA-to-PWM time, at least 29.78 us preload margin, and zero missed updates or
+  faults. A +151.5 mA open-torque pulse reached about 5.25 rev/s within 80 ms
+  on the unloaded shaft, so higher direct-torque points require restraint or a
+  suitable load rather than current-rating permission alone.
+- Mirrored 0.25-revolution moves at 0.5 rev/s, 1 rev/s², and a 606 mA
+  permission settled at +0.00067/-0.00085 revolution; one earlier positive move
+  ended safely at deadline with -0.00482 revolution error and did not reproduce.
+  Scheduled generic STOP, a 6.1 mA following-error injection, in-place recovery,
+  and a post-recovery move all converged through `ZERO`, preserved alignment,
+  and left fault/reset/panic evidence clear.
+- The retained rotating-current diagnostic is bench-proven at Kp=9/Ki=0.5
+  through 200 electrical Hz and 303 mA. At 200 Hz, rotating mode reduced lag
+  from 39.09 to -0.01 degrees and RMS current error from 149.4 to 7.9 mA with
+  zero missed updates or faults.
 - At 24 V, positive velocity reaches target through +8 rev/s. A +12 rev/s
   request reaches the 2.999 A nominal q-demand and 70%-of-bus phase-voltage
   ceilings and exposes the next high-frequency current-tracking boundary without
   a control, encoder, backend, reset, or panic fault.
-- Firmware 0.29.2 clears following-error and propagated current-backend fault
-  chains in place without an MCU reset and reconciles the preempted-SysTick
-  epoch race without raising SysTick above the current loop. Six alternating
-  signed position moves produced no future-age rejection; maximum successful
-  prediction age remained 1,435-1,483 us against the 3,000 us contract, with
-  preserved generation-3 calibration and no reset.
-- Firmware 0.29.3 / protocol 1.12 is flashed. It closes
-  the remaining non-tuning project-review items: a traceable independent
-  acceleration shutdown, explicit cascade deadline ordering, wide-range slew
-  arithmetic, shared control-math semantics, and generated-artifact hygiene.
-  A bounded 0.1 rev/s smoke reported the 512 rev/s² policy, completed 40,001
-  current-loop updates, released all outputs, preserved calibration, and left
-  all fault/reset/panic channels clear.
 - The project-owned timer, ADC, modulation, current backend, drive supervisor,
   and direct-GPIO all-low `ZERO` mechanism remain the only bridge-authority
   path.
@@ -90,12 +60,12 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Bench-validate firmware 0.36.0's promoted aligned-q rotating PI, beginning
-  with bounded signed standstill torque and low-speed velocity, then representative
-  position moves and staged 606 mA/1.503 A points. Require clean q polarity,
-  d-current rejection, tracking, timing margin, STOP/release, predictor, encoder,
-  supply, thermal, mechanical, and fault evidence before expanding speed.
-- [ ] Capture formal firmware 0.34.0 evidence and bench-validate 8 MHz SPI
+- [ ] Finish firmware 0.37.0 aligned-q current qualification on a restrained or
+  suitably loaded fixture, beginning with mirrored 151.5/303/606 mA direct-torque
+  points and then 1.503 A. Require d-current rejection, tracking, timing margin,
+  STOP/release, predictor, encoder, supply, thermal, mechanical, and fault
+  evidence before expanding current or speed.
+- [ ] Capture the remaining formal firmware 0.37.0 evidence and bench-validate 8 MHz SPI
   integrity, 4 kHz sample/acquisition timing and noise, PendSV/current-ISR preemption and stack margin, controller
   numerical behavior, current-gain status, idle-only volatile apply/revert,
   sweep-abort restoration, explicit save, schema-2 generation advance, and
@@ -105,7 +75,8 @@ list only when measurements or a newly discovered prerequisite justify it.
   profile from tracking, phase, overshoot, voltage headroom, timing, motion, and
   fault evidence rather than velocity RMS alone.
 - [ ] Improve high-electrical-frequency current tracking from those measurements,
-  then stage signed velocity through ±2, ±4, ±5, ±8, ±12, and ±16 rev/s with
+  then stage the remaining signed velocity envelope through ±5, ±8, ±12,
+  and ±16 rev/s, retaining the accepted ±4 rev/s / 16 rev/s² comparison, with
   current, voltage, prediction, supply, thermal, mechanical, and release
   evidence at each retained point.
 - [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
@@ -120,10 +91,10 @@ list only when measurements or a newly discovered prerequisite justify it.
   power-on/reset/debugger-halt/watchdog bridge waveforms, and injectable
   current/bus-voltage trip behavior before expanding the qualified electrical
   envelope.
-- [ ] Resolve the repeatable approximately ±0.0025-revolution low-speed endpoint
-  offset, then bench-validate the physical Right-button position stop and a
-  loaded following-error event with bounded current, common `ZERO` convergence,
-  and clean post-fault evidence.
+- [ ] Tune low-speed position to remove the occasional approximately
+  0.005-revolution deadline outlier, then complete the physical Right-button
+  position stop and a mechanically loaded following-error event with bounded
+  current, common `ZERO` convergence, and clean post-fault evidence.
 - [ ] Define and implement product policy for mechanical stall, partial encoder
   degradation, protection-grade overcurrent, and runaway detection beyond the
   existing total encoder-production, raw-current, and observed-speed guards.
@@ -158,7 +129,7 @@ list only when measurements or a newly discovered prerequisite justify it.
   current focused product slice until they justify fresh implementation through
   the product supervisor/runtime. Relative position remains the supported
   position operation. The standalone step/direction decoder stays retained and
-  tested; PMSM-oriented d/q control remains a later project.
+  tested.
 - Modbus RTU and publicly documented Makerbase command compatibility remain
   optional adapters. They do not replace the project-owned native command
   service or block core drive performance work.

@@ -482,3 +482,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** stationary-frame-sinusoidal-tracking-bandwidth
 - **Recently-touched?** yes — this session added and bench-tested the rotating branch.
 - **Evidence:** Across all six rotating trials, maximum DMA-to-stage time was 21.73 us, minimum preload margin was 29.91 us, voltage clamp fraction was zero, missed PWM counts were zero, no fault/reset/panic appeared, and cleanup restored stationary mode with all outputs at zero. Higher-current and product-motion promotion remain open.
+
+## 2026-08-24 — Hidden maximum-rate velocity launch exceeded motor synchronism
+
+- **Observation:** The attached motor audibly skipped steps during the faster trajectory trial, while the prior fixed-ramp +4 rev/s velocity capture also showed large speed excursions despite clean current-loop timing and faults. Repeating +4 rev/s at 16 rev/s² on firmware 0.37.0 was smooth and quiet, reached reference in 0.25 seconds, and measured 0.073 rev/s RMS velocity error.
+- **Root cause:** Pre-fix `10f7d95:firmware/src/control/velocity_controller.c:284-287` always slewed direct velocity at the configured 256 rev/s² controller maximum; `START_VELOCITY` exposed no motor/application trajectory choice.
+- **Fix:** Protocol 1.18 appends explicit direct-velocity acceleration, defaults new and legacy requests to 16 rev/s², and retains caller access through the 256 rev/s² controller envelope.
+- **Class:** controller-capability-used-as-hidden-trajectory-default
+- **Recently-touched?** no — the fixed direct ramp predated the current rotating-frame integration.
+- **Status:** Bench-confirmed on firmware 0.37.0 at +4 rev/s and 606 mA permission with Kp=9/Ki=0.5: peak request was 26 counts, current RMS error was 1.64/1.86 counts, maximum DMA-to-PWM time was 22.97 us, minimum preload margin was 30.78 us, and the run ended in `READY`/`ZERO` with no fault, missed update, reset, or panic.
+
+## 2026-08-24 — Promoted aligned-q signed motion and fault recovery gates passed
+
+- **Observation:** Firmware 0.37.0 passed signed 30.3 mA torque pulses, a mirrored -4 rev/s launch, mirrored 0.25-revolution motion, scheduled generic STOP, intentional low-current following-error shutdown, in-place recovery, and post-recovery position motion. The first positive position move ended safely at deadline with -0.00482 revolution error; the negative move, positive repeat, and post-recovery move settled at +0.00067, -0.00085, and +0.00031 revolution. A +151.5 mA open-torque pulse accelerated the unloaded shaft to about 5.25 rev/s within 80 ms, so higher direct-torque points were stopped pending restraint or a suitable load.
+- **Root cause/evidence:** No new firmware defect was found. `firmware/src/control/position_controller.c:292-310` retained the explicit position/velocity settle window, and `firmware/src/main.c:2484-2518` retained the 4/s position gain and velocity PI tuning. The endpoint miss did not reproduce and stayed far below current/following-error limits. The -4 rev/s trace retained 256 consecutive 20 kHz samples, 4.25-4.31 us trigger-to-DMA time, 22.47-22.97 us DMA-to-PWM time, at least 29.78 us preload margin, 174-425 us prediction age, and zero missed updates or faults.
+- **Fix:** No code change required; accept the low-energy signed controller, STOP, fault convergence, recovery, and timing sub-gates, keep low-speed position tuning open, and require a restrained or suitably loaded fixture for higher direct-torque/current work.
+- **Class:** aligned-q-signed-motion-and-position-fault-bench-validation
+- **Recently-touched?** yes — firmware 0.36.0 promoted the rotating d/q controller into the production aligned-q path, and firmware 0.37.0 changed only direct-velocity trajectory selection.
+- **Status:** Final status reported zero duties/references, 250 us encoder cadence, valid generation-3 alignment, volatile Kp=9/Ki=0.5 still intentionally unsaved, no current/backend/encoder/supervisor faults, no missed PWM updates, and no reset or retained panic.

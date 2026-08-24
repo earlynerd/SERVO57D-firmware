@@ -5,8 +5,8 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.37.0 / native protocol 1.18 is the current source candidate;
-firmware 0.36.1 / protocol 1.17 is the flashed baseline. Firmware 0.30.1 corrected the fast
+Firmware 0.37.0 / native protocol 1.18 is the current source and flashed
+baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -108,6 +108,22 @@ New host commands default to the bench-proven 16 rev/s² launch, and legacy
 positive value through the retained 256 rev/s² controller capability. Position
 profiles and their inner-loop slew headroom are unchanged.
 
+The first flashed 0.37.0 direct-velocity gate reached +4 rev/s through a
+16 rev/s² launch smoothly and quietly with 0.073 rev/s RMS velocity error,
+only 26 counts peak q-current request, clean 20 kHz timing, no faults or missed
+updates, and normal `READY`/`ZERO` release.
+
+The mirrored -4 rev/s gate used the same launch and 606 mA permission, measured
+0.132 rev/s RMS velocity error and 61 counts peak q-current request, and ended
+normally. Its armed 256-sample trace retained consecutive 20 kHz updates,
+4.25-4.31 us trigger-to-DMA time, 22.47-22.97 us DMA-to-PWM time, at least
+29.78 us preload margin, 174-425 us prediction age, and zero missed updates or
+faults. Signed 30.3 mA torque pulses and mirrored 0.25-revolution position moves
+also passed polarity, ordinary release, generic STOP, following-error shutdown,
+in-place recovery, and post-recovery motion gates. Position settling remains a
+tuning task: one move ended safely at -0.00482 revolution after its deadline,
+while the mirrored move and positive repeat settled within 0.00085 revolution.
+
 Paired 303 mA, Kp=9/Ki=0.5 captures now bench-confirm that diagnostic through
 200 electrical Hz. At 200 Hz, rotating mode reduced phase lag from 39.09 to
 -0.01 degrees and RMS current error from 149.4 to 7.9 mA, while using 445/700
@@ -124,14 +140,16 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next current-control work is bench-validating the promoted aligned-q path
-through conservative signed torque, velocity, and position gates, with an
-armed timing burst before expanding speed or current. That runs alongside formal
-8 MHz / 4 kHz encoder timing and acquisition evidence,
-outer-loop numerical/timing health,
-volatile gain apply/revert, and explicit persistence across a power cycle, then
-using its fixed-condition sweep before negative-direction speed staging and the
-remaining position fault/stop gates.
+The next current-control work is finishing promoted aligned-q current
+qualification on a restrained or suitably loaded fixture. A +151.5 mA,
+100 ms open-torque pulse already accelerated the unloaded shaft to about
+5.25 rev/s, so higher direct-torque points are fixture-gated even though they
+remain below the motor's reported current rating. That runs alongside formal
+8 MHz / 4 kHz encoder timing and acquisition evidence, outer-loop
+numerical/timing health, volatile gain apply/revert and explicit persistence
+across a power cycle, the fixed-condition sweep, remaining signed speed staging,
+position tuning, physical Right-button STOP, and a mechanically loaded
+following-error gate.
 Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).
