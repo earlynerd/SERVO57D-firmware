@@ -562,27 +562,42 @@ def _run_capture(
     interval: float,
     telemetry_path: Path,
     trace_at_seconds: float | None = None,
+    ramp_duration_ms: int = 0,
 ) -> tuple[list[dict[str, Any]], bool]:
+    total_duration_ms = ramp_duration_ms + duration_ms
+    start_payload = (
+        struct.pack(">BII", LEG_VALUES[leg], ramp_duration_ms, duration_ms)
+        if ramp_duration_ms > 0
+        else struct.pack(">BI", LEG_VALUES[leg], duration_ms)
+    )
     client.transact(
         COMMAND_START_CURRENT_TEST,
-        struct.pack(">BI", LEG_VALUES[leg], duration_ms),
+        start_payload,
     )
     samples: list[dict[str, Any]] = []
     completed = False
     trace_armed = False
-    deadline = time.monotonic() + duration_ms / 1000.0 + 5.0
+    deadline = time.monotonic() + total_duration_ms / 1000.0 + 5.0
     with telemetry_path.open("w", encoding="utf-8") as stream:
         while True:
             status = query_status(client)
             status["encoder"] = query_encoder(client)
+            remaining = int(status["test"]["remote_run_remaining_millis"])
+            flags = set(status["flags"])
+            authority_active = "remote_authority" in flags
+            elapsed = (
+                max(0.0, (total_duration_ms - remaining) / 1000.0)
+                if authority_active
+                else 0.0
+            )
+            status["test"]["run_elapsed_seconds"] = round(elapsed, 6)
             samples.append(status)
             stream.write(json.dumps(status, sort_keys=True) + "\n")
             stream.flush()
-            remaining = int(status["test"]["remote_run_remaining_millis"])
-            elapsed = max(0.0, (duration_ms - remaining) / 1000.0)
             if (
                 trace_at_seconds is not None
                 and not trace_armed
+                and authority_active
                 and elapsed >= trace_at_seconds
             ):
                 arm_current_trace(client)
@@ -600,14 +615,13 @@ def _run_capture(
                     f"{float(voltage_limit):5.2f} V"
                 )
             print(
-                f"\r{elapsed:6.2f}/{duration_ms / 1000.0:.2f} s  "
+                f"\r{elapsed:6.2f}/{total_duration_ms / 1000.0:.2f} s  "
                 f"I=({measured['a']:+7.1f},{measured['b']:+7.1f}) mA  "
                 f"{voltage_text}  "
                 f"angle={status['encoder']['angle_degrees']:7.2f} deg",
                 end="",
                 flush=True,
             )
-            flags = set(status["flags"])
             if not ({"remote_authority", "remote_start_pending"} & flags):
                 completed = True
                 print()

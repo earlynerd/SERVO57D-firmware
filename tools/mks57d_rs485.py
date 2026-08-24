@@ -2905,6 +2905,12 @@ def make_parser() -> argparse.ArgumentParser:
     start = commands.add_parser("start", help="start a bounded remote run")
     start.add_argument("--leg", choices=LEG_VALUES, default="A1")
     start.add_argument("--duration-ms", type=int, default=10000)
+    start.add_argument(
+        "--ramp-duration-ms",
+        type=int,
+        default=0,
+        help="frequency ramp before the full duration-ms hold window",
+    )
 
     commands.add_parser("stop", help="stop any active drive operation")
     commands.add_parser(
@@ -3022,6 +3028,12 @@ def make_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="start and watch a bounded run")
     run.add_argument("--leg", choices=LEG_VALUES, default="A1")
     run.add_argument("--duration-ms", type=int, default=10000)
+    run.add_argument(
+        "--ramp-duration-ms",
+        type=int,
+        default=0,
+        help="frequency ramp before the full duration-ms hold window",
+    )
     run.add_argument("--interval", type=float, default=0.2)
     return parser
 
@@ -3177,9 +3189,22 @@ def main() -> int:
                 }
             )
         elif args.command == "start":
+            if args.ramp_duration_ms < 0:
+                raise ProtocolError("--ramp-duration-ms must be nonnegative")
             client.transact(
                 COMMAND_START_CURRENT_TEST,
-                struct.pack(">BI", LEG_VALUES[args.leg], args.duration_ms),
+                (
+                    struct.pack(
+                        ">BII",
+                        LEG_VALUES[args.leg],
+                        args.ramp_duration_ms,
+                        args.duration_ms,
+                    )
+                    if args.ramp_duration_ms > 0
+                    else struct.pack(
+                        ">BI", LEG_VALUES[args.leg], args.duration_ms
+                    )
+                ),
             )
             print_json(query_status(client))
         elif args.command == "stop":
@@ -3503,9 +3528,22 @@ def main() -> int:
                 print(json.dumps(status, sort_keys=True), flush=True)
                 time.sleep(args.interval)
         elif args.command == "run":
+            if args.ramp_duration_ms < 0:
+                raise ProtocolError("--ramp-duration-ms must be nonnegative")
             client.transact(
                 COMMAND_START_CURRENT_TEST,
-                struct.pack(">BI", LEG_VALUES[args.leg], args.duration_ms),
+                (
+                    struct.pack(
+                        ">BII",
+                        LEG_VALUES[args.leg],
+                        args.ramp_duration_ms,
+                        args.duration_ms,
+                    )
+                    if args.ramp_duration_ms > 0
+                    else struct.pack(
+                        ">BI", LEG_VALUES[args.leg], args.duration_ms
+                    )
+                ),
             )
             try:
                 while True:

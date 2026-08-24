@@ -32,7 +32,7 @@ def configuration(active_kp: int = 4 * 65536, active_ki: int = 1024) -> dict:
         "stored": {"current_loop_gains": gains(4 * 65536, 1024)},
         "active": {"current_loop_gains": gains(active_kp, active_ki)},
         "limits": {
-            "maximum_current_loop_gains": gains(8 * 65536, 4096)
+            "maximum_current_loop_gains": gains(8 * 65536, 4 * 65536)
         },
     }
 
@@ -101,6 +101,7 @@ def sweep_args(root: Path) -> SimpleNamespace:
         current_ma=303.0,
         seconds=0.5,
         settle_seconds=0.1,
+        ramp_electrical_hz_per_second=50.0,
         interval=0.05,
         kp=[3.0],
         ki=[0.015625],
@@ -126,6 +127,42 @@ class FakeClient:
 
 
 class TuningWorkflowTests(unittest.TestCase):
+    def test_capture_encodes_ramp_and_hold_as_separate_durations(self) -> None:
+        status = ready_status()
+        status["loop"].update(
+            {
+                "measured_nominal_milliamperes": {"a": 0.0, "b": 0.0},
+                "phase_voltage_command_volts": {"a": 0.0, "b": 0.0},
+                "phase_voltage_limit_volts": 16.8,
+            }
+        )
+        encoder = healthy_encoder()
+        encoder["angle_degrees"] = 0.0
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temporary, (
+            mock.patch.object(tune.motor_test, "query_status", return_value=status)
+        ), mock.patch.object(
+            tune.motor_test, "query_encoder", return_value=encoder
+        ):
+            samples, completed = tune.motor_test._run_capture(
+                client,
+                "A1",
+                500,
+                0.05,
+                Path(temporary) / "telemetry.jsonl",
+                ramp_duration_ms=400,
+            )
+
+        self.assertTrue(completed)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(
+            client.commands[0],
+            (
+                tune.motor_test.COMMAND_START_CURRENT_TEST,
+                struct.pack(">BII", tune.motor_test.LEG_VALUES["A1"], 400, 500),
+            ),
+        )
+
     def test_high_resolution_trace_drives_gain_phase_and_error_metrics(self) -> None:
         samples = []
         captured = []
@@ -166,14 +203,16 @@ class TuningWorkflowTests(unittest.TestCase):
             _interval,
             path,
             trace_at_seconds=None,
+            ramp_duration_ms=0,
         ):
-            self.assertEqual(trace_at_seconds, 0.1)
+            self.assertEqual(ramp_duration_ms, 400)
+            self.assertEqual(trace_at_seconds, 0.5)
             path.write_text("{}\n{}\n{}\n", encoding="utf-8")
             return ([ready_status(), ready_status(), ready_status()], True)
 
         return (
             mock.patch.object(
-                tune, "query_identity", return_value={"firmware": "0.31.0", "protocol": "1.14"}
+                tune, "query_identity", return_value={"firmware": "0.33.0", "protocol": "1.15"}
             ),
             mock.patch.object(tune, "query_status", side_effect=lambda _client: ready_status()),
             mock.patch.object(
@@ -211,6 +250,9 @@ class TuningWorkflowTests(unittest.TestCase):
 
             self.assertEqual(session["status"], "complete")
             self.assertTrue(session["restore"]["gains_restored"])
+            self.assertEqual(
+                session["trials"][0]["ramp_duration_seconds"], 0.4
+            )
             self.assertEqual(client.active_kp, 4 * 65536)
             self.assertNotIn(
                 tune.COMMAND_SAVE_CONFIGURATION,
@@ -307,6 +349,10 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertTrue((root / "summary.csv").exists())
             self.assertTrue((root / "report.html").exists())
+            self.assertIn(
+                "legacy step",
+                (root / "report.html").read_text(encoding="utf-8"),
+            )
 
     def test_report_embeds_saved_high_resolution_waveforms(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -365,6 +411,18 @@ class TuningWorkflowTests(unittest.TestCase):
         args.current_ma = 30.0
         args.kp = [9.0]
         with self.assertRaisesRegex(tune.ProtocolError, "live maximum"):
+            tune._validate_sweep(args, configuration(), ready_status())
+        args.kp = [5.0]
+        args.ki = [4.01]
+        with self.assertRaisesRegex(tune.ProtocolError, "live maximum"):
+            tune._validate_sweep(args, configuration(), ready_status())
+
+    def test_ramp_duration_and_protocol_gate_are_explicit(self) -> None:
+        self.assertEqual(tune._ramp_duration_ms(200.0, 50.0), 4000)
+        self.assertEqual(tune._ramp_duration_ms(200.0, 0.0), 0)
+        args = sweep_args(Path("unused"))
+        args.ramp_electrical_hz_per_second = -1.0
+        with self.assertRaisesRegex(tune.ProtocolError, "nonnegative"):
             tune._validate_sweep(args, configuration(), ready_status())
 
     def test_persist_requires_confirmation_and_valid_alignment(self) -> None:

@@ -92,6 +92,7 @@ typedef struct
     command_fault_recovery_status_t fault_recovery_status;
     command_current_test_config_t requested_config;
     uint8_t requested_leg;
+    uint32_t requested_ramp_duration_millis;
     uint32_t requested_duration_millis;
     size_t status_calls;
     size_t configure_calls;
@@ -427,12 +428,14 @@ static command_status_t mock_commissioning_configure(
 static command_status_t mock_commissioning_start(
     void* context,
     uint8_t selected_leg,
+    uint32_t ramp_duration_millis,
     uint32_t duration_millis)
 {
     mock_commissioning_t* mock = context;
 
     ++mock->start_calls;
     mock->requested_leg = selected_leg;
+    mock->requested_ramp_duration_millis = ramp_duration_millis;
     mock->requested_duration_millis = duration_millis;
     return COMMAND_STATUS_OK;
 }
@@ -1746,7 +1749,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
-    EXPECT_TRUE(protocol_minor == 14u);
+    EXPECT_TRUE(protocol_minor == 15u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -1778,6 +1781,11 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     };
     static const uint8_t start_payload[] = {
         0x02u, 0x00u, 0x00u, 0x13u, 0x88u
+    };
+    static const uint8_t ramped_start_payload[] = {
+        0x03u,
+        0x00u, 0x00u, 0x07u, 0xD0u,
+        0x00u, 0x00u, 0x13u, 0x88u
     };
     static const uint8_t trace_payload[] = {0x00u, 0x2Au};
     uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
@@ -1919,7 +1927,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .maximum_current_loop_proportional_gain_q16_per_count =
                 16 * 65536,
             .maximum_current_loop_integral_gain_q16_per_count_per_step =
-                65536,
+                4 * 65536,
         },
         .aligned_torque_status = {
             .schema_version = 2u,
@@ -2097,6 +2105,28 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.start_calls == 1u);
     EXPECT_TRUE(commissioning.requested_leg == 2u);
+    EXPECT_TRUE(commissioning.requested_ramp_duration_millis == 0u);
+    EXPECT_TRUE(commissioning.requested_duration_millis == 5000u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        122u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_START_CURRENT_TEST,
+        ramped_start_payload,
+        sizeof(ramped_start_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.start_calls == 2u);
+    EXPECT_TRUE(commissioning.requested_leg == 3u);
+    EXPECT_TRUE(commissioning.requested_ramp_duration_millis == 2000u);
     EXPECT_TRUE(commissioning.requested_duration_millis == 5000u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
@@ -2433,7 +2463,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[57] == 0x00u);
     EXPECT_TRUE(response.payload[58] == 0x10u);
     EXPECT_TRUE(response.payload[61] == 0x00u);
-    EXPECT_TRUE(response.payload[62] == 0x01u);
+    EXPECT_TRUE(response.payload[62] == 0x04u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -3287,7 +3317,7 @@ static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
     configuration.current_loop_proportional_gain_q16_per_count =
         5 * PHASE_CURRENT_LOOP_Q16_ONE;
     configuration.current_loop_integral_gain_q16_per_count_per_step =
-        PHASE_CURRENT_LOOP_Q16_ONE / 32;
+        3 * PHASE_CURRENT_LOOP_Q16_ONE;
     mock_configuration_flash_init(&flash);
     backend = mock_configuration_backend(&flash);
     EXPECT_TRUE(configuration_store_init(&store, &backend) ==
@@ -3315,7 +3345,7 @@ static void test_configuration_store_persists_and_avoids_unchanged_writes(void)
     EXPECT_TRUE(loaded.current_loop_proportional_gain_q16_per_count ==
                 5 * PHASE_CURRENT_LOOP_Q16_ONE);
     EXPECT_TRUE(loaded.current_loop_integral_gain_q16_per_count_per_step ==
-                PHASE_CURRENT_LOOP_Q16_ONE / 32);
+                3 * PHASE_CURRENT_LOOP_Q16_ONE);
 }
 
 static void test_configuration_store_interrupted_update_keeps_old_slot(void)
@@ -4656,6 +4686,8 @@ static void test_phase_current_loop_anti_windup_recovers_from_saturation(void)
 
     config.proportional_gain_q16_per_count =
         PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16;
+    config.integral_gain_q16_per_count_per_step =
+        PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16;
     EXPECT_TRUE(phase_current_loop_init(&loop, &config));
     EXPECT_TRUE(phase_current_loop_set_reference_counts(&loop,
                                                         &config,
@@ -4698,6 +4730,7 @@ static void test_rotating_current_test_generates_quadrature_references(void)
     EXPECT_TRUE(rotating_current_test_init(&generator,
                                            40,
                                            0x40000000u,
+                                           0u,
                                            0u));
     EXPECT_TRUE(rotating_current_test_step(&generator,
                                            &current_a,
@@ -4714,6 +4747,47 @@ static void test_rotating_current_test_generates_quadrature_references(void)
                                            &current_b));
     EXPECT_TRUE(current_a == -40);
     EXPECT_TRUE(current_b == 0);
+}
+
+static void test_rotating_current_test_ramps_phase_increment(void)
+{
+    rotating_current_test_t generator = {0};
+    int16_t current_a;
+    int16_t current_b;
+
+    EXPECT_TRUE(rotating_current_test_init(&generator,
+                                           40,
+                                           0x40000000u,
+                                           0u,
+                                           4u));
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(current_a == 40);
+    EXPECT_TRUE(current_b == 0);
+    EXPECT_TRUE(generator.phase_increment == 0x10000000u);
+    EXPECT_TRUE(generator.phase == 0x10000000u);
+
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(generator.phase_increment == 0x20000000u);
+    EXPECT_TRUE(generator.phase == 0x30000000u);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(generator.phase_increment == 0x30000000u);
+    EXPECT_TRUE(generator.phase == 0x60000000u);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(generator.phase_increment == 0x40000000u);
+    EXPECT_TRUE(generator.phase == 0xA0000000u);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(generator.phase_increment == 0x40000000u);
+    EXPECT_TRUE(generator.phase == 0xE0000000u);
 }
 
 static aligned_torque_config_t test_aligned_torque_config(void)
@@ -5108,6 +5182,7 @@ int main(void)
     test_phase_current_loop_rejects_out_of_policy_gains();
     test_phase_current_loop_anti_windup_recovers_from_saturation();
     test_rotating_current_test_generates_quadrature_references();
+    test_rotating_current_test_ramps_phase_increment();
     test_phase_current_reference_maps_signed_quadrants();
     test_aligned_torque_ramps_signed_q_current_and_deadlines();
     test_aligned_torque_rejects_unsafe_feedback_and_backend();

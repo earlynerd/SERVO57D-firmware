@@ -135,7 +135,8 @@ void command_service_dispatch(const command_service_context_t* context,
             return;
 
         case COMMAND_OPERATION_START_CURRENT_TEST:
-            if (request->payload_length != 5u)
+            if ((request->payload_length != 5u) &&
+                (request->payload_length != 9u))
             {
                 response->status = COMMAND_STATUS_INVALID_PAYLOAD;
                 return;
@@ -148,7 +149,11 @@ void command_service_dispatch(const command_service_context_t* context,
             response->status = context->commissioning.start(
                 context->commissioning.context,
                 request->payload[0],
-                read_u32_be(&request->payload[1]));
+                request->payload_length == 9u ?
+                    read_u32_be(&request->payload[1]) : 0u,
+                read_u32_be(
+                    &request->payload[
+                        request->payload_length == 9u ? 5u : 1u]));
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 

@@ -7,7 +7,8 @@
 bool rotating_current_test_init(rotating_current_test_t* generator,
                                 int16_t amplitude_counts,
                                 uint32_t phase_increment,
-                                uint32_t initial_phase)
+                                uint32_t initial_phase,
+                                uint32_t ramp_step_count)
 {
     if ((generator == NULL) || (amplitude_counts <= 0) ||
         (phase_increment == 0u))
@@ -16,7 +17,11 @@ bool rotating_current_test_init(rotating_current_test_t* generator,
     }
 
     generator->phase = initial_phase;
-    generator->phase_increment = phase_increment;
+    generator->phase_increment =
+        ramp_step_count == 0u ? phase_increment : 0u;
+    generator->target_phase_increment = phase_increment;
+    generator->ramp_step_count = ramp_step_count;
+    generator->ramp_steps_elapsed = 0u;
     generator->amplitude_counts = amplitude_counts;
     generator->initialized = true;
     return true;
@@ -40,6 +45,21 @@ bool rotating_current_test_step(rotating_current_test_t* generator,
             current_b_reference_counts))
     {
         return false;
+    }
+    if (generator->ramp_steps_elapsed < generator->ramp_step_count)
+    {
+        const uint64_t scaled_increment =
+            (uint64_t)generator->target_phase_increment *
+            (uint64_t)(generator->ramp_steps_elapsed + 1u);
+
+        ++generator->ramp_steps_elapsed;
+        generator->phase_increment = (uint32_t)(
+            (scaled_increment + generator->ramp_step_count / 2u) /
+            generator->ramp_step_count);
+    }
+    else
+    {
+        generator->phase_increment = generator->target_phase_increment;
     }
     generator->phase += generator->phase_increment;
     return true;

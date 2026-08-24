@@ -5,7 +5,7 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.32.2 / native protocol 1.14 is the current source candidate;
+Firmware 0.33.0 / native protocol 1.15 is the current source candidate;
 firmware 0.30.3 / protocol 1.13 is the last documented flashed baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
@@ -54,6 +54,14 @@ the 576-byte controller snapshot at 100 Hz or on transitions; foreground
 safety, readiness, events, and watchdog work run on a wrap-safe 1 ms cadence
 while RS-485 draining and raw Right-button sampling remain wake-driven.
 
+Firmware 0.33.0 adds an optional bounded frequency ramp to the retained
+rotating-current diagnostic. The ramp reaches the configured electrical
+frequency before the full requested hold/test window begins; STOP, Right-button,
+transport-failure, fault, and common `ZERO` behavior are unchanged, and the
+single wrap-safe authority deadline covers ramp plus hold. The tuning tool uses
+50 electrical Hz/s by default, arms its high-resolution trace only after ramp
+plus settling, and records ramp time separately from the scored window.
+
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
 deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
 torque, signed velocity, and relative-position control. At 24 V, a +8 rev/s
@@ -63,7 +71,7 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is capturing formal 0.32.2 evidence for 8 MHz / 4 kHz
+The next control work is capturing formal 0.33.0 evidence for 8 MHz / 4 kHz
 encoder timing and acquisition timestamps, outer-loop numerical/timing health,
 volatile gain apply/revert, and explicit persistence across a power cycle, then
 using its fixed-condition sweep before negative-direction speed staging and the

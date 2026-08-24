@@ -880,3 +880,20 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Repeated configuration scans, dormant trace reads, large per-sample copies, and 20 kHz foreground housekeeping consumed deterministic headroom without improving ordinary control or fault containment.
 - **Supersedes:** Automatic trace arm on backend start, continuous disarmed trace timing, full rotor publication on every sample, and wake-rate safety polling. The 3 ms encoder-stale threshold remains, with expiry observed by the next 1 ms poll.
 - **Affects:** ADC/current backend, phase-current loop, rotor publication, foreground scheduling, realtime budgets, and hardware qualification.
+
+## 2026-08-23 — Ramp the diagnostic before its measurement window
+
+- **Decision:** Firmware 0.33.0 / protocol 1.15 retains the five-byte instantaneous `START_CURRENT_TEST` request and adds a nine-byte form containing initial leg, ramp milliseconds, and hold milliseconds. The 1 kHz diagnostic generator linearly ramps electrical phase increment from zero to the configured target, then holds it for the complete requested test window. One wrap-safe supervisor-owned deadline covers ramp plus hold.
+- **Why:** An instantaneous high-frequency rotating-field step tests whether the unloaded rotor can acquire that step at the same time as it measures steady-speed current-loop behavior. Separating acceleration from the hold window makes higher-frequency comparisons useful without adding a second authority path or pretending the open-loop diagnostic is regulated velocity control.
+- **Safety and tooling contract:** Current amplitude remains independently bounded and is applied at the initial phase when authority begins. STOP, Right-button, transport-failure, current/voltage/duty, fault, and common all-low `ZERO` behavior remain active during both intervals. The production tuner defaults to 50 electrical Hz/s, records per-trial ramp time, and arms and scores only after ramp plus settling; zero rate explicitly requests legacy step behavior.
+- **Supersedes:** The tuning tool's assumption that every diagnostic begins with an instantaneous target-frequency step. It does not change the configured 0.001-250 electrical-Hz envelope, qualify a motor acceleration, change the independent 1 kHz diagnostic reference cadence, or persist a tuning result.
+- **Affects:** native current-diagnostic START payload, command service, rotating-current generator, product deadline, host console/tuner, capture metadata, protocol and operating-limit documentation.
+- **Validation:** Native tests pass byte-exact legacy and ramped START payloads plus deterministic ramp increments. All 45 Python tests pass with two optional skips. Debug/Release Arm builds pass post-link verification at 60,936/56,056 bytes Flash and 11,616 bytes SRAM1. Hardware ramp/hold confirmation remains open.
+
+## 2026-08-23 — Expand the current-loop integral tuning range
+
+- **Decision:** Firmware 0.33.0 retains the compiled and persisted gain values but raises the inactive-configurable current-loop Ki ceiling from 1.0 to 4.0 permille/count per 20 kHz step. The reported live maximum remains authoritative to host tools.
+- **Why:** Bench tuning indicates that this motor performs better with modest proportional gain and more integral action, and the 1.0 ceiling prematurely truncates that search. Error-times-gain arithmetic is 64-bit, controller output and integrator remain clamped to the existing phase-voltage limit, and saturation anti-windup is unchanged.
+- **Supersedes:** Only the Ki 0-1 validation bound in “Make motor tuning volatile first and persistence explicit.” It does not qualify gains above the measured candidates, alter Kp, change electrical limits, select a default, or persist a trial.
+- **Downgrade note:** A persisted Ki above 1.0 is outside older firmware's accepted range; after a downgrade, configuration loading may select an older valid slot or defaults.
+- **Affects:** `phase_current_loop` configuration validation, product configuration status/storage validation, tuning preflight, and `docs/OPERATING_LIMITS.md`.

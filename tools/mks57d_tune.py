@@ -66,6 +66,8 @@ DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ = 250.0
 DIAGNOSTIC_MINIMUM_DURATION_SECONDS = 0.003
 DIAGNOSTIC_MAXIMUM_DURATION_SECONDS = 2_147_483.647
 DIAGNOSTIC_REFERENCE_UPDATE_HZ = 1_000
+RAMP_PROTOCOL_VERSION = (1, 15)
+DEFAULT_RAMP_ELECTRICAL_HZ_PER_SECOND = 50.0
 MAXIMUM_LIST_LENGTH = 16
 MAXIMUM_TRIAL_COUNT = 64
 SUMMARY_FIELDS = (
@@ -78,6 +80,7 @@ SUMMARY_FIELDS = (
     "ki_q16",
     "electrical_frequency_hz",
     "current_milliamperes",
+    "ramp_duration_seconds",
     "duration_seconds",
     "fundamental_gain",
     "phase_lag_degrees",
@@ -227,6 +230,13 @@ def _validate_sweep(
             "leave at least 50 ms (and one telemetry interval) after settling "
             "for the high-resolution trace"
         )
+    if (
+        not math.isfinite(args.ramp_electrical_hz_per_second)
+        or args.ramp_electrical_hz_per_second < 0.0
+    ):
+        raise ProtocolError(
+            "--ramp-electrical-hz-per-second must be finite and nonnegative"
+        )
     frequencies = _unique(args.electrical_hz)
     if any(
         frequency < DIAGNOSTIC_MINIMUM_FREQUENCY_HZ
@@ -238,6 +248,15 @@ def _validate_sweep(
             f"{DIAGNOSTIC_MINIMUM_FREQUENCY_HZ:g}.."
             f"{DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ:g} Hz"
         )
+    duration_ms = round(args.seconds * 1000.0)
+    for frequency in frequencies:
+        ramp_duration_ms = _ramp_duration_ms(
+            frequency, args.ramp_electrical_hz_per_second
+        )
+        if ramp_duration_ms + duration_ms > 2_147_483_647:
+            raise ProtocolError(
+                "ramp plus --seconds exceeds the diagnostic deadline range"
+            )
     kps = _unique(args.kp)
     kis = _unique(args.ki)
     maxima = configuration["limits"]["maximum_current_loop_gains"]
@@ -268,7 +287,26 @@ def _validate_sweep(
             f"sweep expands to {len(trials)} trials; maximum is "
             f"{MAXIMUM_TRIAL_COUNT}"
         )
-    return counts, round(args.seconds * 1000.0), trials
+    return counts, duration_ms, trials
+
+
+def _ramp_duration_ms(
+    frequency_hz: float, ramp_electrical_hz_per_second: float
+) -> int:
+    if ramp_electrical_hz_per_second == 0.0:
+        return 0
+    return max(
+        1,
+        round(frequency_hz * 1000.0 / ramp_electrical_hz_per_second),
+    )
+
+
+def _protocol_version(identity: dict[str, Any]) -> tuple[int, int]:
+    try:
+        major, minor = str(identity["protocol"]).split(".", 1)
+        return int(major), int(minor)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError("identity has an invalid protocol version") from error
 
 
 def _make_session_directory(root: Path) -> Path:
@@ -310,13 +348,20 @@ def _analyze_encoder_motion(
     if len(active) < 2:
         return {"available": False}
     first_loop_count = int(active[0]["loop"]["sample_count"])
-    settled = [
-        sample
-        for sample in active
-        if (
-            int(sample["loop"]["sample_count"]) - first_loop_count
-        ) / motor_test.LOOP_FREQUENCY_HZ >= settle_seconds
-    ]
+    settled = []
+    for sample in active:
+        run_elapsed_seconds = sample.get("test", {}).get(
+            "run_elapsed_seconds"
+        )
+        elapsed_seconds = (
+            float(run_elapsed_seconds)
+            if run_elapsed_seconds is not None
+            else (
+                int(sample["loop"]["sample_count"]) - first_loop_count
+            ) / motor_test.LOOP_FREQUENCY_HZ
+        )
+        if elapsed_seconds >= settle_seconds:
+            settled.append(sample)
     if len(settled) < 2:
         return {"available": False}
     revolutions = motor_test._unwrapped_encoder_revolutions(settled)
@@ -440,6 +485,7 @@ def _trial_summary(
     ki: float,
     frequency: float,
     current_ma: float,
+    ramp_duration_s: float,
     duration_s: float,
     analysis: dict[str, Any],
     trace: list[dict[str, Any]],
@@ -457,6 +503,7 @@ def _trial_summary(
         "ki_q16": current_loop_gain_to_q16(ki, "Ki"),
         "electrical_frequency_hz": frequency,
         "current_milliamperes": current_ma,
+        "ramp_duration_seconds": ramp_duration_s,
         "duration_seconds": duration_s,
         "fundamental_gain": analysis["fundamental_gain"],
         "phase_lag_degrees": analysis["phase_lag_degrees"],
@@ -696,6 +743,7 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
             "<tr>"
             f"<td>{trial['trial']}</td><td>{html.escape(trial.get('status', 'unknown'))}</td><td>{trial['kp']:g}</td><td>{trial['ki']:g}</td>"
             f"<td>{trial['electrical_frequency_hz']:g}</td>"
+            f"<td>{trial.get('ramp_duration_seconds', 0.0):g}</td>"
             f"<td>{trial.get('fundamental_gain', float('nan')):.3f}</td>"
             f"<td>{trial.get('phase_lag_degrees', float('nan')):.1f}</td>"
             f"<td>{trial.get('rms_current_error_milliamperes', float('nan')):.1f}</td>"
@@ -717,6 +765,23 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
         + ", ".join(persistence.get("missing_requirements", []))
     )
     commands = session.get("commands", {})
+    request = session.get("request", {})
+    ramp_rate = float(request.get("ramp_electrical_hz_per_second", 0.0))
+    ramp_card = (
+        f"{ramp_rate:g} electrical Hz/s"
+        if ramp_rate > 0.0
+        else "legacy step"
+    )
+    measurement_note = (
+        "Each trial ramps from zero to its requested electrical frequency "
+        f"before the {request.get('duration_seconds', 0):g} s hold/test "
+        "window. The 20 kHz trace and scored encoder interval begin after "
+        f"the ramp plus {request.get('settle_seconds', 0):g} s settling."
+        if ramp_rate > 0.0
+        else "Each trial uses the legacy immediate target-frequency step. "
+        "The 20 kHz trace and scored encoder interval begin after "
+        f"{request.get('settle_seconds', 0):g} s settling."
+    )
     plots = "".join(
         (
             _comparison_plot("Current magnitude tracking", "Measured/reference gain", trials, "fundamental_gain"),
@@ -739,11 +804,11 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}main{{max-width:1200px;margin:auto;padding:24px}}h1{{margin:0}}h2{{font-size:1.1rem;margin-bottom:8px}}.sub,.note{{color:var(--muted)}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:18px 0}}.card,section{{background:var(--card);border:1px solid var(--grid);border-radius:8px;padding:14px}}section{{margin:18px 0}}.card b{{display:block;font-size:1.08rem}}svg{{display:block;width:100%;height:auto}}.frame{{fill:var(--card);stroke:var(--grid)}}.grid{{stroke:var(--grid);stroke-width:1}}.tick{{fill:var(--muted);font-size:12px}}.axis,.axis-label{{fill:var(--fg);font-size:13px}}{motor_test._plot_series_css(6, "8 5", 18)}.legend{{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted)}}.legend span{{display:flex;align-items:center;gap:6px}}.trial-waveforms{{border-left:4px solid var(--grid);padding-left:14px}}.table-wrap{{overflow:auto}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}th,td{{padding:7px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}code{{white-space:pre-wrap;overflow-wrap:anywhere}}@media(max-width:600px){{main{{padding:12px}}}}
 </style></head><body><main>
 <h1>MKS57D current-loop tuning</h1><p class="sub">{html.escape(session.get('generated_at', ''))} · {html.escape(session.get('status', 'unknown'))}</p>
-<div class="cards"><div class="card"><span>Trials</span><b>{len(trials)}</b></div><div class="card"><span>Current</span><b>{session.get('request', {}).get('current_milliamperes', 0):.1f} mA</b></div><div class="card"><span>Firmware</span><b>{html.escape(session.get('identity', {}).get('firmware', 'unknown'))}</b></div><div class="card"><span>Restored</span><b>{'yes' if session.get('restore', {}).get('gains_restored') else 'no'}</b></div></div>
-<p class="note">The rotating-current diagnostic updates its reference at {DIAGNOSTIC_REFERENCE_UPDATE_HZ} Hz. Treat results near that rate as quantized diagnostic evidence, not a backend-rate frequency response. Persistence is {html.escape(persistence_text)}. Sweeps never save configuration.</p>
+<div class="cards"><div class="card"><span>Trials</span><b>{len(trials)}</b></div><div class="card"><span>Current</span><b>{request.get('current_milliamperes', 0):.1f} mA</b></div><div class="card"><span>Ramp</span><b>{html.escape(ramp_card)}</b></div><div class="card"><span>Firmware</span><b>{html.escape(session.get('identity', {}).get('firmware', 'unknown'))}</b></div><div class="card"><span>Restored</span><b>{'yes' if session.get('restore', {}).get('gains_restored') else 'no'}</b></div></div>
+<p class="note">{html.escape(measurement_note)} The rotating-current diagnostic updates its reference at {DIAGNOSTIC_REFERENCE_UPDATE_HZ} Hz. Treat results near that rate as quantized diagnostic evidence, not a backend-rate frequency response. Persistence is {html.escape(persistence_text)}. Sweeps never save configuration.</p>
 {plots}
 {waveform_plots}
-<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Hz</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
+<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Hz</th><th>Ramp s</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
 <section><h2>Apply and persist separately</h2><p>Choose a result deliberately; this report does not nominate or save a winner.</p><p><code>{html.escape(commands.get('apply_template', ''))}</code></p><p><code>{html.escape(commands.get('persist', ''))}</code></p></section>
 </main></body></html>"""
     path.write_text(document, encoding="utf-8")
@@ -770,6 +835,14 @@ def execute_sweep(
     counts, duration_ms, requested_trials = _validate_sweep(
         args, initial_configuration, initial_status
     )
+    if (
+        args.ramp_electrical_hz_per_second > 0.0
+        and _protocol_version(identity) < RAMP_PROTOCOL_VERSION
+    ):
+        raise ProtocolError(
+            "frequency ramping requires firmware protocol 1.15 or newer; "
+            "use --ramp-electrical-hz-per-second 0 for a legacy step"
+        )
     _tuning_preflight(initial_status, counts)
     initial_kp_q16, initial_ki_q16 = _gain_q16(
         initial_configuration, "active"
@@ -786,6 +859,8 @@ def execute_sweep(
             "current_counts": counts,
             "duration_seconds": duration_ms / 1000.0,
             "settle_seconds": args.settle_seconds,
+            "ramp_electrical_hz_per_second":
+                args.ramp_electrical_hz_per_second,
             "telemetry_interval_seconds": args.interval,
             "kp": _unique(args.kp),
             "ki": _unique(args.ki),
@@ -799,12 +874,12 @@ def execute_sweep(
             "frequency_hz": {
                 "minimum": DIAGNOSTIC_MINIMUM_FREQUENCY_HZ,
                 "maximum": DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ,
-                "source": "protocol-1.14 diagnostic contract",
+                "source": "protocol-1.15 diagnostic contract",
             },
             "duration_seconds": {
                 "minimum": DIAGNOSTIC_MINIMUM_DURATION_SECONDS,
                 "maximum": DIAGNOSTIC_MAXIMUM_DURATION_SECONDS,
-                "source": "protocol-1.14 diagnostic contract",
+                "source": "protocol-1.15 diagnostic contract",
             },
             "reference_update_hz": DIAGNOSTIC_REFERENCE_UPDATE_HZ,
         },
@@ -840,6 +915,9 @@ def execute_sweep(
     active_trial: dict[str, Any] | None = None
     try:
         for index, (kp, ki, frequency) in enumerate(requested_trials, 1):
+            ramp_duration_ms = _ramp_duration_ms(
+                frequency, args.ramp_electrical_hz_per_second
+            )
             trial_path = _trial_directory(
                 session_directory, index, kp, ki, frequency
             )
@@ -853,13 +931,14 @@ def execute_sweep(
                 "ki_q16": current_loop_gain_to_q16(ki, "Ki"),
                 "electrical_frequency_hz": frequency,
                 "current_milliamperes": counts * COUNTS_TO_MILLIAMPERES,
+                "ramp_duration_seconds": ramp_duration_ms / 1000.0,
                 "duration_seconds": duration_ms / 1000.0,
                 "faults": [],
                 "artifact_directory": trial_path.name,
             }
             print(
                 f"[{index}/{len(requested_trials)}] Kp={kp:g}, Ki={ki:g}, "
-                f"{frequency:g} Hz"
+                f"{frequency:g} Hz, {ramp_duration_ms / 1000.0:g} s ramp"
             )
             status = query_status(client)
             _tuning_preflight(status, counts)
@@ -894,7 +973,10 @@ def execute_sweep(
                 duration_ms,
                 args.interval,
                 telemetry_path,
-                trace_at_seconds=args.settle_seconds,
+                trace_at_seconds=(
+                    ramp_duration_ms / 1000.0 + args.settle_seconds
+                ),
+                ramp_duration_ms=ramp_duration_ms,
             )
             trace = read_current_trace(client)
             _write_jsonl(trial_path / "trace.jsonl", trace)
@@ -915,7 +997,7 @@ def execute_sweep(
             analysis = analyze_trial(
                 samples,
                 trace,
-                args.settle_seconds,
+                ramp_duration_ms / 1000.0 + args.settle_seconds,
                 float(final_status["loop"]["phase_voltage_limit_permille"]),
             )
             summary = _trial_summary(
@@ -924,6 +1006,7 @@ def execute_sweep(
                 ki,
                 float(applied["frequency_hz"]),
                 float(applied["counts"]) * COUNTS_TO_MILLIAMPERES,
+                ramp_duration_ms / 1000.0,
                 duration_ms / 1000.0,
                 analysis,
                 trace,
@@ -1110,7 +1193,21 @@ def make_parser() -> argparse.ArgumentParser:
         help="comma-separated rotating-current frequencies",
     )
     sweep.add_argument("--current-ma", type=float, required=True)
-    sweep.add_argument("--seconds", type=float, default=1.0)
+    sweep.add_argument(
+        "--seconds",
+        type=float,
+        default=1.0,
+        help="hold/test-window duration after the frequency ramp",
+    )
+    sweep.add_argument(
+        "--ramp-electrical-hz-per-second",
+        type=float,
+        default=DEFAULT_RAMP_ELECTRICAL_HZ_PER_SECOND,
+        help=(
+            "rotating-field acceleration before each test window; "
+            "use 0 for the legacy frequency step"
+        ),
+    )
     sweep.add_argument("--settle-seconds", type=float, default=0.2)
     sweep.add_argument("--interval", type=float, default=0.05)
     sweep.add_argument("--leg", choices=motor_test.LEG_VALUES, default="A1")

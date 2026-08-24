@@ -1,6 +1,6 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.14 is implemented in firmware 0.32.2 source;
+Status: native protocol 1.15 is implemented in firmware 0.33.0 source;
 firmware 0.30.3 / protocol 1.13 is flashed. Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -109,7 +109,7 @@ from causing reply storms.
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
 | `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-3 commissioning status block |
 | `0x0101` | `CONFIGURE_CURRENT_TEST` | Amplitude counts `u16`, frequency millihertz `u32` | Applied amplitude counts `u16`, frequency millihertz `u32` |
-| `0x0102` | `START_CURRENT_TEST` | Initial leg `u8`, duration milliseconds `u32` | Empty |
+| `0x0102` | `START_CURRENT_TEST` | Legacy: initial leg `u8`, hold milliseconds `u32`; protocol 1.15 extended: initial leg `u8`, ramp milliseconds `u32`, hold milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
@@ -183,11 +183,23 @@ schema 2. It appends the predicted electrical phase, prediction age, TIM2
 trigger phase and trigger-to-DMA timing, DWT DMA-entry-to-PWM/trace timing, and
 TIM3 preload margin without moving schema-1 fields.
 
+Firmware 0.33.0 / protocol 1.15 adds the nine-byte
+`START_CURRENT_TEST` request without removing the original five-byte request.
+The extended request ramps diagnostic electrical frequency from zero to the
+configured target, then retains that target for the complete hold interval.
+No command ID, response, status schema, or capability bit changes.
+
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
 1-250000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
-`2=B1`, and `3=B2`, with a duration from 3 to 2147483647 ms. It is unavailable
+`2=B1`, and `3=B2`. The five-byte form supplies a 3-through-2147483647 ms
+hold and starts at the configured frequency immediately. The nine-byte form
+supplies a nonnegative ramp duration followed by a hold in that same range;
+ramp plus hold must not exceed 2147483647 ms. The diagnostic updates its
+reference at 1 kHz and linearly increases phase increment during the ramp,
+reaching the configured frequency at its end. Current amplitude is applied at
+the initial electrical phase when authority starts. It is unavailable
 until the product supervisor reaches `READY` from calibrated current feedback,
 initialized current control, and a healthy encoder sample, or while authority
 is already active, a fault is latched, or the physical Right button is asserted. START requests
@@ -195,7 +207,8 @@ diagnostic authority from the supervisor before the backend can switch.
 `STOP_CURRENT_TEST` remains a wire-compatible alias for generic stop behavior.
 `STOP_DRIVE` is the preferred name and is always accepted; either operation
 stops a current diagnostic, alignment, aligned-torque, velocity, or position operation before
-releasing its authority. A remote run also stops at its deadline, on the physical Right button, or on an
+releasing its authority. A remote run also stops at its single ramp-plus-hold
+deadline, on the physical Right button, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
 and STOP remain usable.
 

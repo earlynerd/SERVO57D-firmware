@@ -403,6 +403,7 @@ typedef command_status_t (*command_commissioning_configure_fn)(
 typedef command_status_t (*command_commissioning_start_fn)(
     void* context,
     uint8_t selected_leg,
+    uint32_t ramp_duration_millis,
     uint32_t duration_millis);
 typedef command_status_t (*command_commissioning_stop_fn)(void* context);
 typedef command_status_t (*command_commissioning_get_boot_status_fn)(

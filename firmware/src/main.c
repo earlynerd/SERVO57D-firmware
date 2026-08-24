@@ -178,6 +178,7 @@ struct product_command_context
     bool remote_stop_requested;
     bool remote_authority_active;
     uint8_t remote_start_leg;
+    uint32_t remote_start_ramp_duration_millis;
     uint32_t remote_start_duration_millis;
     uint32_t remote_run_deadline_millis;
     uint16_t alignment_current_counts;
@@ -433,10 +434,13 @@ static command_status_t commissioning_configure(
 static command_status_t commissioning_start(
     void* context,
     uint8_t selected_leg,
+    uint32_t ramp_duration_millis,
     uint32_t duration_millis)
 {
     product_command_context_t* commissioning = context;
     current_loop_backend_snapshot_t loop = {0};
+    const uint64_t total_duration_millis =
+        (uint64_t)ramp_duration_millis + duration_millis;
 
     if (commissioning == NULL)
     {
@@ -444,7 +448,11 @@ static command_status_t commissioning_start(
     }
     if ((selected_leg >= CURRENT_TEST_INITIAL_LEG_COUNT) ||
         (duration_millis < CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS) ||
-        (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
+        (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
+        (ramp_duration_millis >
+         CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
+        (total_duration_millis >
+         CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
     {
         return COMMAND_STATUS_INVALID_PAYLOAD;
     }
@@ -478,6 +486,8 @@ static command_status_t commissioning_start(
     }
 
     commissioning->remote_start_leg = selected_leg;
+    commissioning->remote_start_ramp_duration_millis =
+        ramp_duration_millis;
     commissioning->remote_start_duration_millis = duration_millis;
     commissioning->remote_stop_requested = false;
     commissioning->remote_start_requested = true;
@@ -3448,7 +3458,9 @@ int main(void)
                             commissioning_context.
                                 test_frequency_millihz),
                         current_test_initial_phase(
-                            commissioning_context.remote_start_leg)) ||
+                            commissioning_context.remote_start_leg),
+                        commissioning_context.
+                            remote_start_ramp_duration_millis) ||
                     !rotating_current_test_step(
                         &current_test_generator,
                         &current_a_reference_counts,
@@ -3469,6 +3481,8 @@ int main(void)
                 commissioning_context.remote_authority_active = true;
                 commissioning_context.remote_run_deadline_millis =
                     now + commissioning_context.
+                              remote_start_ramp_duration_millis +
+                          commissioning_context.
                               remote_start_duration_millis;
                 next_current_reference =
                     now + CURRENT_TEST_REFERENCE_PERIOD_MS;

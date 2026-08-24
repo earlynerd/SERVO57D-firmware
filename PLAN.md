@@ -22,7 +22,7 @@ and fault bounds.
   to 100 to 87 counts without a control, timing, encoder, backend, reset, or
   panic fault. Kp=4 remains the active bench candidate, not a universal motor
   default.
-- Firmware 0.32.2 / protocol 1.14 is the performance/tuning source candidate.
+- Firmware 0.33.0 / protocol 1.15 is the performance/tuning source candidate.
   It retains 0.31.0's safe-state volatile current-gain apply/revert,
   active/stored/default status, schema-1 migration, explicit persistence, and
   guided sweep. It also stages an 8 MHz MT6816 transport and deterministic
@@ -32,7 +32,9 @@ and fault bounds.
   not yet qualification evidence. Normal fast control now leaves optional
   trace timing dormant, and the rotor/foreground publication path uses compact
   4 kHz progress plus 100 Hz/event-driven full snapshots and 1 ms safety
-  housekeeping without changing the immediate ISR/runtime fault paths.
+  housekeeping without changing the immediate ISR/runtime fault paths. Its
+  rotating-current diagnostic can ramp to each target before the full tuning
+  hold window, avoiding an instantaneous speed step at higher-frequency points.
 - Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
   bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
@@ -67,7 +69,7 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Capture formal firmware 0.32.2 evidence and bench-validate 8 MHz SPI
+- [ ] Capture formal firmware 0.33.0 evidence and bench-validate 8 MHz SPI
   integrity, 4 kHz sample/acquisition timing and noise, PendSV/current-ISR preemption and stack margin, controller
   numerical behavior, current-gain status, idle-only volatile apply/revert,
   sweep-abort restoration, explicit save, schema-2 generation advance, and

@@ -117,7 +117,7 @@ the report, and restores the prior inactive test configuration. Use
 `--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
 saved report without touching the motor.
 
-On protocol 1.14, use the production tuner to compare PI candidates under the
+On protocol 1.15, use the production tuner to compare PI candidates under the
 same fixed current and electrical-frequency points. The sweep applies gains only
 while inactive, runs each point through the same supervisor/current backend,
 aborts on fault or abnormal terminal state, and restores the starting gains and
@@ -126,6 +126,14 @@ diagnostic configuration even after interruption:
 ```powershell
 py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
 ```
+
+The tuner defaults to a 50 electrical-Hz/s field ramp before every trial's
+full `--seconds` hold window. For the present 50-cycle/revolution motor that is
+1 rev/s²; a 200 Hz point therefore ramps for four seconds before its two-second
+window. Set `--ramp-electrical-hz-per-second` deliberately for a different
+fixture, or set it to zero only to reproduce the legacy instantaneous frequency
+step. Trace capture and scored encoder motion begin after ramp plus the requested
+settling interval.
 
 Review `session.json`, `summary.csv`, and `report.html` under the printed
 `scratch/tuning-runs/` session. The report includes both cross-trial comparisons
@@ -154,7 +162,7 @@ py tools/mks57d_rs485.py --port COM14 boot
 py tools/mks57d_rs485.py --port COM14 encoder
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 5
-py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
+py tools/mks57d_rs485.py --port COM14 run --leg A1 --ramp-duration-ms 1000 --duration-ms 3000 --interval 0.1
 ```
 
 The lower-level `run` streams current-loop and encoder snapshots until authority ends. At the
@@ -178,9 +186,10 @@ Use the telemetry to evaluate each run directly:
 5. After timeout or STOP, authority flags clear and the hardware returns to
    the all-low zero vector.
 
-The current interface accepts 1-495 counts, 0.001-250 Hz, and
-0.003-2,147,483.647 second
-runs. Expand current, speed, bus voltage, and duration deliberately while
+The current interface accepts 1-495 counts, 0.001-250 Hz, and a
+0.003-2,147,483.647 second hold. An optional nonnegative frequency ramp runs
+before that hold, with ramp plus hold constrained to the same wrap-safe maximum.
+Expand current, speed, bus voltage, and duration deliberately while
 recording encoder tracking, current error, duty, supply current, and
 temperature. An explicit `stop` command is available from another terminal or
 after an interrupted watch.

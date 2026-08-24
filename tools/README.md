@@ -52,7 +52,7 @@ revolution. It is not a closed-loop command; use the separate
 `mks57d_rs485.py velocity` product service for signed, regulated speed.
 
 `mks57d_tune.py` builds a comparison session from those same bounded product
-diagnostics. Protocol 1.14 applies each Kp/Ki pair only as inactive volatile
+diagnostics. Protocol 1.15 applies each Kp/Ki pair only as inactive volatile
 configuration, runs fixed current/frequency points, restores the starting gains
 and inactive diagnostic configuration even after an aborted trial, and never
 persists a sweep result:
@@ -60,6 +60,15 @@ persists a sweep result:
 ```powershell
 py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
 ```
+
+Each trial now ramps its rotating field from zero before the complete
+`--seconds` hold/test window. The default is 50 electrical Hz/s (1 rev/s² for
+the present 50-cycle/revolution motor), so a 200 Hz trial ramps for four seconds
+and then holds for the requested two seconds. Override it with
+`--ramp-electrical-hz-per-second RATE`, or use `0` only when an intentional
+legacy frequency step is wanted. The high-resolution trace is armed after ramp
+plus `--settle-seconds`; reports and CSV files retain the ramp duration
+separately from the scored hold duration.
 
 Each timestamped `scratch/tuning-runs/*-current-loop/` session contains
 `session.json`, `summary.csv`, a self-contained `report.html`, and per-trial
@@ -106,7 +115,7 @@ py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 5
-py tools/mks57d_rs485.py --port COM14 run --leg A1 --duration-ms 3000 --interval 0.1
+py tools/mks57d_rs485.py --port COM14 run --leg A1 --ramp-duration-ms 1000 --duration-ms 3000 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace.jsonl
 py tools/mks57d_rs485.py --port COM14 stop
 py tools/mks57d_rs485.py --port COM14 clear-faults

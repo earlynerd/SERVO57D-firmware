@@ -22,6 +22,10 @@ timing capture only for an explicitly armed trace. Rotor publication uses a
 56-byte 4 kHz progress snapshot plus 100 Hz/event-driven full state, and
 foreground safety housekeeping runs at 1 ms while transport draining and raw
 Right-button sampling remain wake-driven.
+Firmware 0.33.0 / protocol 1.15 adds a backward-compatible extended
+rotating-current START request. It linearly ramps the 1 kHz diagnostic phase
+increment from zero to the configured frequency before a separate full hold
+window, while one supervisor-owned deadline covers both intervals.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -118,9 +122,9 @@ expanded-current hardware gates remain pending.
   conversion follows every regular pair; it completes after the current-loop
   DMA event and is consumed by foreground telemetry.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
-- Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-250 electrical Hz, then request a 0.003-2,147,483.647 second run; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
+- Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-250 electrical Hz, then request an optional frequency ramp followed by a 0.003-2,147,483.647 second hold, with ramp plus hold constrained to the same signed-deadline maximum; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
 - DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, maps bounded q-current into fresh A/B references, runs the fixed-point A/B PI controllers, and stages low-zero sign-magnitude TIM3 preloads. Controllers reject feedback timestamp intervals over 2 ms; the fast predictor permits age through 3 ms to cover bounded PendSV dispatch, never beyond the independent encoder-production deadline, and includes the measured 55 us lead to the following PWM application boundary. Stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
-- Firmware 0.18.2 established `Kp=2`, `Ki=1/64` per 20 kHz step, and the first 256-sample tuning trace. Matched firmware 0.30.1-0.30.3 +8 rev/s bursts subsequently staged Kp through 2, 3, and 4; Kp=4 is the compiled 0.31.0 default while protocol 1.14 permits bounded inactive trials from Kp 0-16 and Ki 0-1. Active control consumes one immutable copied configuration; only explicit safe-state save persists volatile gains.
+- Firmware 0.18.2 established `Kp=2`, `Ki=1/64` per 20 kHz step, and the first 256-sample tuning trace. Matched firmware 0.30.1-0.30.3 +8 rev/s bursts subsequently staged Kp through 2, 3, and 4; Kp=4 is the compiled 0.31.0 default while the current product configuration permits bounded inactive trials from Kp 0-16 and Ki 0-4. Active control consumes one immutable copied configuration; only explicit safe-state save persists volatile gains.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.
 - The firmware sets and verifies four NVIC preemption bits with no subpriorities; SysTick runs at priority 15.
