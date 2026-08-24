@@ -18,7 +18,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 DEFAULT_ADDRESS = 1
-MAX_WIRE_FRAME_SIZE = 84
+MAX_WIRE_FRAME_SIZE = 92
 MAX_RESPONSE_FRAMES_PER_TRANSACTION = 4
 CURRENT_TRACE_SAMPLE_ATTEMPTS = 3
 VELOCITY_MINIMUM_DURATION_MILLIS = 3
@@ -360,6 +360,7 @@ POSITION_FAULT_NAMES = {
 
 STATUS_V2_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 STATUS_V3_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHI")
+STATUS_V4_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHIII")
 CURRENT_TRACE_V1_BODY = struct.Struct(">BHHIhhhhhh")
 CURRENT_TRACE_V2_BODY = struct.Struct(">BHHIhhhhhhIHHHHHH")
 TRACE_CYCLE_COUNTER_HZ = 64_000_000
@@ -704,11 +705,15 @@ def input_state(levels: int) -> dict[str, bool]:
 
 
 def parse_status(body: bytes) -> dict[str, Any]:
-    if len(body) not in {STATUS_V2_BODY.size, STATUS_V3_BODY.size}:
+    if len(body) not in {
+        STATUS_V2_BODY.size,
+        STATUS_V3_BODY.size,
+        STATUS_V4_BODY.size,
+    }:
         raise ProtocolError(
             "commissioning status is "
             f"{len(body)} bytes, expected {STATUS_V2_BODY.size} or "
-            f"{STATUS_V3_BODY.size}"
+            f"{STATUS_V3_BODY.size} or {STATUS_V4_BODY.size}"
         )
     values = iter(STATUS_V2_BODY.unpack(body[: STATUS_V2_BODY.size]))
     schema = next(values)
@@ -740,10 +745,17 @@ def parse_status(body: bytes) -> dict[str, Any]:
     watchdog_reset = next(values)
     vbus_raw = None
     vbus_sample_count = None
-    if len(body) == STATUS_V3_BODY.size:
+    missed_pwm_update_count = None
+    maximum_consecutive_missed_pwm_updates = None
+    if len(body) >= STATUS_V3_BODY.size:
         vbus_raw, vbus_sample_count = struct.unpack(
-            ">HI", body[STATUS_V2_BODY.size :]
+            ">HI", body[STATUS_V2_BODY.size : STATUS_V3_BODY.size]
         )
+    if len(body) == STATUS_V4_BODY.size:
+        (
+            missed_pwm_update_count,
+            maximum_consecutive_missed_pwm_updates,
+        ) = struct.unpack(">II", body[STATUS_V3_BODY.size :])
     vbus_valid = bool(flags & (1 << 11)) and vbus_raw is not None
     bus_voltage_unrounded = (
         vbus_raw * VBUS_VOLTS_PER_COUNT
@@ -798,6 +810,9 @@ def parse_status(body: bytes) -> dict[str, Any]:
             "fault_flags_hex": f"0x{fault_flags:08X}",
             "faults": active_names(fault_flags, FAULT_NAMES),
             "sample_count": sample_count,
+            "missed_pwm_update_count": missed_pwm_update_count,
+            "maximum_consecutive_missed_pwm_updates":
+                maximum_consecutive_missed_pwm_updates,
             "reference_counts": {"a": reference_a, "b": reference_b},
             "reference_nominal_milliamperes": {
                 "a": round(reference_a * COUNTS_TO_MILLIAMPERES, 1),

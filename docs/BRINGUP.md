@@ -117,7 +117,7 @@ the report, and restores the prior inactive test configuration. Use
 `--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
 saved report without touching the motor.
 
-On protocol 1.15, use the production tuner to compare PI candidates under the
+On protocol 1.16, use the production tuner to compare PI candidates under the
 same fixed current and electrical-frequency points. The sweep applies gains only
 while inactive, runs each point through the same supervisor/current backend,
 aborts on fault or abnormal terminal state, and restores the starting gains and
@@ -137,7 +137,9 @@ settling interval.
 
 Review `session.json`, `summary.csv`, and `report.html` under the printed
 `scratch/tuning-runs/` session. The report includes both cross-trial comparisons
-and the settled 20 kHz current/voltage waveform for every completed trial.
+and the settled 20 kHz current/voltage waveform for every completed trial, plus
+the per-run total and maximum-consecutive missed PWM update counts. Both counts
+should remain zero.
 Replotting is offline. The sweep never persists a candidate. Apply the selected
 gains in RAM first, repeat a bounded validation, then promote them explicitly
 only after reviewing voltage headroom, overshoot, tracking, encoder motion,

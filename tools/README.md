@@ -74,7 +74,8 @@ Each timestamped `scratch/tuning-runs/*-current-loop/` session contains
 `session.json`, `summary.csv`, a self-contained `report.html`, and per-trial
 telemetry/trace JSON lines plus `trial.json`. The report combines cross-trial
 gain, phase, error, voltage, motion, and timing comparisons with each trial's
-settled 20 kHz current and phase-voltage waveforms. Rebuild it without opening
+settled 20 kHz current and phase-voltage waveforms and per-run
+missed-PWM-update evidence. Rebuild it without opening
 the serial port with `--replot SESSION_DIRECTORY`. Promotion is deliberately
 separate:
 

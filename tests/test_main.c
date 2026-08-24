@@ -1749,7 +1749,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
-    EXPECT_TRUE(protocol_minor == 15u);
+    EXPECT_TRUE(protocol_minor == 16u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -1793,7 +1793,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     mock_protocol_tx_t transmit = {.accept = true};
     mock_commissioning_t commissioning = {
         .status = {
-            .schema_version = 3u,
+            .schema_version = 4u,
             .flags = 0x00000FFFu,
             .raw_input_levels = 0xA5u,
             .debounced_input_levels = 0x5Au,
@@ -1825,6 +1825,8 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .watchdog_reset = 1u,
             .vbus_raw = 0x0708u,
             .vbus_sample_count = 0x11121314u,
+            .missed_pwm_update_count = 0x21222324u,
+            .maximum_consecutive_missed_pwm_updates = 0x31323334u,
         },
         .encoder_status = {
             .schema_version = 2u,
@@ -2048,9 +2050,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 70u);
+    EXPECT_TRUE(response.payload_length == 78u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 3u);
+    EXPECT_TRUE(response.payload[1] == 4u);
     EXPECT_TRUE(response.payload[2] == 0u);
     EXPECT_TRUE(response.payload[5] == 0xFFu);
     EXPECT_TRUE(response.payload[6] == 0xA5u);
@@ -2067,6 +2069,10 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[65] == 0x08u);
     EXPECT_TRUE(response.payload[66] == 0x11u);
     EXPECT_TRUE(response.payload[69] == 0x14u);
+    EXPECT_TRUE(response.payload[70] == 0x21u);
+    EXPECT_TRUE(response.payload[73] == 0x24u);
+    EXPECT_TRUE(response.payload[74] == 0x31u);
+    EXPECT_TRUE(response.payload[77] == 0x34u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -4790,6 +4796,50 @@ static void test_rotating_current_test_ramps_phase_increment(void)
     EXPECT_TRUE(generator.phase == 0xE0000000u);
 }
 
+static void test_rotating_current_test_supports_long_fractional_ramps(void)
+{
+    rotating_current_test_t generator = {0};
+    int16_t current_a;
+    int16_t current_b;
+    const uint64_t long_ramp_steps = (uint64_t)UINT32_MAX + 1u;
+
+    EXPECT_TRUE(rotating_current_test_init(&generator,
+                                           40,
+                                           5u,
+                                           0u,
+                                           long_ramp_steps));
+    EXPECT_TRUE(generator.ramp_step_count == long_ramp_steps);
+    EXPECT_TRUE(rotating_current_test_step(&generator,
+                                           &current_a,
+                                           &current_b));
+    EXPECT_TRUE(current_a == 40);
+    EXPECT_TRUE(current_b == 0);
+    EXPECT_TRUE(generator.phase_increment == 0u);
+    EXPECT_TRUE(generator.ramp_steps_elapsed == 1u);
+}
+
+static void test_rotating_current_test_rounds_fractional_ramp_steps(void)
+{
+    rotating_current_test_t generator = {0};
+    int16_t current_a;
+    int16_t current_b;
+
+    EXPECT_TRUE(rotating_current_test_init(
+        &generator, 40, 5u, 0u, 4u));
+    EXPECT_TRUE(rotating_current_test_step(
+        &generator, &current_a, &current_b));
+    EXPECT_TRUE(generator.phase_increment == 1u);
+    EXPECT_TRUE(rotating_current_test_step(
+        &generator, &current_a, &current_b));
+    EXPECT_TRUE(generator.phase_increment == 3u);
+    EXPECT_TRUE(rotating_current_test_step(
+        &generator, &current_a, &current_b));
+    EXPECT_TRUE(generator.phase_increment == 4u);
+    EXPECT_TRUE(rotating_current_test_step(
+        &generator, &current_a, &current_b));
+    EXPECT_TRUE(generator.phase_increment == 5u);
+}
+
 static aligned_torque_config_t test_aligned_torque_config(void)
 {
     const aligned_torque_config_t config = {
@@ -5183,6 +5233,8 @@ int main(void)
     test_phase_current_loop_anti_windup_recovers_from_saturation();
     test_rotating_current_test_generates_quadrature_references();
     test_rotating_current_test_ramps_phase_increment();
+    test_rotating_current_test_supports_long_fractional_ramps();
+    test_rotating_current_test_rounds_fractional_ramp_steps();
     test_phase_current_reference_maps_signed_quadrants();
     test_aligned_torque_ramps_signed_q_current_and_deadlines();
     test_aligned_torque_rejects_unsafe_feedback_and_backend();

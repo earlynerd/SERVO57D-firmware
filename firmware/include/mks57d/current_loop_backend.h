@@ -44,6 +44,8 @@ typedef struct
     uint32_t phase_prediction_age_us;
     uint32_t maximum_observed_phase_prediction_age_us;
     uint32_t rejected_phase_prediction_age_us;
+    uint32_t missed_pwm_update_count;
+    uint32_t maximum_consecutive_missed_pwm_updates;
     uint32_t maximum_phase_prediction_age_us;
     uint16_t phase_prediction_output_lead_us;
     uint8_t phase_prediction_reject_reason;
@@ -76,6 +78,11 @@ bool current_loop_backend_init(
 bool current_loop_backend_set_reference_counts(
     int16_t current_a_reference_counts,
     int16_t current_b_reference_counts);
+bool current_loop_backend_set_rotating_reference(
+    int16_t amplitude_counts,
+    uint32_t phase_increment_q32_per_step,
+    uint32_t initial_phase_q32,
+    uint64_t ramp_step_count);
 bool current_loop_backend_set_aligned_q_reference(
     int16_t q_current_reference_counts,
     uint32_t electrical_phase_q32,

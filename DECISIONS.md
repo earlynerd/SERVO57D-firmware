@@ -897,3 +897,11 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Supersedes:** Only the Ki 0-1 validation bound in “Make motor tuning volatile first and persistence explicit.” It does not qualify gains above the measured candidates, alter Kp, change electrical limits, select a default, or persist a trial.
 - **Downgrade note:** A persisted Ki above 1.0 is outside older firmware's accepted range; after a downgrade, configuration loading may select an older valid slot or defaults.
 - **Affects:** `phase_current_loop` configuration validation, product configuration status/storage validation, tuning preflight, and `docs/OPERATING_LIMITS.md`.
+
+## 2026-08-23 — Advance the tuning diagnostic at the current-loop rate
+
+- **Decision:** Firmware 0.34.0 / protocol 1.16 moves the rotating-current phase accumulator and ramp from 1 kHz foreground service into the 20 kHz ADC/current event. A divide-free DDA preserves ramp duration across the full command range. Static, aligned-q, and diagnostic sources remain mutually exclusive and authority-gated.
+- **Why:** The old hold supplied only five reference points per cycle at 200 electrical Hz, injecting 72-degree steps despite stable ADC/PWM timing.
+- **Safety and telemetry:** Current, voltage, duty, duration, STOP, fault, and all-low `ZERO` contracts are unchanged. Status schema 4 appends per-run missing-output totals and maximum consecutive misses; the guardian still faults on the second consecutive miss.
+- **Affects:** diagnostic generation, backend timing, commissioning status, frame capacity, tuner reports, and hardware qualification.
+- **Validation:** Host and Python tests plus Debug/Release Arm builds pass; hardware timing, waveform, and vibration confirmation remains open.

@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.32.2 implements the fast current path, production
+Status: firmware 0.34.0 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
 Edge-aligned
@@ -120,6 +120,16 @@ transport, allocation, or waiting occurs in either interrupt; the trace is read
 only after authority ends. The armed interval is 256 samples/12.8 ms and the
 fixed buffer occupies 8,192 bytes of SRAM1.
 
+Firmware 0.34.0 also makes the retained rotating-current diagnostic a native
+fast-loop reference source. Its phase accumulator and divide-free ramp DDA
+advance once per accepted 20 kHz ADC/current event before the prevalidated PI
+step; foreground retains only command validation, authority, ramp-plus-hold
+deadline, STOP, and telemetry ownership. Static A/B references, encoder-aligned
+q references, and the diagnostic oscillator are mutually exclusive backend
+modes. The priority-1 PWM guardian retains its fault-on-two-consecutive-misses
+policy and now publishes each run's total missing-output boundaries and maximum
+consecutive count through the inactive snapshot/status path.
+
 `PRIMASK` is reserved for reset, panic, and the final bridge-fault sequence. Ordinary critical sections use `BASEPRI` so priority-zero fault handling remains available. Critical sections must cover only a few bounded loads/stores; they are not a substitute for clear data ownership.
 
 ## Shared-data ownership
@@ -131,7 +141,7 @@ fixed buffer occupies 8,192 bytes of SRAM1.
 | Encoder progress | TIM6 captures time at CS assertion; PendSV-deferred rotor runtime publishes after SPI DMA/hold | Foreground liveness, readiness, and state invariants | A sequence-protected 56-byte record publishes at 4 kHz with encoder production, coherent estimator position/velocity/timestamp/health, active-control flags, and full-snapshot generation |
 | Full rotor/controller status | PendSV-deferred rotor runtime | Commands, telemetry, and diagnostics | A sequence-protected 576-byte snapshot publishes at 100 Hz and on requests, faults, events, clears, and initialization; foreground consumes it at 100 Hz or when progress reports a new generation |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
-| `Id`/`Iq` references | Slow control loop | Fast current loop | Bounded double buffer swapped at a fast-loop boundary |
+| Current references | Slow control loop or fast diagnostic oscillator | Fast current loop | Bounded aligned-q/static publication, or backend-owned 20 kHz oscillator state selected only while inactive |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
 | PWM preload request | Fast current loop | PWM backend | Single writer during `RUN`; safety may override only by disabling |
 | Fault state | Safety subsystem | All layers | Monotonic atomic latch or per-source slots; never cleared from an ISR |

@@ -5,8 +5,8 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.33.0 / native protocol 1.15 is the current source candidate;
-firmware 0.30.3 / protocol 1.13 is the last documented flashed baseline. Firmware 0.30.1 corrected the fast
+Firmware 0.34.0 / native protocol 1.16 is the current source candidate and
+flashed baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -62,8 +62,14 @@ single wrap-safe authority deadline covers ramp plus hold. The tuning tool uses
 50 electrical Hz/s by default, arms its high-resolution trace only after ramp
 plus settling, and records ramp time separately from the scored window.
 
+Firmware 0.34.0 advances that diagnostic's electrical angle and ramp at the
+20 kHz ADC/current-loop rate instead of holding each reference for one
+millisecond. Protocol 1.16 status and tuning reports also expose each run's
+total missed PWM-output boundaries and maximum consecutive misses; the existing
+guardian still faults on the second consecutive miss.
+
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
-deterministic 1 kHz rotor service, persisted alignment, and bounded aligned
+deterministic 4 kHz rotor service, persisted alignment, and bounded aligned
 torque, signed velocity, and relative-position control. At 24 V, a +8 rev/s
 request reaches target. A +12 rev/s request reaches the 2.999 A nominal
 q-demand and 70%-of-bus phase-voltage ceilings and plateaus near 10 rev/s
@@ -71,8 +77,10 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is capturing formal 0.33.0 evidence for 8 MHz / 4 kHz
-encoder timing and acquisition timestamps, outer-loop numerical/timing health,
+The next control work is repeating fixed-condition tuning points to refine
+high-frequency current tracking while retaining zero missed PWM
+updates, alongside formal 8 MHz / 4 kHz encoder timing and acquisition evidence,
+outer-loop numerical/timing health,
 volatile gain apply/revert, and explicit persistence across a power cycle, then
 using its fixed-condition sweep before negative-direction speed staging and the
 remaining position fault/stop gates.

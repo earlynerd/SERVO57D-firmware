@@ -15,14 +15,19 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.30.3 / protocol 1.13 is flashed. Firmware 0.30.1 corrected the
+- Firmware 0.34.0 / protocol 1.16 is flashed. Its high-resolution current
+  captures show continuous 20 kHz sample sequence, 4.25-4.375 us
+  trigger-to-DMA time, 13.734-14.359 us DMA-to-stage time, and
+  39.281-39.906 us preload margin without faults. The tuning ramp and expanded
+  Ki search range are available on the bench.
+- Firmware 0.30.3 corrected the
   predictor's nominal 7 us lead to the measured 55 us DMA-to-application
   interval. Matched +8 rev/s Kp=2/3/4 bursts then reduced velocity RMS error
   from 0.797 to 0.621 to 0.460 rev/s and A/B current RMS error from about 146
   to 100 to 87 counts without a control, timing, encoder, backend, reset, or
   panic fault. Kp=4 remains the active bench candidate, not a universal motor
   default.
-- Firmware 0.33.0 / protocol 1.15 is the performance/tuning source candidate.
+- Firmware 0.34.0 / protocol 1.16 is the performance/tuning source candidate.
   It retains 0.31.0's safe-state volatile current-gain apply/revert,
   active/stored/default status, schema-1 migration, explicit persistence, and
   guided sweep. It also stages an 8 MHz MT6816 transport and deterministic
@@ -34,7 +39,9 @@ and fault bounds.
   4 kHz progress plus 100 Hz/event-driven full snapshots and 1 ms safety
   housekeeping without changing the immediate ISR/runtime fault paths. Its
   rotating-current diagnostic can ramp to each target before the full tuning
-  hold window, avoiding an instantaneous speed step at higher-frequency points.
+  hold window and now advances at 20 kHz rather than 1 kHz. Schema-4 status
+  exposes isolated missed PWM updates without weakening the existing deadline
+  fault.
 - Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
   bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
@@ -69,7 +76,11 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Capture formal firmware 0.33.0 evidence and bench-validate 8 MHz SPI
+- [ ] Repeat fixed-current tuning across candidate Kp/Ki values at 100-200 Hz;
+  the first 0.34.0 Kp=5/Ki=0.7 sweep retained 35.59 us minimum preload margin,
+  reported zero missed PWM updates and no faults, but reached 1.48 fundamental
+  gain and 26.1 degrees lag at 200 Hz.
+- [ ] Capture formal firmware 0.34.0 evidence and bench-validate 8 MHz SPI
   integrity, 4 kHz sample/acquisition timing and noise, PendSV/current-ISR preemption and stack margin, controller
   numerical behavior, current-gain status, idle-only volatile apply/revert,
   sweep-abort restoration, explicit save, schema-2 generation advance, and

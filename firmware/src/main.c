@@ -30,7 +30,6 @@
 #include "mks57d/platform.h"
 #include "mks57d/position_controller.h"
 #include "mks57d/rs485.h"
-#include "mks57d/rotating_current_test.h"
 #include "mks57d/rotor_control_runtime.h"
 #include "mks57d/spi1.h"
 #include "mks57d/ssd1306.h"
@@ -70,7 +69,7 @@ static rotor_control_progress_snapshot_t rotor_control_progress_snapshot;
 
 enum
 {
-    COMMISSIONING_STATUS_SCHEMA_VERSION = 3u,
+    COMMISSIONING_STATUS_SCHEMA_VERSION = 4u,
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 2u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
@@ -82,6 +81,8 @@ enum
     CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
     CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = INT32_MAX,
+    CURRENT_TEST_REFERENCE_FREQUENCY_HZ =
+        ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ,
     CURRENT_TEST_INITIAL_LEG_A1 = 0u,
     CURRENT_TEST_INITIAL_LEG_A2 = 1u,
     CURRENT_TEST_INITIAL_LEG_B1 = 2u,
@@ -246,10 +247,19 @@ static uint32_t current_test_initial_phase(uint8_t selected_leg)
 
 static uint32_t current_test_phase_increment(uint32_t frequency_millihz)
 {
+    const uint64_t phase_increment_denominator =
+        (uint64_t)CURRENT_TEST_REFERENCE_FREQUENCY_HZ * 1000u;
     const uint64_t numerator =
-        ((uint64_t)frequency_millihz << 32u) + 500000u;
+        ((uint64_t)frequency_millihz << 32u) +
+        phase_increment_denominator / 2u;
 
-    return (uint32_t)(numerator / 1000000u);
+    return (uint32_t)(numerator / phase_increment_denominator);
+}
+
+static uint64_t current_test_ramp_step_count(uint32_t ramp_duration_millis)
+{
+    return (uint64_t)ramp_duration_millis *
+        CURRENT_TEST_REFERENCE_FREQUENCY_HZ / 1000u;
 }
 
 static command_status_t commissioning_get_status(
@@ -369,6 +379,10 @@ static command_status_t commissioning_get_status(
         commissioning->current_loop_config->phase_voltage_limit_permille;
     status->test_frequency_millihz =
         commissioning->test_frequency_millihz;
+    status->missed_pwm_update_count =
+        loop.missed_pwm_update_count;
+    status->maximum_consecutive_missed_pwm_updates =
+        loop.maximum_consecutive_missed_pwm_updates;
 
     now = timebase_millis();
     if (commissioning->remote_authority_active &&
@@ -2217,7 +2231,6 @@ int main(void)
         INPUT_SAMPLE_PERIOD_MS = 10u,
         /* Bound safety-service latency without following every ADC wakeup. */
         FOREGROUND_SAFETY_PERIOD_MS = 1u,
-        CURRENT_TEST_REFERENCE_PERIOD_MS = 1u,
         DISPLAY_REFRESH_PERIOD_MS = 200u,
         RS485_FOREGROUND_DRAIN_BYTES = 64u,
         /*
@@ -2522,7 +2535,6 @@ int main(void)
             ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16,
     };
     current_loop_backend_snapshot_t current_loop_snapshot = {0};
-    rotating_current_test_t current_test_generator = {0};
     i2c_bus_t display_bus = {0};
     bool display_ready = false;
     bool adc_ready = false;
@@ -2551,7 +2563,6 @@ int main(void)
     uint32_t next_safety_housekeeping;
     uint32_t next_adc_sample;
     uint32_t next_input_sample;
-    uint32_t next_current_reference;
     uint32_t next_display_refresh;
     uint32_t input_levels = USER_INPUT_MASK;
     uint32_t raw_input_levels = USER_INPUT_MASK;
@@ -2966,7 +2977,6 @@ int main(void)
     next_safety_housekeeping = timebase_millis();
     next_adc_sample = timebase_millis();
     next_input_sample = timebase_millis();
-    next_current_reference = timebase_millis();
     next_display_refresh =
         timebase_millis() + ENCODER_POWER_UP_DELAY_MS;
 
@@ -3447,11 +3457,7 @@ int main(void)
                     APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED,
                     energize_context))
             {
-                int16_t current_a_reference_counts;
-                int16_t current_b_reference_counts;
-
-                if (!rotating_current_test_init(
-                        &current_test_generator,
+                if (!current_loop_backend_set_rotating_reference(
                         (int16_t)commissioning_context.
                             test_amplitude_counts,
                         current_test_phase_increment(
@@ -3459,15 +3465,9 @@ int main(void)
                                 test_frequency_millihz),
                         current_test_initial_phase(
                             commissioning_context.remote_start_leg),
-                        commissioning_context.
-                            remote_start_ramp_duration_millis) ||
-                    !rotating_current_test_step(
-                        &current_test_generator,
-                        &current_a_reference_counts,
-                        &current_b_reference_counts) ||
-                    !current_loop_backend_set_reference_counts(
-                        current_a_reference_counts,
-                        current_b_reference_counts) ||
+                        current_test_ramp_step_count(
+                            commissioning_context.
+                                remote_start_ramp_duration_millis)) ||
                     !current_loop_backend_start())
                 {
                     commissioning_context.remote_authority_active = false;
@@ -3484,8 +3484,6 @@ int main(void)
                               remote_start_ramp_duration_millis +
                           commissioning_context.
                               remote_start_duration_millis;
-                next_current_reference =
-                    now + CURRENT_TEST_REFERENCE_PERIOD_MS;
             }
             diagnostics_due = true;
         }
@@ -3548,58 +3546,6 @@ int main(void)
                 board_bridge_force_low_zero();
                 platform_panic(PANIC_INTERNAL_INVARIANT);
             }
-        }
-
-        if (app_supervisor_bridge_authorized(&drive_supervisor) &&
-            (drive_supervisor.authority == APP_AUTHORITY_DIAGNOSTIC) &&
-            commissioning_context.remote_authority_active &&
-            ((int32_t)(now - next_current_reference) >= 0))
-        {
-            int16_t current_a_reference_counts;
-            int16_t current_b_reference_counts;
-
-            if (!rotating_current_test_step(
-                    &current_test_generator,
-                    &current_a_reference_counts,
-                    &current_b_reference_counts))
-            {
-                board_bridge_force_low_zero();
-                platform_panic(PANIC_DRIVE_CONTROL);
-            }
-            if (!current_loop_backend_set_reference_counts(
-                    current_a_reference_counts,
-                    current_b_reference_counts))
-            {
-                current_loop_backend_get_snapshot(&current_loop_snapshot);
-                commissioning_context.remote_authority_active = false;
-                bridge_ready = false;
-                (void)app_supervisor_handle_event(
-                    &drive_supervisor,
-                    APP_EVENT_FAULT_DETECTED,
-                    (app_transition_context_t){0});
-                if ((current_loop_snapshot.fault_flags == 0u) ||
-                    !current_loop_backend_stop())
-                {
-                    board_bridge_force_low_zero();
-                    platform_panic(PANIC_DRIVE_CONTROL);
-                }
-                current_loop_backend_get_snapshot(&current_loop_snapshot);
-                update_current_loop_diagnostics(
-                    &current_loop_snapshot,
-                    &current_loop_diagnostics);
-                diagnostics_publish_current_loop(
-                    &current_loop_diagnostics);
-                if (current_loop_fault_code == 0u)
-                {
-                    current_loop_fault_code =
-                        current_loop_fault_display_code(
-                            current_loop_snapshot.fault_flags);
-                    next_display_refresh = now;
-                }
-                diagnostics_due = true;
-            }
-            next_current_reference =
-                now + CURRENT_TEST_REFERENCE_PERIOD_MS;
         }
 
         if (adc_ready &&

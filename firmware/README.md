@@ -26,6 +26,9 @@ Firmware 0.33.0 / protocol 1.15 adds a backward-compatible extended
 rotating-current START request. It linearly ramps the 1 kHz diagnostic phase
 increment from zero to the configured frequency before a separate full hold
 window, while one supervisor-owned deadline covers both intervals.
+Firmware 0.34.0 / protocol 1.16 moves that oscillator and ramp into the 20 kHz
+ADC/current backend and reports per-run missed PWM update counts without
+changing the guardian's shutdown threshold or any authority/electrical bound.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and

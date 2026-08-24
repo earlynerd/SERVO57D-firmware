@@ -1,7 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.15 is implemented in firmware 0.33.0 source;
-firmware 0.30.3 / protocol 1.13 is flashed. Protocol 1.12 trace schema 1
+Status: native protocol 1.16 is implemented and flashed in firmware 0.34.0.
+Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
 current diagnostic service, generic drive STOP, automatic alignment, and
@@ -53,7 +53,7 @@ future features. Version 1 uses a bounded, delimiter-based binary frame:
 COBS {
     version:u8 | device_address:u8 | sequence:u16 |
     message_type:u8 | command:u16 | payload_length:u8 |
-    payload:0..72 bytes | crc16:u16
+    payload:0..80 bytes | crc16:u16
 } 00
 ```
 
@@ -70,8 +70,8 @@ firmware personality or a bridge-authority owner. New protocol work should use
 product motion, service, and diagnostic names while preserving these encodings
 for compatible clients.
 
-The decoded header is 8 bytes, the maximum decoded frame is 82 bytes, and the
-maximum on-wire frame including the delimiter is 84 bytes. Frames with an
+The decoded header is 8 bytes, the maximum decoded frame is 90 bytes, and the
+maximum on-wire frame including the delimiter is 92 bytes. Frames with an
 invalid COBS encoding, inconsistent length, bad CRC, unsupported version, or
 excessive encoded length receive no response. After an oversized frame the
 parser discards through the next delimiter and starts cleanly.
@@ -107,7 +107,7 @@ from causing reply storms.
 | `0x0001` | `PING` | 0-16 opaque bytes | The same bytes |
 | `0x0002` | `GET_IDENTITY` | Empty | Product ID `u32`, firmware major `u8`, minor `u8`, patch `u16`, protocol major `u8`, minor `u8` |
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
-| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-3 commissioning status block |
+| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-4 commissioning status block |
 | `0x0101` | `CONFIGURE_CURRENT_TEST` | Amplitude counts `u16`, frequency millihertz `u32` | Applied amplitude counts `u16`, frequency millihertz `u32` |
 | `0x0102` | `START_CURRENT_TEST` | Legacy: initial leg `u8`, hold milliseconds `u32`; protocol 1.15 extended: initial leg `u8`, ramp milliseconds `u32`, hold milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
@@ -189,6 +189,12 @@ The extended request ramps diagnostic electrical frequency from zero to the
 configured target, then retains that target for the complete hold interval.
 No command ID, response, status schema, or capability bit changes.
 
+Firmware 0.34.0 / protocol 1.16 moves the rotating diagnostic oscillator from
+the 1 kHz foreground into the 20 kHz ADC/current-loop event. It also appends
+the per-run count of PWM update boundaries that observed no new staged output
+and the maximum consecutive count to commissioning status schema 4. Status
+schemas 2 and 3 remain host-decodable.
+
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
@@ -196,8 +202,9 @@ inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
 `2=B1`, and `3=B2`. The five-byte form supplies a 3-through-2147483647 ms
 hold and starts at the configured frequency immediately. The nine-byte form
 supplies a nonnegative ramp duration followed by a hold in that same range;
-ramp plus hold must not exceed 2147483647 ms. The diagnostic updates its
-reference at 1 kHz and linearly increases phase increment during the ramp,
+ramp plus hold must not exceed 2147483647 ms. Firmware 0.34.0 advances the
+diagnostic reference at the 20 kHz current-loop rate and linearly increases
+phase increment during the ramp,
 reaching the configured frequency at its end. Current amplitude is applied at
 the initial electrical phase when authority starts. It is unavailable
 until the product supervisor reaches `READY` from calibrated current feedback,
@@ -667,7 +674,7 @@ wall-time acquisition evidence; DWT is used only across the uninterrupted ISR.
 All `u16` timing results saturate rather than wrap. Capture does not alter any
 current, voltage, duty, duration, deadline, fault, or authority limit.
 
-`GET_COMMISSIONING_STATUS` returns the following schema-3 body after the common
+`GET_COMMISSIONING_STATUS` returns the following schema-4 body after the common
 status byte. All multi-byte fields are big-endian; signed fields use two's
 complement.
 
@@ -697,6 +704,8 @@ complement.
 | 62 | `u8` | One if the current boot followed an IWDG reset |
 | 63 | `u16` | Latest PA3 VBUS ADC sample; valid only when commissioning flag bit 11 is set |
 | 65 | `u32` | Count of fresh injected VBUS samples accepted by the foreground reader |
+| 69 | `u32` | PWM update boundaries in the latest run that observed no newly staged current-loop output |
+| 73 | `u32` | Maximum consecutive missing-output boundaries in the latest run |
 
 Input-level bits retain their established wire positions: bit 2 is the Left
 button (PA15), bit 0 is Center (PB8), and bit 1 is Right (PB9). The host tools
@@ -708,9 +717,11 @@ Commissioning flag bits are: bit 0 ADC ready, 1 ADC snapshot valid, 2 zero
 calibration ready, 3 current loop initialized, 4 bridge ready, 5 authority
 active, 6 ISR backend active, 7 remote authority, 8 remote start pending,
 9 remote stop pending, 10 fault present, and 11 VBUS snapshot valid. The
-schema-3 status body is 69 bytes and the complete successful response payload
-is 70 bytes. Schema-2's 63-byte body remains decodable by the host for older
-flashed images.
+schema-4 status body is 77 bytes and the complete successful response payload
+is 78 bytes. Schema-2's 63-byte and schema-3's 69-byte bodies remain decodable
+by the host for older flashed images. The guardian still faults on the second
+consecutive missing output; schema 4 makes the permitted isolated event
+observable instead of silently discarding that timing evidence.
 
 The physical voltage reported by the host is derived from the measured PA3
 sample using the fitted 15.4 kOhm/1 kOhm divider and the tested-board 3.3 V ADC

@@ -567,6 +567,39 @@ class VelocityCaptureTests(unittest.TestCase):
             status["loop"]["phase_voltage_command_volts"]["a"]
         )
 
+    def test_schema_four_status_reports_pwm_guardian_misses(self) -> None:
+        values = list(console.STATUS_V3_BODY.unpack(
+            bytes(console.STATUS_V3_BODY.size)
+        ))
+        values[0] = 4
+        body = console.STATUS_V4_BODY.pack(*values, 7, 1)
+
+        status = console.parse_status(body)
+
+        self.assertEqual(status["schema"], 4)
+        self.assertEqual(status["loop"]["missed_pwm_update_count"], 7)
+        self.assertEqual(
+            status["loop"]["maximum_consecutive_missed_pwm_updates"], 1
+        )
+
+    def test_schema_four_status_fits_host_wire_read_bound(self) -> None:
+        payload = b"\x00" + bytes(console.STATUS_V4_BODY.size)
+        decoded = struct.pack(
+            ">BBHBHB",
+            console.PROTOCOL_VERSION,
+            console.DEFAULT_ADDRESS,
+            1,
+            console.MESSAGE_RESPONSE,
+            console.COMMAND_GET_COMMISSIONING_STATUS,
+            len(payload),
+        ) + payload
+        decoded += struct.pack(">H", console.crc16_ccitt_false(decoded))
+        wire = console.cobs_encode(decoded) + b"\x00"
+
+        self.assertGreater(len(wire), 84)
+        self.assertLessEqual(len(wire), console.MAX_WIRE_FRAME_SIZE)
+        self.assertEqual(console.decode_response(wire).payload, payload)
+
     def test_torque_status_reports_phase_prediction_rejection(self) -> None:
         body = bytearray(console.ALIGNED_TORQUE_STATUS_V1_BODY.size)
         body[0] = 2

@@ -171,8 +171,8 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.33.0 / protocol 1.15 is the current source candidate;
-firmware 0.30.3 / protocol 1.13 is the flashed evaluation build. The current
+Firmware 0.34.0 / protocol 1.16 is the current source candidate and flashed
+evaluation build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches

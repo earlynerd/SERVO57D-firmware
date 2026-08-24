@@ -65,7 +65,9 @@ DIAGNOSTIC_MINIMUM_FREQUENCY_HZ = 0.001
 DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ = 250.0
 DIAGNOSTIC_MINIMUM_DURATION_SECONDS = 0.003
 DIAGNOSTIC_MAXIMUM_DURATION_SECONDS = 2_147_483.647
-DIAGNOSTIC_REFERENCE_UPDATE_HZ = 1_000
+LEGACY_DIAGNOSTIC_REFERENCE_UPDATE_HZ = 1_000
+FAST_DIAGNOSTIC_REFERENCE_UPDATE_HZ = 20_000
+FAST_REFERENCE_PROTOCOL_VERSION = (1, 16)
 RAMP_PROTOCOL_VERSION = (1, 15)
 DEFAULT_RAMP_ELECTRICAL_HZ_PER_SECOND = 50.0
 MAXIMUM_LIST_LENGTH = 16
@@ -94,6 +96,8 @@ SUMMARY_FIELDS = (
     "minimum_pwm_preload_margin_us",
     "maximum_trigger_to_dma_us",
     "maximum_dma_to_pwm_stage_us",
+    "missed_pwm_update_count",
+    "maximum_consecutive_missed_pwm_updates",
     "faults",
     "artifact_directory",
 )
@@ -489,10 +493,12 @@ def _trial_summary(
     duration_s: float,
     analysis: dict[str, Any],
     trace: list[dict[str, Any]],
+    final_status: dict[str, Any],
     faults: list[str],
     artifact_directory: str,
 ) -> dict[str, Any]:
     encoder = analysis.get("encoder", {})
+    loop_status = final_status.get("loop", {})
     timing = _trace_timing(trace)
     return {
         "trial": index,
@@ -520,6 +526,12 @@ def _trial_summary(
         "encoder_revolutions": encoder.get("revolutions"),
         "encoder_rpm": encoder.get("rpm"),
         "encoder_error_count_delta": encoder.get("error_count_delta"),
+        "missed_pwm_update_count": loop_status.get(
+            "missed_pwm_update_count"
+        ),
+        "maximum_consecutive_missed_pwm_updates": loop_status.get(
+            "maximum_consecutive_missed_pwm_updates"
+        ),
         **timing,
         "faults": faults,
         "artifact_directory": artifact_directory,
@@ -753,6 +765,8 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
             f"<td>{trial.get('minimum_pwm_preload_margin_us') if trial.get('minimum_pwm_preload_margin_us') is not None else 'n/a'}</td>"
             f"<td>{trial.get('maximum_trigger_to_dma_us') if trial.get('maximum_trigger_to_dma_us') is not None else 'n/a'}</td>"
             f"<td>{trial.get('maximum_dma_to_pwm_stage_us') if trial.get('maximum_dma_to_pwm_stage_us') is not None else 'n/a'}</td>"
+            f"<td>{trial.get('missed_pwm_update_count') if trial.get('missed_pwm_update_count') is not None else 'n/a'}</td>"
+            f"<td>{trial.get('maximum_consecutive_missed_pwm_updates') if trial.get('maximum_consecutive_missed_pwm_updates') is not None else 'n/a'}</td>"
             f"<td>{html.escape(', '.join(faults) if faults else 'none')}</td>"
             f"<td>{html.escape(str(trial.get('error') or 'none'))}</td>"
             "</tr>"
@@ -766,6 +780,9 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
     )
     commands = session.get("commands", {})
     request = session.get("request", {})
+    reference_update_hz = session.get("diagnostic_limits", {}).get(
+        "reference_update_hz", "unknown"
+    )
     ramp_rate = float(request.get("ramp_electrical_hz_per_second", 0.0))
     ramp_card = (
         f"{ramp_rate:g} electrical Hz/s"
@@ -805,10 +822,10 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
 </style></head><body><main>
 <h1>MKS57D current-loop tuning</h1><p class="sub">{html.escape(session.get('generated_at', ''))} · {html.escape(session.get('status', 'unknown'))}</p>
 <div class="cards"><div class="card"><span>Trials</span><b>{len(trials)}</b></div><div class="card"><span>Current</span><b>{request.get('current_milliamperes', 0):.1f} mA</b></div><div class="card"><span>Ramp</span><b>{html.escape(ramp_card)}</b></div><div class="card"><span>Firmware</span><b>{html.escape(session.get('identity', {}).get('firmware', 'unknown'))}</b></div><div class="card"><span>Restored</span><b>{'yes' if session.get('restore', {}).get('gains_restored') else 'no'}</b></div></div>
-<p class="note">{html.escape(measurement_note)} The rotating-current diagnostic updates its reference at {DIAGNOSTIC_REFERENCE_UPDATE_HZ} Hz. Treat results near that rate as quantized diagnostic evidence, not a backend-rate frequency response. Persistence is {html.escape(persistence_text)}. Sweeps never save configuration.</p>
+<p class="note">{html.escape(measurement_note)} The rotating-current diagnostic updates its reference at {reference_update_hz} Hz. Persistence is {html.escape(persistence_text)}. Sweeps never save configuration.</p>
 {plots}
 {waveform_plots}
-<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Hz</th><th>Ramp s</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
+<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Hz</th><th>Ramp s</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Missed PWM</th><th>Max consecutive</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
 <section><h2>Apply and persist separately</h2><p>Choose a result deliberately; this report does not nominate or save a winner.</p><p><code>{html.escape(commands.get('apply_template', ''))}</code></p><p><code>{html.escape(commands.get('persist', ''))}</code></p></section>
 </main></body></html>"""
     path.write_text(document, encoding="utf-8")
@@ -828,6 +845,11 @@ def execute_sweep(
     session_directory: Path,
 ) -> dict[str, Any]:
     identity = query_identity(client)
+    reference_update_hz = (
+        FAST_DIAGNOSTIC_REFERENCE_UPDATE_HZ
+        if _protocol_version(identity) >= FAST_REFERENCE_PROTOCOL_VERSION
+        else LEGACY_DIAGNOSTIC_REFERENCE_UPDATE_HZ
+    )
     initial_status = query_status(client)
     initial_configuration = query_configuration(client)
     initial_encoder = query_encoder(client)
@@ -881,7 +903,7 @@ def execute_sweep(
                 "maximum": DIAGNOSTIC_MAXIMUM_DURATION_SECONDS,
                 "source": "protocol-1.15 diagnostic contract",
             },
-            "reference_update_hz": DIAGNOSTIC_REFERENCE_UPDATE_HZ,
+            "reference_update_hz": reference_update_hz,
         },
         "initial": {
             "status": initial_status,
@@ -1010,6 +1032,7 @@ def execute_sweep(
                 duration_ms / 1000.0,
                 analysis,
                 trace,
+                final_status,
                 [],
                 trial_path.name,
             )
@@ -1031,7 +1054,8 @@ def execute_sweep(
                 f"  gain={summary['fundamental_gain']:.3f}, "
                 f"lag={summary['phase_lag_degrees']:.1f} deg, "
                 f"RMS={summary['rms_current_error_milliamperes']:.1f} mA, "
-                f"peak={summary['maximum_voltage_permille']:.0f}/1000"
+                f"peak={summary['maximum_voltage_permille']:.0f}/1000, "
+                f"missed PWM={summary['missed_pwm_update_count']}"
             )
         session["status"] = "complete"
     except (ProtocolError, OSError, ValueError, KeyboardInterrupt) as error:

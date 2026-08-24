@@ -1,7 +1,7 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.33.0 / protocol 1.15 is the current source
-candidate; firmware 0.30.3 / protocol 1.13 is flashed. The flashed image retains
+Status: firmware 0.34.0 / protocol 1.16 is the current source and flashed
+candidate. The flashed image retains
 the measured 55 us predictor lead, generation-3 alignment, physical VBUS, and
 the complete bounded motion/fault envelope. Matched +8 rev/s trials at 24 V
 reduced velocity RMS error from 0.797 to 0.621 to 0.460 rev/s while staging
@@ -45,7 +45,7 @@ validated point is evidence, not automatically a request ceiling.
 
 ## Current firmware inventory
 
-| Quantity | Firmware 0.33.0 source value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.34.0 source value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Bus-voltage scale | 13.22 mV/count nominal | Tested-board 3.3 V ADC reference and fitted 15.4 kOhm/1 kOhm divider | Automatic-injected PA3 ADC acquisition and host conversion | Inactive 0.28.0 status reported 23.829 V at the 24 V supply setting; all 22 active samples held 23.776-23.815 V with advancing samples and no ADC/deadline fault |
@@ -87,8 +87,9 @@ validated point is evidence, not automatically a request ceiling.
 | Position completion | 0.002 revolution, 0.02 rev/s, 200 consecutive 4 kHz samples | Evaluation settling policy preserving about 50 ms of position and speed agreement | `position_controller` | Six 1 kHz baseline moves reached finite deadline with repeatable approximately ±0.0025-revolution endpoint offset; revalidate at 4 kHz |
 | Position feedback interval | 2,000 us maximum | Same deterministic 4 kHz feedback-age contract as velocity | `position_controller`, velocity controller, and aligned actuator | Any violation faults and converges on `ZERO` |
 | Position duration | 100 through 2,147,483,647 ms | Finite wrap-safe deadline; expiration releases normally but reports `deadline`, not `settled` | Command service and `position_controller` | Caller must choose a duration long enough for the requested profile and settling time |
-| Rotating-current diagnostic frequency | 0.001 through 250 electrical Hz | Evaluation envelope matching 5 rev/s on the 50-cycle/rev motor | Product diagnostic command path | The independent 1 kHz reference schedule provides only four points/cycle at 250 Hz; this remains boundary evidence, not a quality guarantee |
-| Rotating-current diagnostic ramp | Optional 0-to-target linear frequency ramp; production tuner default 50 electrical Hz/s | Test-shaping input rather than a qualified motor acceleration; the host converts rate to a per-frequency ramp duration | 1 kHz diagnostic generator through the product supervisor/current backend | Allows the rotor to accelerate before high-frequency hold measurements; current amplitude is applied immediately at the initial phase, and zero ramp retains the legacy step |
+| Rotating-current diagnostic frequency | 0.001 through 250 electrical Hz | Evaluation envelope matching 5 rev/s on the 50-cycle/rev motor | Product diagnostic command path | The 20 kHz reference schedule provides 80 points/cycle at 250 Hz and 100 at 200 Hz; remeasure tracking, vibration, and fast-loop timing after flashing 0.34.0 |
+| Rotating-current diagnostic ramp | Optional 0-to-target linear frequency ramp; production tuner default 50 electrical Hz/s | Test-shaping input rather than a qualified motor acceleration; the host converts rate to a per-frequency ramp duration | 20 kHz diagnostic generator through the product supervisor/current backend | Allows the rotor to accelerate before high-frequency hold measurements; current amplitude is applied immediately at the initial phase, and zero ramp retains the legacy step |
+| Current-loop missed PWM updates | Fault on the second consecutive PWM boundary without a new staged output; count every isolated/consecutive event | Safety timing contract plus diagnostic evidence | Priority-1 TIM3 guardian; schema-4 commissioning status | The prior guardian behavior is unchanged, but 0.34.0 exposes per-run total and maximum consecutive counts; require both to remain zero in the next high-speed tuning sweep |
 | Rotating-current diagnostic duration | Hold 3 through 2,147,483,647 ms; ramp plus hold at most 2,147,483,647 ms | Same wrap-safe finite-deadline basis as aligned torque | Product diagnostic command path | One independent deadline covers both intervals; STOP and faults remain effective during the ramp |
 
 Current ADC counts are not bus-voltage dependent. They measure shunt voltage

@@ -532,7 +532,12 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                              status->vbus_raw);
                 write_u32_be(&response_frame->payload[66],
                              status->vbus_sample_count);
-                payload_length = 70u;
+                write_u32_be(&response_frame->payload[70],
+                             status->missed_pwm_update_count);
+                write_u32_be(
+                    &response_frame->payload[74],
+                    status->maximum_consecutive_missed_pwm_updates);
+                payload_length = 78u;
                 break;
             }
 

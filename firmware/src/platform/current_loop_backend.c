@@ -9,6 +9,7 @@
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/phase_current_reference.h"
 #include "mks57d/platform.h"
+#include "mks57d/rotating_current_test.h"
 #include "mks57d/tim3_bridge_pwm.h"
 #include "mks57d/timebase.h"
 #include "n32l40x.h"
@@ -39,11 +40,15 @@ static uint32_t s_maximum_observed_phase_prediction_age_us;
 static uint32_t s_rejected_phase_prediction_age_us;
 static uint32_t s_guardian_generation;
 static uint32_t s_guardian_empty_updates;
+static uint32_t s_guardian_missed_update_count;
+static uint32_t s_guardian_maximum_empty_updates;
 static uint8_t s_phase_prediction_reject_reason;
 static volatile bool s_initialized;
 static volatile bool s_active;
 static bool s_phase_prediction_active;
+static bool s_rotating_reference_active;
 static bool s_guardian_primed;
+static rotating_current_test_t s_rotating_reference;
 static phase_current_loop_output_t s_latest_output;
 static current_loop_backend_trace_sample_t
     s_trace[CURRENT_LOOP_BACKEND_TRACE_CAPACITY];
@@ -78,6 +83,7 @@ static void control_critical_exit(uint32_t previous)
 static void fault_from_interrupt(uint32_t fault)
 {
     s_active = false;
+    s_rotating_reference_active = false;
     s_trace_armed = false;
     (void)adc1_set_current_timing_capture(false);
     s_fault_flags |= fault;
@@ -182,7 +188,30 @@ static void adc_current_event(adc1_status_t status,
         fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
         return;
     }
-    if (s_phase_prediction_active)
+    if (s_rotating_reference_active)
+    {
+        if (!rotating_current_test_step(
+                &s_rotating_reference,
+                &current_a_reference_counts,
+                &current_b_reference_counts) ||
+            !phase_current_loop_set_reference_counts_prevalidated(
+                &s_loop,
+                &s_config,
+                current_a_reference_counts,
+                current_b_reference_counts))
+        {
+            const uint32_t phase_fault =
+                s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
+
+            fault_from_interrupt(
+                phase_fault != 0u ? phase_fault :
+                                    CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
+            return;
+        }
+        s_last_reference_a_counts = current_a_reference_counts;
+        s_last_reference_b_counts = current_b_reference_counts;
+    }
+    else if (s_phase_prediction_active)
     {
         if (!predict_aligned_reference(
                 &s_phase_predictor,
@@ -319,7 +348,20 @@ static void pwm_update_event(void* context)
     }
     if (generation == s_guardian_generation)
     {
-        ++s_guardian_empty_updates;
+        if (s_guardian_empty_updates != UINT32_MAX)
+        {
+            ++s_guardian_empty_updates;
+        }
+        if (s_guardian_missed_update_count != UINT32_MAX)
+        {
+            ++s_guardian_missed_update_count;
+        }
+        if (s_guardian_empty_updates >
+            s_guardian_maximum_empty_updates)
+        {
+            s_guardian_maximum_empty_updates =
+                s_guardian_empty_updates;
+        }
         if (s_guardian_empty_updates >
             MAX_CONSECUTIVE_EMPTY_PWM_UPDATES)
         {
@@ -359,11 +401,14 @@ bool current_loop_backend_init(
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
+    s_guardian_missed_update_count = 0u;
+    s_guardian_maximum_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
     s_trace_armed = false;
     s_active = false;
     s_phase_prediction_active = false;
+    s_rotating_reference_active = false;
     s_initialized = false;
     (void)adc1_set_current_timing_capture(false);
 
@@ -403,6 +448,7 @@ bool current_loop_backend_set_reference_counts(
     {
         electrical_phase_predictor_reset(&s_phase_predictor);
         s_phase_prediction_active = false;
+        s_rotating_reference_active = false;
         s_aligned_q_reference_counts = 0;
         s_predicted_electrical_phase_q32 = 0u;
         s_phase_prediction_age_us = 0u;
@@ -426,6 +472,50 @@ bool current_loop_backend_set_reference_counts(
     {
         board_bridge_force_low_zero();
     }
+    return accepted;
+}
+
+bool current_loop_backend_set_rotating_reference(
+    int16_t amplitude_counts,
+    uint32_t phase_increment_q32_per_step,
+    uint32_t initial_phase_q32,
+    uint64_t ramp_step_count)
+{
+    rotating_current_test_t candidate = {0};
+    uint32_t previous;
+    bool accepted = false;
+
+    if (!s_initialized || s_active ||
+        (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE) ||
+        ((uint16_t)amplitude_counts > s_config.reference_limit_counts) ||
+        !rotating_current_test_init(
+            &candidate,
+            amplitude_counts,
+            phase_increment_q32_per_step,
+            initial_phase_q32,
+            ramp_step_count))
+    {
+        return false;
+    }
+
+    previous = control_critical_enter();
+    if (!s_active &&
+        (s_fault_flags == CURRENT_LOOP_BACKEND_FAULT_NONE) &&
+        phase_current_loop_set_reference_counts(
+            &s_loop, &s_config, 0, 0))
+    {
+        s_rotating_reference = candidate;
+        electrical_phase_predictor_reset(&s_phase_predictor);
+        s_phase_prediction_active = false;
+        s_rotating_reference_active = true;
+        s_aligned_q_reference_counts = 0;
+        s_predicted_electrical_phase_q32 = 0u;
+        s_phase_prediction_age_us = 0u;
+        s_last_reference_a_counts = 0;
+        s_last_reference_b_counts = 0;
+        accepted = true;
+    }
+    control_critical_exit(previous);
     return accepted;
 }
 
@@ -501,6 +591,7 @@ bool current_loop_backend_set_aligned_q_reference(
         {
             s_phase_predictor = candidate;
             s_phase_prediction_active = true;
+            s_rotating_reference_active = false;
             s_aligned_q_reference_counts = q_current_reference_counts;
             s_predicted_electrical_phase_q32 = predicted_phase_q32;
             record_prediction_age(prediction_age_us);
@@ -553,6 +644,8 @@ bool current_loop_backend_start(void)
     s_output_generation = 0u;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
+    s_guardian_missed_update_count = 0u;
+    s_guardian_maximum_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
     s_trace_armed = false;
@@ -599,6 +692,7 @@ bool current_loop_backend_stop(void)
     phase_current_loop_stop(&s_loop);
     electrical_phase_predictor_reset(&s_phase_predictor);
     s_phase_prediction_active = false;
+    s_rotating_reference_active = false;
     s_aligned_q_reference_counts = 0;
     s_predicted_electrical_phase_q32 = 0u;
     s_phase_prediction_age_us = 0u;
@@ -684,9 +778,12 @@ bool current_loop_backend_reconfigure_gains(
             CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
         s_guardian_generation = 0u;
         s_guardian_empty_updates = 0u;
+        s_guardian_missed_update_count = 0u;
+        s_guardian_maximum_empty_updates = 0u;
         s_guardian_primed = false;
         s_trace_count = 0u;
         s_phase_prediction_active = false;
+        s_rotating_reference_active = false;
     }
     else
     {
@@ -749,10 +846,13 @@ bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
+    s_guardian_missed_update_count = 0u;
+    s_guardian_maximum_empty_updates = 0u;
     s_guardian_primed = false;
     s_trace_count = 0u;
     s_trace_armed = false;
     s_phase_prediction_active = false;
+    s_rotating_reference_active = false;
 
     if (recovered)
     {
@@ -797,6 +897,10 @@ void current_loop_backend_get_snapshot(
         s_maximum_observed_phase_prediction_age_us;
     snapshot->rejected_phase_prediction_age_us =
         s_rejected_phase_prediction_age_us;
+    snapshot->missed_pwm_update_count =
+        s_guardian_missed_update_count;
+    snapshot->maximum_consecutive_missed_pwm_updates =
+        s_guardian_maximum_empty_updates;
     snapshot->maximum_phase_prediction_age_us =
         s_phase_predictor.config.maximum_prediction_age_us;
     snapshot->phase_prediction_output_lead_us =

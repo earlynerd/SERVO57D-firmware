@@ -141,6 +141,8 @@ typedef struct
     uint8_t watchdog_reset;
     uint16_t vbus_raw;
     uint32_t vbus_sample_count;
+    uint32_t missed_pwm_update_count;
+    uint32_t maximum_consecutive_missed_pwm_updates;
 } command_commissioning_status_t;
 
 typedef struct

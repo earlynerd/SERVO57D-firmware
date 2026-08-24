@@ -446,3 +446,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Fix:** The client now discards up to four malformed or mismatched frames while awaiting the requested response, and trace-sample reads alone retry transport failures up to three attempts; device-declared errors and all state-changing commands remain non-retrying.
 - **Class:** host-protocol-resynchronization
 - **Recently-touched?** yes — the high-resolution tuning downloader was added in the same session.
+
+## 2026-08-23 — High-frequency tuning used a stair-stepped electrical angle
+
+- **Observation:** The motor remained smooth at low electrical frequency but became noisy and vibratory at higher tuning points even though 0.33.0 burst captures showed continuous 20 kHz samples, stable trigger/DMA/stage timing, and ample PWM preload margin.
+- **Root cause:** Pre-fix `firmware/src/main.c:247-254,3447-3606` calculated phase advance for 1 kHz and updated the rotating-current reference from foreground once per millisecond. At 200 Hz that held each vector for about 20 current-loop samples and stepped electrical angle by 72 degrees.
+- **Fix:** Firmware 0.34.0 configures a backend-owned oscillator whose phase and divide-free ramp advance in `firmware/src/platform/current_loop_backend.c` once per accepted 20 kHz ADC event. Schema-4 status exposes isolated missed PWM-output boundaries for the repeat test.
+- **Class:** low-rate-reference-zero-order-hold
+- **Recently-touched?** yes — the new ramp retained the diagnostic's older 1 kHz cadence.
+- **Status:** Resolved in source with host and Arm validation; hardware waveform, vibration, and missed-update confirmation remain pending after flash.
+
+## 2026-08-23 — Schema-4 status was split by the old host frame bound
+
+- **Observation:** The first firmware 0.34.0 tuning sweep aborted during passive preflight with `response is too short`; no trial started.
+- **Root cause:** `tools/mks57d_rs485.py:21,647` retained the protocol-1.15 84-byte `read_until` bound after firmware schema 4 raised the maximum wire frame to 92 bytes. The host read an unterminated 84-byte prefix, then decoded the remaining delimited tail as a separate short response.
+- **Fix:** Raise the host wire-read bound to 92 bytes and add a regression that COBS-encodes and decodes a full schema-4 status response above the old limit.
+- **Class:** host-frame-size-contract-drift
+- **Recently-touched?** yes — the firmware frame capacity and status schema changed in the immediately preceding edit.
+- **Status:** Bench-confirmed. Passive identity/status succeeded, then the four-trial 5-200 Hz sweep completed, restored starting gains, and reported zero missed PWM updates and no faults.
