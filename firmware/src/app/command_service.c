@@ -106,7 +106,8 @@ void command_service_dispatch(const command_service_context_t* context,
             return;
 
         case COMMAND_OPERATION_CONFIGURE_CURRENT_TEST:
-            if (request->payload_length != 6u)
+            if ((request->payload_length != 6u) &&
+                (request->payload_length != 7u))
             {
                 response->status = COMMAND_STATUS_INVALID_PAYLOAD;
                 return;
@@ -121,7 +122,19 @@ void command_service_dispatch(const command_service_context_t* context,
                     .amplitude_counts = read_u16_be(request->payload),
                     .frequency_millihz = read_u32_be(
                         &request->payload[2]),
+                    .controller_mode = request->payload_length == 7u ?
+                        request->payload[6] :
+                        COMMAND_CURRENT_TEST_CONTROLLER_STATIONARY,
+                    .controller_mode_present =
+                        request->payload_length == 7u,
                 };
+
+                if (requested.controller_mode >=
+                    COMMAND_CURRENT_TEST_CONTROLLER_COUNT)
+                {
+                    response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                    return;
+                }
 
                 response->status = context->commissioning.configure(
                     context->commissioning.context,
@@ -372,7 +385,8 @@ void command_service_dispatch(const command_service_context_t* context,
             return;
 
         case COMMAND_OPERATION_START_VELOCITY:
-            if (request->payload_length != 10u)
+            if ((request->payload_length != 10u) &&
+                (request->payload_length != 14u))
             {
                 response->status = COMMAND_STATUS_INVALID_PAYLOAD;
                 return;
@@ -386,7 +400,9 @@ void command_service_dispatch(const command_service_context_t* context,
                 context->velocity.context,
                 (int32_t)read_u32_be(request->payload),
                 read_u16_be(&request->payload[4]),
-                read_u32_be(&request->payload[6]));
+                read_u32_be(&request->payload[6]),
+                (request->payload_length == 14u) ?
+                    (int32_t)read_u32_be(&request->payload[10]) : 0);
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 

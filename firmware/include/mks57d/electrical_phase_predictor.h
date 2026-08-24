@@ -38,6 +38,16 @@ bool electrical_phase_predictor_predict(
     uint32_t now_us,
     uint32_t* electrical_phase_q32,
     uint32_t* prediction_age_us);
+/* Predict the electrical phase at the current-control event and at the
+ * configured PWM-application horizon from one coherently validated
+ * observation. The observation-age policy applies to now_us; output_lead_us
+ * advances only pwm_application_phase_q32. */
+bool electrical_phase_predictor_predict_horizons(
+    const electrical_phase_predictor_t* predictor,
+    uint32_t now_us,
+    uint32_t* sample_phase_q32,
+    uint32_t* pwm_application_phase_q32,
+    uint32_t* prediction_age_us);
 void electrical_phase_predictor_reset(
     electrical_phase_predictor_t* predictor);
 

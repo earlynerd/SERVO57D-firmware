@@ -18,8 +18,15 @@ enum
 {
     NVIC_PRIORITY_SHIFT = 8u - __NVIC_PRIO_BITS,
     MAX_CONSECUTIVE_EMPTY_PWM_UPDATES = 1u,
-    QUARTER_CYCLE_PHASE_Q32 = 0x40000000u
+    QUARTER_CYCLE_PHASE_Q32 = 0x40000000u,
+    MICROSECONDS_PER_SECOND = 1000000u,
+    CURRENT_LOOP_STEP_US =
+        MICROSECONDS_PER_SECOND / ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ
 };
+
+_Static_assert(
+    (MICROSECONDS_PER_SECOND % ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ) == 0u,
+    "current-loop period must be an integer number of microseconds");
 
 _Static_assert(sizeof(current_loop_backend_trace_sample_t) == 32u,
                "current trace sample must retain its SRAM budget");
@@ -43,6 +50,7 @@ static uint32_t s_guardian_empty_updates;
 static uint32_t s_guardian_missed_update_count;
 static uint32_t s_guardian_maximum_empty_updates;
 static uint8_t s_phase_prediction_reject_reason;
+static uint8_t s_rotating_reference_controller_mode;
 static volatile bool s_initialized;
 static volatile bool s_active;
 static bool s_phase_prediction_active;
@@ -95,22 +103,22 @@ static bool predict_aligned_reference(
     const electrical_phase_predictor_t* predictor,
     int16_t q_current_reference_counts,
     uint32_t now_us,
-    uint32_t* predicted_electrical_phase_q32,
+    uint32_t* sample_electrical_phase_q32,
+    uint32_t* pwm_application_phase_q32,
     uint32_t* prediction_age_us,
     int16_t* current_a_reference_counts,
     int16_t* current_b_reference_counts,
     current_loop_phase_prediction_reject_t* rejection_reason)
 {
-    uint32_t phase_q32;
-
     if (rejection_reason != NULL)
     {
         *rejection_reason = CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     }
-    if (!electrical_phase_predictor_predict(
+    if (!electrical_phase_predictor_predict_horizons(
             predictor,
             now_us,
-            &phase_q32,
+            sample_electrical_phase_q32,
+            pwm_application_phase_q32,
             prediction_age_us))
     {
         if (rejection_reason != NULL)
@@ -125,7 +133,7 @@ static bool predict_aligned_reference(
     }
     if (!phase_current_reference_from_polar(
             q_current_reference_counts,
-            phase_q32 + QUARTER_CYCLE_PHASE_Q32,
+            *pwm_application_phase_q32 + QUARTER_CYCLE_PHASE_Q32,
             current_a_reference_counts,
             current_b_reference_counts))
     {
@@ -136,8 +144,6 @@ static bool predict_aligned_reference(
         }
         return false;
     }
-
-    *predicted_electrical_phase_q32 = phase_q32;
     return true;
 }
 
@@ -166,13 +172,17 @@ static void adc_current_event(adc1_status_t status,
     phase_current_loop_output_t output;
     int16_t current_a_reference_counts;
     int16_t current_b_reference_counts;
-    uint32_t predicted_phase_q32;
+    int16_t current_d_reference_counts = 0;
+    int16_t current_q_reference_counts = 0;
+    uint32_t sample_phase_q32 = 0u;
+    uint32_t pwm_application_phase_q32 = 0u;
     uint32_t prediction_age_us = 0u;
     current_loop_phase_prediction_reject_t rejection_reason =
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
     uint16_t pwm_preload_margin_ticks = 0u;
     uint32_t pwm_stage_cycle_count = 0u;
     bool trace_armed;
+    bool use_rotating_frame_controller = false;
     (void)context;
     if (status != ADC1_STATUS_OK)
     {
@@ -190,15 +200,40 @@ static void adc_current_event(adc1_status_t status,
     }
     if (s_rotating_reference_active)
     {
+        sample_phase_q32 = s_rotating_reference.phase;
         if (!rotating_current_test_step(
                 &s_rotating_reference,
                 &current_a_reference_counts,
-                &current_b_reference_counts) ||
-            !phase_current_loop_set_reference_counts_prevalidated(
-                &s_loop,
-                &s_config,
-                current_a_reference_counts,
-                current_b_reference_counts))
+                &current_b_reference_counts))
+        {
+            const uint32_t phase_fault =
+                s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
+
+            fault_from_interrupt(
+                phase_fault != 0u ? phase_fault :
+                                    CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
+            return;
+        }
+        use_rotating_frame_controller =
+            s_rotating_reference_controller_mode ==
+            CURRENT_LOOP_BACKEND_CONTROLLER_ROTATING_FRAME;
+        if (use_rotating_frame_controller)
+        {
+            const uint64_t lead_numerator =
+                (uint64_t)s_rotating_reference.phase_increment *
+                s_phase_predictor_config.output_lead_us;
+
+            pwm_application_phase_q32 = sample_phase_q32 +
+                (uint32_t)((lead_numerator + CURRENT_LOOP_STEP_US / 2u) /
+                           CURRENT_LOOP_STEP_US);
+            current_d_reference_counts =
+                s_rotating_reference.amplitude_counts;
+        }
+        else if (!phase_current_loop_set_reference_counts_prevalidated(
+                     &s_loop,
+                     &s_config,
+                     current_a_reference_counts,
+                     current_b_reference_counts))
         {
             const uint32_t phase_fault =
                 s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
@@ -217,7 +252,8 @@ static void adc_current_event(adc1_status_t status,
                 &s_phase_predictor,
                 s_aligned_q_reference_counts,
                 timebase_micros(),
-                &predicted_phase_q32,
+                &sample_phase_q32,
+                &pwm_application_phase_q32,
                 &prediction_age_us,
                 &current_a_reference_counts,
                 &current_b_reference_counts,
@@ -229,31 +265,30 @@ static void adc_current_event(adc1_status_t status,
                 CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION);
             return;
         }
-        if (!phase_current_loop_set_reference_counts_prevalidated(
-                &s_loop,
-                &s_config,
-                current_a_reference_counts,
-                current_b_reference_counts))
-        {
-            const uint32_t phase_fault =
-                s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
-
-            fault_from_interrupt(
-                phase_fault != 0u ? phase_fault :
-                                    CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
-            return;
-        }
+        use_rotating_frame_controller = true;
+        current_q_reference_counts = s_aligned_q_reference_counts;
         s_last_reference_a_counts = current_a_reference_counts;
         s_last_reference_b_counts = current_b_reference_counts;
-        s_predicted_electrical_phase_q32 = predicted_phase_q32;
+        s_predicted_electrical_phase_q32 = pwm_application_phase_q32;
         record_prediction_age(prediction_age_us);
     }
-    if (!phase_current_loop_step_prevalidated(
-            &s_loop,
-            &s_config,
-            snapshot->current_a_raw,
-            snapshot->current_b_raw,
-            &output))
+    if (!(use_rotating_frame_controller ?
+          phase_current_loop_step_rotating_prevalidated(
+              &s_loop,
+              &s_config,
+              snapshot->current_a_raw,
+              snapshot->current_b_raw,
+              current_d_reference_counts,
+              current_q_reference_counts,
+              sample_phase_q32,
+              pwm_application_phase_q32,
+              &output) :
+          phase_current_loop_step_prevalidated(
+              &s_loop,
+              &s_config,
+              snapshot->current_a_raw,
+              snapshot->current_b_raw,
+              &output)))
     {
         const uint32_t phase_fault =
             s_loop.fault_flags & CURRENT_LOOP_BACKEND_FAULT_PHASE_MASK;
@@ -399,6 +434,8 @@ bool current_loop_backend_init(
     s_rejected_phase_prediction_age_us = 0u;
     s_phase_prediction_reject_reason =
         CURRENT_LOOP_PHASE_PREDICTION_REJECT_NONE;
+    s_rotating_reference_controller_mode =
+        CURRENT_LOOP_BACKEND_CONTROLLER_STATIONARY;
     s_guardian_generation = 0u;
     s_guardian_empty_updates = 0u;
     s_guardian_missed_update_count = 0u;
@@ -479,7 +516,8 @@ bool current_loop_backend_set_rotating_reference(
     int16_t amplitude_counts,
     uint32_t phase_increment_q32_per_step,
     uint32_t initial_phase_q32,
-    uint64_t ramp_step_count)
+    uint64_t ramp_step_count,
+    current_loop_backend_controller_t controller_mode)
 {
     rotating_current_test_t candidate = {0};
     uint32_t previous;
@@ -487,6 +525,7 @@ bool current_loop_backend_set_rotating_reference(
 
     if (!s_initialized || s_active ||
         (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE) ||
+        (controller_mode >= CURRENT_LOOP_BACKEND_CONTROLLER_COUNT) ||
         ((uint16_t)amplitude_counts > s_config.reference_limit_counts) ||
         !rotating_current_test_init(
             &candidate,
@@ -505,6 +544,7 @@ bool current_loop_backend_set_rotating_reference(
             &s_loop, &s_config, 0, 0))
     {
         s_rotating_reference = candidate;
+        s_rotating_reference_controller_mode = (uint8_t)controller_mode;
         electrical_phase_predictor_reset(&s_phase_predictor);
         s_phase_prediction_active = false;
         s_rotating_reference_active = true;
@@ -529,7 +569,8 @@ bool current_loop_backend_set_aligned_q_reference(
     electrical_phase_predictor_t candidate;
     int16_t current_a_reference_counts = 0;
     int16_t current_b_reference_counts = 0;
-    uint32_t predicted_phase_q32 = 0u;
+    uint32_t sample_phase_q32 = 0u;
+    uint32_t pwm_application_phase_q32 = 0u;
     uint32_t prediction_age_us = 0u;
     uint32_t previous;
     const uint32_t now_us = timebase_micros();
@@ -571,7 +612,8 @@ bool current_loop_backend_set_aligned_q_reference(
                  &candidate,
                  q_current_reference_counts,
                  now_us,
-                 &predicted_phase_q32,
+                 &sample_phase_q32,
+                 &pwm_application_phase_q32,
                  &prediction_age_us,
                  &current_a_reference_counts,
                  &current_b_reference_counts,
@@ -586,14 +628,15 @@ bool current_loop_backend_set_aligned_q_reference(
         if (candidate_valid && phase_current_loop_set_reference_counts(
                 &s_loop,
                 &s_config,
-                current_a_reference_counts,
-                current_b_reference_counts))
+                0,
+                q_current_reference_counts))
         {
             s_phase_predictor = candidate;
             s_phase_prediction_active = true;
             s_rotating_reference_active = false;
             s_aligned_q_reference_counts = q_current_reference_counts;
-            s_predicted_electrical_phase_q32 = predicted_phase_q32;
+            s_predicted_electrical_phase_q32 =
+                pwm_application_phase_q32;
             record_prediction_age(prediction_age_us);
             s_last_reference_a_counts = current_a_reference_counts;
             s_last_reference_b_counts = current_b_reference_counts;
@@ -907,6 +950,8 @@ void current_loop_backend_get_snapshot(
         s_phase_predictor.config.output_lead_us;
     snapshot->phase_prediction_reject_reason =
         s_phase_prediction_reject_reason;
+    snapshot->rotating_reference_controller_mode =
+        s_rotating_reference_controller_mode;
     snapshot->initialized = s_initialized;
     snapshot->active = s_active;
     snapshot->phase_prediction_active = s_phase_prediction_active;

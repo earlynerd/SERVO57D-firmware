@@ -1,6 +1,8 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.34.0 implements the fast current path, production
+Status: firmware 0.37.0 is the current source candidate and firmware 0.36.1 is
+the flashed baseline. The source
+implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
 Edge-aligned
@@ -129,6 +131,25 @@ q references, and the diagnostic oscillator are mutually exclusive backend
 modes. The priority-1 PWM guardian retains its fault-on-two-consecutive-misses
 policy and now publishes each run's total missing-output boundaries and maximum
 consecutive count through the inactive snapshot/status path.
+
+Firmware 0.35.0 adds a diagnostic-only controller branch inside that same
+priority-2 event. Stationary mode keeps the established independent A/B PI.
+Rotating mode uses the oscillator's current phase to Park-transform the sampled
+A/B currents, runs the same fixed-point Kp/Ki units on d and q error, and
+inverse-Park-transforms voltage at the oscillator phase predicted to the 55 us
+PWM application boundary. Both modes reuse the same raw-sample, hard-current,
+reference, phase-voltage, duty, runtime-state, and fault checks and converge on
+the same guardian and `ZERO` path. Product aligned-q, velocity, and position
+control remain on stationary A/B PI in firmware 0.35.x.
+
+Firmware 0.36.0 promotes that branch only for encoder-aligned product current.
+On every aligned-q current event, one validated predictor observation yields a
+sample/control-event phase for Park and a separately advanced phase at the
+measured 55 us PWM-application boundary for inverse Park. The controller uses
+`d=0` and the signed q request. Static A/B references, alignment, and the
+diagnostic's explicit controller selection retain their prior behavior; the
+priority, guardian, electrical, stale-angle, STOP, fault, and `ZERO` contracts
+do not change.
 
 `PRIMASK` is reserved for reset, panic, and the final bridge-fault sequence. Ordinary critical sections use `BASEPRI` so priority-zero fault handling remains available. Critical sections must cover only a few bounded loads/stores; they are not a substitute for clear data ownership.
 
@@ -392,8 +413,9 @@ the proven phase-current backend:
   publishes an immutable valid/timestamp/position/velocity observation;
 - a trapezoidal position trajectory independently limits reference velocity
   and acceleration;
-- the product velocity controller consumes only that observation, acceleration-
-  limits its reference, applies PI anti-windup at the per-command current limit,
+- the product velocity controller consumes only that observation, applies the
+  direct command's explicit acceleration to its reference (or the position
+  cascade's retained inner-loop headroom), applies PI anti-windup at the per-command current limit,
   and updates only the bounded aligned-q-current actuator;
 - the focused product position controller advances a trapezoidal trajectory on
   the same accepted observation and supplies only a bounded dynamic target to
@@ -403,17 +425,26 @@ the proven phase-current backend:
   an interrupt for each edge; it is not yet connected to product motion;
 - Park/inverse-Park transforms and two anti-windup PI axes emit a
   magnitude-limited stationary voltage request for later PMSM or common-current
-  work; and
+  work;
+- the bounded rotating-current diagnostic may select the fixed-point d/q PI
+  implemented directly in `phase_current_loop`; firmware 0.36.0 also uses that
+  controller for encoder-aligned product current while leaving the portable
+  floating-point PMSM controller unlinked; and
 - deterministic mechanical and two-axis RL plant tests cover the active
   controller layers and the retained future-control primitives.
 
-The active stepper path does not send the portable d/q controller's voltage
-output to PWM. At each accepted 4 kHz encoder sample it validates phase,
+The active product-motion path does not send the portable floating-point d/q
+controller's voltage output to PWM. Firmware 0.36.0 instead promotes the
+separate fixed-point d/q branch inside the proven current loop and stepper
+modulation backend.
+At each accepted 4 kHz encoder sample product motion validates phase,
 velocity, acceleration, backend state, and deadline, slews signed q-current,
 and publishes a timestamped measured-phase/filtered-velocity seed. On each
-20 kHz DMA completion the backend extrapolates phase to the measured PWM
-application boundary, adds 90 degrees, and regenerates A/B current references
-before the already-qualified A/B PI step. The predictor is fixed-point, includes
+20 kHz DMA completion the backend extrapolates phase both to the current-control
+event and to the measured PWM-application boundary, Park-transforms measured
+A/B current at the first phase, and inverse-Park-transforms the `d=0`/signed-q
+PI voltage at the second. Static vectors and alignment retain stationary A/B
+PI. The predictor is fixed-point, includes
 a measured 55 us output lead, permits at most 3,000 us of observation age, and
 immediately forces `ZERO` on invalid or stale prediction. Four nominal encoder
 periods, 1 ms total, of PendSV dispatch margin separate that horizon from the
@@ -422,8 +453,9 @@ controllers'
 3 ms encoder-production guard. The
 0.25 velocity loop commands
 that production actuator with its own target, acceleration, current, feedback-
-age, speed, numeric, and deadline checks. Direct d/q voltage integration remains
-separate active work requiring its own modulation and timing evidence. The 0.26 position
+age, speed, numeric, and deadline checks. Promotion of d/q regulation into
+product motion remains separate active work requiring comparative timing and
+motor evidence. The 0.26 position
 layer adds independent travel, start-speed, following-error, settling, and
 deadline checks above the same velocity/current contracts.
 

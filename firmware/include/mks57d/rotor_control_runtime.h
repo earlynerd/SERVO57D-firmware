@@ -92,6 +92,7 @@ typedef struct
     int16_t requested_q_current_counts;
     uint32_t requested_torque_duration_millis;
     int32_t requested_velocity_revolutions_per_second_q16_16;
+    int32_t requested_velocity_acceleration_q16_16;
     uint16_t requested_velocity_current_limit_counts;
     uint32_t requested_velocity_duration_millis;
     int32_t requested_position_displacement_revolutions_q16_16;
@@ -121,6 +122,7 @@ bool rotor_control_runtime_request_torque(
 bool rotor_control_runtime_request_velocity(
     rotor_control_runtime_t* runtime,
     int32_t velocity_revolutions_per_second_q16_16,
+    int32_t acceleration_revolutions_per_second2_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis);
 bool rotor_control_runtime_request_position_relative(

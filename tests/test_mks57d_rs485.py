@@ -153,15 +153,17 @@ class FakeClient:
         self,
         start_error: Exception | None = None,
         start_command: int = console.COMMAND_START_VELOCITY,
-        payload_length: int = 10,
+        payload_length: int = 14,
     ) -> None:
         self.start_error = start_error
         self.start_command = start_command
         self.payload_length = payload_length
         self.start_count = 0
+        self.last_payload = b""
 
     def transact(self, command: int, payload: bytes = b"") -> bytes:
         self.assert_start_payload(command, payload)
+        self.last_payload = payload
         self.start_count += 1
         if self.start_error is not None:
             raise self.start_error
@@ -180,6 +182,7 @@ def capture_args(root: Path) -> SimpleNamespace:
     return SimpleNamespace(
         output_root=root,
         rps=0.1,
+        acceleration_rps2=16.0,
         duration_ms=2000,
         interval=0.01,
         port="COM14",
@@ -582,8 +585,47 @@ class VelocityCaptureTests(unittest.TestCase):
             status["loop"]["maximum_consecutive_missed_pwm_updates"], 1
         )
 
-    def test_schema_four_status_fits_host_wire_read_bound(self) -> None:
-        payload = b"\x00" + bytes(console.STATUS_V4_BODY.size)
+    def test_schema_five_status_reports_rotating_controller(self) -> None:
+        values = list(console.STATUS_V3_BODY.unpack(
+            bytes(console.STATUS_V3_BODY.size)
+        ))
+        values[0] = 5
+        body = console.STATUS_V5_BODY.pack(*values, 7, 1, 1)
+
+        status = console.parse_status(body)
+
+        self.assertEqual(status["schema"], 5)
+        self.assertEqual(status["test"]["controller_mode"], "rotating")
+        self.assertEqual(status["loop"]["missed_pwm_update_count"], 7)
+
+    def test_configure_current_test_selects_rotating_mode(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = struct.pack(">HIB", 50, 200000, 1)
+
+        applied = console.configure_current_test(
+            client, 50, 200.0, "rotating"
+        )
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_CONFIGURE_CURRENT_TEST,
+            struct.pack(">HIB", 50, 200000, 1),
+        )
+        self.assertEqual(applied["controller_mode"], "rotating")
+
+    def test_configure_current_test_keeps_legacy_stationary_payload(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = struct.pack(">HI", 50, 200000)
+
+        applied = console.configure_current_test(client, 50, 200.0)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_CONFIGURE_CURRENT_TEST,
+            struct.pack(">HI", 50, 200000),
+        )
+        self.assertEqual(applied["controller_mode"], "stationary")
+
+    def test_schema_five_status_fits_host_wire_read_bound(self) -> None:
+        payload = b"\x00" + bytes(console.STATUS_V5_BODY.size)
         decoded = struct.pack(
             ">BBHBHB",
             console.PROTOCOL_VERSION,
@@ -708,6 +750,7 @@ class VelocityCaptureTests(unittest.TestCase):
         self.assertEqual(align.current_ma, 750.0)
         self.assertEqual(torque.current_ma, 750.0)
         self.assertEqual(velocity.current_limit_ma, 3000.0)
+        self.assertEqual(velocity.acceleration_rps2, 16.0)
         self.assertEqual(position.current_limit_ma, 3000.0)
 
     def test_live_motion_lines_report_nominal_amperes(self) -> None:
@@ -877,8 +920,9 @@ class VelocityCaptureTests(unittest.TestCase):
                 ]
             )
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+                client = FakeClient()
                 result = console._run_velocity_capture(
-                    FakeClient(),
+                    client,
                     capture_args(root),
                     round(0.1 * 65536.0),
                     25,
@@ -898,6 +942,16 @@ class VelocityCaptureTests(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
 
             self.assertEqual(metadata["capture"]["status"], "complete")
+            self.assertEqual(
+                struct.unpack(">iHIi", client.last_payload),
+                (round(0.1 * 65536.0), 25, 2000, 16 << 16),
+            )
+            self.assertEqual(
+                metadata["request"][
+                    "acceleration_revolutions_per_second_squared"
+                ],
+                16.0,
+            )
             self.assertEqual(metadata["analysis"]["sample_count"], 3)
             self.assertNotIn("policy", metadata["initial"]["velocity"])
             self.assertNotIn("policy", metadata["final"]["velocity"])

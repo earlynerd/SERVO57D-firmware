@@ -1,6 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.16 is implemented and flashed in firmware 0.34.0.
+Status: native protocol 1.18 is implemented in the firmware 0.37.0 source
+candidate; firmware 0.36.1 / protocol 1.17 is the flashed baseline.
 Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -107,8 +108,8 @@ from causing reply storms.
 | `0x0001` | `PING` | 0-16 opaque bytes | The same bytes |
 | `0x0002` | `GET_IDENTITY` | Empty | Product ID `u32`, firmware major `u8`, minor `u8`, patch `u16`, protocol major `u8`, minor `u8` |
 | `0x0003` | `GET_CAPABILITIES` | Empty | Capability bitmap `u32` |
-| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-4 commissioning status block |
-| `0x0101` | `CONFIGURE_CURRENT_TEST` | Amplitude counts `u16`, frequency millihertz `u32` | Applied amplitude counts `u16`, frequency millihertz `u32` |
+| `0x0100` | `GET_COMMISSIONING_STATUS` | Empty | Schema-5 commissioning status block |
+| `0x0101` | `CONFIGURE_CURRENT_TEST` | Legacy: amplitude counts `u16`, frequency millihertz `u32`; protocol 1.17 extended: those fields plus controller mode `u8` | Applied request fields; the mode byte is returned for the extended request |
 | `0x0102` | `START_CURRENT_TEST` | Legacy: initial leg `u8`, hold milliseconds `u32`; protocol 1.15 extended: initial leg `u8`, ramp milliseconds `u32`, hold milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
 | `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
@@ -126,7 +127,7 @@ from causing reply storms.
 | `0x0304` | `REVERT_CURRENT_LOOP_GAINS` | Empty | Empty |
 | `0x0400` | `START_ALIGNED_TORQUE` | Signed q-current counts `i16`, duration milliseconds `u32` | Empty |
 | `0x0401` | `GET_ALIGNED_TORQUE_STATUS` | Empty | Schema-2 aligned-torque state, prediction rejection evidence, and complete policy block described below |
-| `0x0500` | `START_VELOCITY` | Signed target mechanical velocity Q16.16 rev/s `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
+| `0x0500` | `START_VELOCITY` | Legacy: signed target mechanical velocity Q16.16 rev/s `i32`, positive q-current limit counts `u16`, duration milliseconds `u32`; protocol 1.18 extended: those fields plus positive reference acceleration Q16.16 rev/s² `i32` | Empty |
 | `0x0501` | `GET_VELOCITY_STATUS` | Empty | Schema-1 velocity state, evidence, and policy block described below |
 | `0x0600` | `START_POSITION_RELATIVE` | Signed relative displacement Q16.16 revolutions `i32`, positive maximum velocity Q16.16 rev/s `i32`, positive maximum acceleration Q16.16 rev/s² `i32`, positive q-current limit counts `u16`, duration milliseconds `u32` | Empty |
 | `0x0601` | `GET_POSITION_STATUS` | Empty | Schema-1 position state, evidence, and policy block described below |
@@ -195,10 +196,25 @@ the per-run count of PWM update boundaries that observed no new staged output
 and the maximum consecutive count to commissioning status schema 4. Status
 schemas 2 and 3 remain host-decodable.
 
+Firmware 0.35.0 / protocol 1.17 adds a backward-compatible seven-byte
+`CONFIGURE_CURRENT_TEST` request and status schema 5. Controller mode `0`
+selects the established stationary A/B PI and mode `1` selects the fixed-point
+rotating-frame PI. The legacy six-byte request selects mode 0 and receives the
+legacy six-byte response body. An extended request receives the applied mode as
+a seventh response byte. Schema 5 appends the configured diagnostic-controller
+mode without moving any older status field.
+
+Firmware 0.37.0 / protocol 1.18 adds a backward-compatible 14-byte
+`START_VELOCITY` request by appending positive Q16.16 reference acceleration to
+the legacy 10-byte request. The legacy form selects 16 rev/s². No command ID,
+response, status schema, authority rule, or independent safety bound changes.
+
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
-1-250000 millihertz. `START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
+1-1000000 millihertz. The optional controller mode changes only this diagnostic;
+aligned torque, velocity, and position retain the stationary A/B current loop.
+`START_CURRENT_TEST` accepts leg values `0=A1`, `1=A2`,
 `2=B1`, and `3=B2`. The five-byte form supplies a 3-through-2147483647 ms
 hold and starts at the configured frequency immediately. The nine-byte form
 supplies a nonnegative ramp duration followed by a hold in that same range;
@@ -381,10 +397,11 @@ overspeed, numeric failure, actuator failure, current-backend failure, or
 readiness loss converges on fault/ZERO. Generic STOP and the physical Right button perform the
 ordinary stopped release path.
 
-The 0.27.1 evaluation policy accepts a nonzero target through ±16 rev/s,
+The evaluation policy accepts a nonzero target through ±16 rev/s,
 a positive per-command limit through 495 current counts (about 2.999 A nominal),
-and a 3 through 2,147,483,647 ms finite duration. The reference is limited to
-256 rev/s². Observed velocity is independently bounded to 20 rev/s, feedback age
+and a 3 through 2,147,483,647 ms finite duration. Protocol 1.18 callers select
+a positive reference acceleration through 256 rev/s²; legacy requests use
+16 rev/s². Observed velocity is independently bounded to 20 rev/s, feedback age
 to 2,000 us, and the downstream actuator still independently enforces its
 current slew, speed, acceleration, phase, backend, and deadline contracts. The
 initial PI gains are Kp 100 current counts/(rev/s) and Ki 200 current
@@ -674,13 +691,13 @@ wall-time acquisition evidence; DWT is used only across the uninterrupted ISR.
 All `u16` timing results saturate rather than wrap. Capture does not alter any
 current, voltage, duty, duration, deadline, fault, or authority limit.
 
-`GET_COMMISSIONING_STATUS` returns the following schema-4 body after the common
+`GET_COMMISSIONING_STATUS` returns the following schema-5 body after the common
 status byte. All multi-byte fields are big-endian; signed fields use two's
 complement.
 
 | Body offset | Type | Field |
 | ---: | --- | --- |
-| 0 | `u8` | Schema version, currently 3 |
+| 0 | `u8` | Schema version, currently 5 |
 | 1 | `u32` | Readiness, supervisor authority, pending-action, and fault flags; `FAULT_PRESENT` covers either a current-backend fault or product-supervisor `FAULT` |
 | 5 | `u8` | Raw electrical input levels; clear means asserted |
 | 6 | `u8` | Debounced electrical input levels; clear means asserted |
@@ -706,6 +723,7 @@ complement.
 | 65 | `u32` | Count of fresh injected VBUS samples accepted by the foreground reader |
 | 69 | `u32` | PWM update boundaries in the latest run that observed no newly staged current-loop output |
 | 73 | `u32` | Maximum consecutive missing-output boundaries in the latest run |
+| 77 | `u8` | Configured current-diagnostic controller: 0 stationary A/B PI, 1 rotating-frame d/q PI |
 
 Input-level bits retain their established wire positions: bit 2 is the Left
 button (PA15), bit 0 is Center (PB8), and bit 1 is Right (PB9). The host tools
@@ -717,11 +735,11 @@ Commissioning flag bits are: bit 0 ADC ready, 1 ADC snapshot valid, 2 zero
 calibration ready, 3 current loop initialized, 4 bridge ready, 5 authority
 active, 6 ISR backend active, 7 remote authority, 8 remote start pending,
 9 remote stop pending, 10 fault present, and 11 VBUS snapshot valid. The
-schema-4 status body is 77 bytes and the complete successful response payload
-is 78 bytes. Schema-2's 63-byte and schema-3's 69-byte bodies remain decodable
-by the host for older flashed images. The guardian still faults on the second
-consecutive missing output; schema 4 makes the permitted isolated event
-observable instead of silently discarding that timing evidence.
+schema-5 status body is 78 bytes and the complete successful response payload
+is 79 bytes. Schema-2's 63-byte, schema-3's 69-byte, and schema-4's 77-byte
+bodies remain decodable by the host for older flashed images. The guardian still
+faults on the second consecutive missing output; schema 4 made the permitted
+isolated event observable, and schema 5 only appends the controller selection.
 
 The physical voltage reported by the host is derived from the measured PA3
 sample using the fitted 15.4 kOhm/1 kOhm divider and the tested-board 3.3 V ADC

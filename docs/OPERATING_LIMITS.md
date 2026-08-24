@@ -1,7 +1,7 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.34.0 / protocol 1.16 is the current source and flashed
-candidate. The flashed image retains
+Status: firmware 0.37.0 / protocol 1.18 is the current source candidate;
+firmware 0.36.1 / protocol 1.17 is the flashed baseline. The flashed image retains
 the measured 55 us predictor lead, generation-3 alignment, physical VBUS, and
 the complete bounded motion/fault envelope. Matched +8 rev/s trials at 24 V
 reduced velocity RMS error from 0.797 to 0.621 to 0.460 rev/s while staging
@@ -43,9 +43,25 @@ validated point is evidence, not automatically a request ceiling.
 - **Implementation constraint:** a real limitation of the present algorithm or
   schedule that must be engineered away to reach the performance target.
 
+Every enforced limit must protect hardware, preserve control or safety
+integrity, or ensure that an operation is explicit and intentional. Its owner
+and basis must be traceable here. A bound without one of those purposes must be
+removed or placed above every legitimate behavior admitted by the surrounding
+hardware, sensing, numerical, and scheduling contracts; conservative-looking
+numbers are not justification by themselves.
+
+Motor feasibility and drive permission are deliberately separate. Defaults
+should be broadly achievable starting points, but firmware ceilings are based
+on drive hardware, sensing, numerical representation, scheduling, or control
+integrity—not the pull-out curve of the motor currently attached. A permitted
+velocity or acceleration may therefore be physically unachievable for many
+motors. Loss of synchronism does not by itself indicate danger to the drive;
+electrical protections remain independent, while following-error shutdown may
+still preserve position-command integrity.
+
 ## Current firmware inventory
 
-| Quantity | Firmware 0.34.0 source value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Firmware 0.37.0 source value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Bus-voltage scale | 13.22 mV/count nominal | Tested-board 3.3 V ADC reference and fitted 15.4 kOhm/1 kOhm divider | Automatic-injected PA3 ADC acquisition and host conversion | Inactive 0.28.0 status reported 23.829 V at the 24 V supply setting; all 22 active samples held 23.776-23.815 V with advancing samples and no ADC/deadline fault |
@@ -62,7 +78,7 @@ validated point is evidence, not automatically a request ceiling.
 | Rotor publication | 56-byte progress at 4 kHz; 576-byte full state at 100 Hz plus transitions | Scheduling contract separating liveness/readiness fields from telemetry-sized controller state | `rotor_control_runtime` sequence-protected publications and foreground | Arm builds/static assertion confirm sizes; measure PendSV WCET and foreground load on hardware |
 | Foreground safety housekeeping | 1 kHz nominal | Implementation cadence for compact progress, liveness/readiness, runtime events, state invariants, RS-485 health, diagnostic deadline, and watchdog policy | Foreground main loop | Wrap-safe scheduling is build-reviewed; threshold crossings are observed by the next poll, so bench-check liveness and STOP reaction latency |
 | Encoder observation timestamp | CS assertion at the start of the coherent four-byte window | Acquisition-window timing contract replacing post-DMA/post-hold publication time | `spi1` | Correlate CS/SCK and reported prediction age; the exact sensor-internal register-latch instant remains to be established |
-| Mechanical acceleration during open torque | 512 rev/s² observed | Independent shutdown at twice the fastest 256 rev/s² commanded reference slew and well above the approximately 32.1 rev/s² single-count filtered-estimator step at 4 kHz | `aligned_torque_controller` | Traceable plausibility boundary rather than a command target; host regression proves overacceleration convergence and flashed 0.29.3 reports the exact live value |
+| Mechanical acceleration during open torque | 8,192 rev/s² observed | Estimator-plausibility boundary above the approximately 5,350 rev/s² largest nominal-cadence velocity change the 4 kHz filtered estimator can publish while accepting raw motion at its 20 rev/s boundary; not a hardware protection threshold | `aligned_torque_controller` | Current, voltage, duty, speed, feedback-age, and faults independently protect the drive; revisit this limit with the estimator cadence/filter or a qualified motor/load inertia model |
 | Accepted feedback interval | 2,000 us maximum | Timing policy for the nominal 4 kHz encoder schedule, allowing eight nominal release periods before rejection | `aligned_torque_controller` | Active 1 kHz hardware observations were about 981-1,001 us; remeasure under the 4 kHz outer-loop load |
 | Fast electrical-phase prediction | Every 50 us; 3,000 us maximum observation age; 55 us measured output lead; observations through 20 rev/s | Timing contract: predict from regular-current DMA completion near 45 us to the 100 us PWM application boundary; the priority-1 guardian permits the intentional intervening update but faults a second update without new output | `electrical_phase_predictor` through `current_loop_backend` | The first firmware 0.30.0 +8 rev/s burst measured a 41.094 us trigger, 3.938 us trigger-to-DMA interval, 20.578-21.141 us DMA-to-stage path, and 33.031-33.594 us remaining to the 100 us application boundary. Firmware 0.30.1 corrects the old 7 us estimate; repeat +8 rev/s after flash before +12 rev/s |
 | Current timing trace | 256 samples only after explicit active arm; timing reads dormant otherwise | Optional measurement contract; normal control avoids TIM2/DWT/preload timing overhead while retaining all current, output, PWM, and deadline checks | ADC/current backend | Re-arm, fill, stop, fault, recovery, and in-flight arm/disarm behavior are build-reviewed; remeasure the optimized disarmed ISR and explicitly armed trace on hardware |
@@ -71,7 +87,7 @@ validated point is evidence, not automatically a request ceiling.
 | Estimator motion plausibility | 20 rev/s, 1,200 RPM maximum | Implementation threshold for rejecting implausible sample-to-sample motion | `angle_tracker` | Defines the present architecture boundary and leaves 20% room above the 16 rev/s command range; raising it toward at least 50 rev/s is active speed work |
 | Torque duration | 3 through 2,147,483,647 ms | Timing-derived: 3 ms allows a pre-deadline update at the 2 ms feedback limit; the maximum is the signed modulo-32-bit half-range | Command service and `aligned_torque_controller` | Caller always supplies a finite deadline; duration is not a thermal/current proxy or communications lease |
 | Velocity target | ±16 rev/s, ±960 RPM | Evaluation permission using 80% of the current 20 rev/s estimator boundary | Command service and `velocity_controller` | At 24 V, positive +8 rev/s reaches/passes target without q-current clipping; +12 rev/s saturates q-demand and phase voltage and plateaus near 10 rev/s. Improve current tracking and run the negative sign before treating 12 or 16 rev/s as achieved performance |
-| Inner velocity-reference acceleration | 256 rev/s² | Evaluation slew with fourfold headroom over the maximum position-profile acceleration | `velocity_controller` | Direct velocity commands use this ramp; current saturation and plant inertia still determine achieved acceleration |
+| Direct velocity-reference acceleration | Caller-selected positive value through 256 rev/s²; host and legacy default 16 rev/s² | Explicit trajectory shape; 256 retains fourfold headroom over the maximum position-profile acceleration and is controller capability, not a motor claim | Command service and `velocity_controller` | The attached motor stayed synchronized at 16 rev/s² and skipped steps at 32 rev/s² in position trials; use 16 for the next direct-velocity validation while current saturation and plant inertia still determine achieved acceleration |
 | Velocity-command current | 6.059 mA-2.999 A nominal per request (raw 1-495 counts) | Evaluation permission matching the attached motor's reported rating and existing aligned actuator | `velocity_controller`, then independently slewed and bounded by `aligned_torque_controller` | The +6 rev/s/12 V test exercised the requested/applied q-current ceiling without a fault, but measured-vector magnitude peaked near 0.90 A because voltage clipped. This is command-path evidence, not delivered-current or thermal qualification |
 | Velocity feedback speed | 20 rev/s, 1,200 RPM maximum observed | Independent runaway/feedback plausibility ceiling shared with the estimator and aligned actuator | `velocity_controller` and `aligned_torque_controller` | This is a shutdown threshold, not a commandable speed rating |
 | Velocity feedback interval | 2,000 us maximum | Same timing policy as the 4 kHz aligned actuator | `velocity_controller` and `aligned_torque_controller` | The 1 kHz baseline captured 998-1,002 us under the +5/+6 rev/s PI load; remeasure at 4 kHz |
@@ -87,9 +103,11 @@ validated point is evidence, not automatically a request ceiling.
 | Position completion | 0.002 revolution, 0.02 rev/s, 200 consecutive 4 kHz samples | Evaluation settling policy preserving about 50 ms of position and speed agreement | `position_controller` | Six 1 kHz baseline moves reached finite deadline with repeatable approximately ±0.0025-revolution endpoint offset; revalidate at 4 kHz |
 | Position feedback interval | 2,000 us maximum | Same deterministic 4 kHz feedback-age contract as velocity | `position_controller`, velocity controller, and aligned actuator | Any violation faults and converges on `ZERO` |
 | Position duration | 100 through 2,147,483,647 ms | Finite wrap-safe deadline; expiration releases normally but reports `deadline`, not `settled` | Command service and `position_controller` | Caller must choose a duration long enough for the requested profile and settling time |
-| Rotating-current diagnostic frequency | 0.001 through 250 electrical Hz | Evaluation envelope matching 5 rev/s on the 50-cycle/rev motor | Product diagnostic command path | The 20 kHz reference schedule provides 80 points/cycle at 250 Hz and 100 at 200 Hz; remeasure tracking, vibration, and fast-loop timing after flashing 0.34.0 |
+| Rotating-current diagnostic frequency | 0.001 through 1,000 electrical Hz | Implementation-based evaluation envelope retaining 20 current-loop updates and four 4 kHz encoder observations per cycle at the endpoint | Product diagnostic command path | Firmware 0.35.0 passes through 225 Hz at 303 mA and through 200 Hz at 606 mA and 1.503 A; the 1.503 A / 200 Hz trial used 697/700 voltage permille, so the widened source range is permission to characterize other motors rather than qualification of this motor |
 | Rotating-current diagnostic ramp | Optional 0-to-target linear frequency ramp; production tuner default 50 electrical Hz/s | Test-shaping input rather than a qualified motor acceleration; the host converts rate to a per-frequency ramp duration | 20 kHz diagnostic generator through the product supervisor/current backend | Allows the rotor to accelerate before high-frequency hold measurements; current amplitude is applied immediately at the initial phase, and zero ramp retains the legacy step |
-| Current-loop missed PWM updates | Fault on the second consecutive PWM boundary without a new staged output; count every isolated/consecutive event | Safety timing contract plus diagnostic evidence | Priority-1 TIM3 guardian; schema-4 commissioning status | The prior guardian behavior is unchanged, but 0.34.0 exposes per-run total and maximum consecutive counts; require both to remain zero in the next high-speed tuning sweep |
+| Current-diagnostic controller | Stationary A/B PI by default; selectable fixed-point rotating d/q PI | Bench-proven comparison and motor-tuning mechanism | 20 kHz current backend under the same supervisor authority and electrical limits | At 303 mA and Kp=9/Ki=0.5, rotating mode reduced 200 Hz lag from 39.09 to -0.01 degrees and RMS error from 149.4 to 7.9 mA; retain it for same-condition comparison and tuning |
+| Product aligned-q current controller | Fixed-point rotating d/q PI with `d=0` and signed q demand | Source-candidate product controller; static vectors and alignment remain stationary A/B PI | 20 kHz current backend using the encoder phase predictor's sample and 55 us PWM-application horizons | Host/build validation is complete; require bounded signed torque, velocity, position, timing, STOP/release, fault, and thermal bench evidence before expanding the flashed motion envelope |
+| Current-loop missed PWM updates | Fault on the second consecutive PWM boundary without a new staged output; count every isolated/consecutive event | Safety timing contract plus diagnostic evidence | Priority-1 TIM3 guardian; schema-5 commissioning status | The guardian is unchanged; require both total and maximum consecutive counts to remain zero in each rotating-frame trial |
 | Rotating-current diagnostic duration | Hold 3 through 2,147,483,647 ms; ramp plus hold at most 2,147,483,647 ms | Same wrap-safe finite-deadline basis as aligned torque | Product diagnostic command path | One independent deadline covers both intervals; STOP and faults remain effective during the ramp |
 
 Current ADC counts are not bus-voltage dependent. They measure shunt voltage
@@ -142,9 +160,10 @@ The next envelopes are product-development gates, not permanent ceilings:
    before using +16 rev/s as performance evidence. At 16 rev/s the predictor provides 25 fast-loop updates per
    electrical cycle; current tracking, voltage use, filtered-velocity lag,
    mechanics, and torque ripple identify the next concrete change.
-3. Exercise the 64 rev/s² position profile beneath the 256 rev/s² inner slew and
-   confirm that the 17 rev/s corrected target recovers lag without creating a
-   following-error fault. Then make motor current, velocity, acceleration, and
+3. Validate the 16 rev/s² direct-velocity default in both signs before staging
+   higher acceleration. The attached motor physically skipped steps at a
+   32 rev/s² position profile despite clean controller telemetry, so physical
+   synchronism—not telemetry alone—owns the acceleration qualification. Then make motor current, velocity, acceleration, and
    PI gains persistent application configuration while preserving the exposed
    evaluation permission.
 4. Qualify the motor's reported 3 A rating only after current-sense

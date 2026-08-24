@@ -32,6 +32,13 @@ typedef enum
     CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING = 4u
 } current_loop_phase_prediction_reject_t;
 
+typedef enum
+{
+    CURRENT_LOOP_BACKEND_CONTROLLER_STATIONARY = 0u,
+    CURRENT_LOOP_BACKEND_CONTROLLER_ROTATING_FRAME = 1u,
+    CURRENT_LOOP_BACKEND_CONTROLLER_COUNT
+} current_loop_backend_controller_t;
+
 typedef struct
 {
     phase_current_loop_output_t latest_output;
@@ -49,6 +56,7 @@ typedef struct
     uint32_t maximum_phase_prediction_age_us;
     uint16_t phase_prediction_output_lead_us;
     uint8_t phase_prediction_reject_reason;
+    uint8_t rotating_reference_controller_mode;
     bool initialized;
     bool active;
     bool phase_prediction_active;
@@ -82,7 +90,8 @@ bool current_loop_backend_set_rotating_reference(
     int16_t amplitude_counts,
     uint32_t phase_increment_q32_per_step,
     uint32_t initial_phase_q32,
-    uint64_t ramp_step_count);
+    uint64_t ramp_step_count,
+    current_loop_backend_controller_t controller_mode);
 bool current_loop_backend_set_aligned_q_reference(
     int16_t q_current_reference_counts,
     uint32_t electrical_phase_q32,

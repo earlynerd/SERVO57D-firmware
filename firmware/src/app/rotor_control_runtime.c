@@ -400,6 +400,7 @@ static bool start_velocity(rotor_control_runtime_t* runtime,
         !velocity_controller_start(
             &runtime->velocity_controller,
             runtime->requested_velocity_revolutions_per_second_q16_16,
+            runtime->requested_velocity_acceleration_q16_16,
             runtime->requested_velocity_current_limit_counts,
             runtime->requested_velocity_duration_millis,
             runtime->motor_alignment.status.encoder_direction,
@@ -852,6 +853,7 @@ bool rotor_control_runtime_init(
     runtime->requested_q_current_counts = 0;
     runtime->requested_torque_duration_millis = 0u;
     runtime->requested_velocity_revolutions_per_second_q16_16 = 0;
+    runtime->requested_velocity_acceleration_q16_16 = 0;
     runtime->requested_velocity_current_limit_counts = 0u;
     runtime->requested_velocity_duration_millis = 0u;
     runtime->requested_position_displacement_revolutions_q16_16 = 0;
@@ -920,6 +922,7 @@ bool rotor_control_runtime_request_torque(
 bool rotor_control_runtime_request_velocity(
     rotor_control_runtime_t* runtime,
     int32_t velocity_revolutions_per_second_q16_16,
+    int32_t acceleration_revolutions_per_second2_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis)
 {
@@ -927,6 +930,7 @@ bool rotor_control_runtime_request_velocity(
 
     if ((runtime == NULL) || !runtime->initialized ||
         (velocity_revolutions_per_second_q16_16 == 0) ||
+        (acceleration_revolutions_per_second2_q16_16 <= 0) ||
         (current_limit_counts == 0u) || (duration_millis == 0u))
     {
         return false;
@@ -939,6 +943,8 @@ bool rotor_control_runtime_request_velocity(
     }
     runtime->requested_velocity_revolutions_per_second_q16_16 =
         velocity_revolutions_per_second_q16_16;
+    runtime->requested_velocity_acceleration_q16_16 =
+        acceleration_revolutions_per_second2_q16_16;
     runtime->requested_velocity_current_limit_counts = current_limit_counts;
     runtime->requested_velocity_duration_millis = duration_millis;
     __DMB();
@@ -1116,6 +1122,7 @@ bool rotor_control_runtime_clear_faults(
     runtime->requested_q_current_counts = 0;
     runtime->requested_torque_duration_millis = 0u;
     runtime->requested_velocity_revolutions_per_second_q16_16 = 0;
+    runtime->requested_velocity_acceleration_q16_16 = 0;
     runtime->requested_velocity_current_limit_counts = 0u;
     runtime->requested_velocity_duration_millis = 0u;
     runtime->requested_position_displacement_revolutions_q16_16 = 0;

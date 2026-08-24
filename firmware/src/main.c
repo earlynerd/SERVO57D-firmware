@@ -69,7 +69,7 @@ static rotor_control_progress_snapshot_t rotor_control_progress_snapshot;
 
 enum
 {
-    COMMISSIONING_STATUS_SCHEMA_VERSION = 4u,
+    COMMISSIONING_STATUS_SCHEMA_VERSION = 5u,
     ENCODER_STATUS_SCHEMA_VERSION = 2u,
     CURRENT_TRACE_SCHEMA_VERSION = 2u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
@@ -78,7 +78,7 @@ enum
     POSITION_STATUS_SCHEMA_VERSION = 1u,
     FAULT_RECOVERY_STATUS_SCHEMA_VERSION = 1u,
     CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ = 1u,
-    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 250000u,
+    CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ = 1000000u,
     CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS = 3u,
     CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS = INT32_MAX,
     CURRENT_TEST_REFERENCE_FREQUENCY_HZ =
@@ -112,7 +112,9 @@ typedef struct
     rotor_control_runtime_t* rotor_control_runtime;
     uint32_t* raw_input_levels;
     int32_t maximum_command_velocity_revolutions_per_second_q16_16;
+    int32_t default_command_acceleration_revolutions_per_second2_q16_16;
     int32_t requested_velocity_revolutions_per_second_q16_16;
+    int32_t requested_acceleration_revolutions_per_second2_q16_16;
     uint16_t requested_current_limit_counts;
     uint32_t requested_duration_millis;
     bool start_requested;
@@ -175,6 +177,7 @@ struct product_command_context
     uint16_t maximum_test_amplitude_counts;
     uint16_t test_amplitude_counts;
     uint32_t test_frequency_millihz;
+    uint8_t test_controller_mode;
     bool remote_start_requested;
     bool remote_stop_requested;
     bool remote_authority_active;
@@ -383,6 +386,7 @@ static command_status_t commissioning_get_status(
         loop.missed_pwm_update_count;
     status->maximum_consecutive_missed_pwm_updates =
         loop.maximum_consecutive_missed_pwm_updates;
+    status->test_controller_mode = commissioning->test_controller_mode;
 
     now = timebase_millis();
     if (commissioning->remote_authority_active &&
@@ -422,7 +426,9 @@ static command_status_t commissioning_configure(
         (requested->frequency_millihz <
          CURRENT_TEST_MINIMUM_FREQUENCY_MILLIHZ) ||
         (requested->frequency_millihz >
-         CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ))
+         CURRENT_TEST_MAXIMUM_FREQUENCY_MILLIHZ) ||
+        (requested->controller_mode >=
+         COMMAND_CURRENT_TEST_CONTROLLER_COUNT))
     {
         return COMMAND_STATUS_INVALID_PAYLOAD;
     }
@@ -441,6 +447,7 @@ static command_status_t commissioning_configure(
 
     commissioning->test_amplitude_counts = requested->amplitude_counts;
     commissioning->test_frequency_millihz = requested->frequency_millihz;
+    commissioning->test_controller_mode = requested->controller_mode;
     *applied = *requested;
     return COMMAND_STATUS_OK;
 }
@@ -1130,7 +1137,8 @@ static command_status_t velocity_start(
     void* context,
     int32_t velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
-    uint32_t duration_millis)
+    uint32_t duration_millis,
+    int32_t acceleration_revolutions_per_second2_q16_16)
 {
     velocity_command_context_t* velocity = context;
     product_command_context_t* product;
@@ -1160,9 +1168,18 @@ static command_status_t velocity_start(
     {
         target_magnitude = -target_magnitude;
     }
+    if (acceleration_revolutions_per_second2_q16_16 == 0)
+    {
+        acceleration_revolutions_per_second2_q16_16 = velocity->
+            default_command_acceleration_revolutions_per_second2_q16_16;
+    }
     if ((velocity_revolutions_per_second_q16_16 == 0) ||
         (target_magnitude > velocity->
              maximum_command_velocity_revolutions_per_second_q16_16) ||
+        (acceleration_revolutions_per_second2_q16_16 <= 0) ||
+        (acceleration_revolutions_per_second2_q16_16 >
+         float_to_q16_16(velocity->velocity_controller->config.
+             maximum_target_acceleration_revolutions_per_second_squared)) ||
         (current_limit_counts == 0u) ||
         (current_limit_counts > velocity->velocity_controller->config.
              maximum_current_counts) ||
@@ -1208,6 +1225,8 @@ static command_status_t velocity_start(
 
     velocity->requested_velocity_revolutions_per_second_q16_16 =
         velocity_revolutions_per_second_q16_16;
+    velocity->requested_acceleration_revolutions_per_second2_q16_16 =
+        acceleration_revolutions_per_second2_q16_16;
     velocity->requested_current_limit_counts = current_limit_counts;
     velocity->requested_duration_millis = duration_millis;
     velocity->stop_requested = false;
@@ -2257,12 +2276,13 @@ int main(void)
         /* The estimator is now the observed-speed boundary for motion. */
         ALIGNED_TORQUE_MAXIMUM_VELOCITY_Q16_16 = 20u << 16,
         /*
-         * Independent observed-motion shutdown with twofold headroom over
-         * the fastest permitted velocity-reference slew. This remains well
-         * above the approximately 32.1 rev/s^2 single-count filtered-estimator
-         * step at the nominal 4 kHz sample rate.
+         * Independent estimator-plausibility shutdown above the approximately
+         * 5,350 rev/s^2 largest nominal-cadence velocity change the 4 kHz
+         * filtered estimator can publish while accepting raw motion at its
+         * existing 20 rev/s boundary. Hardware is protected independently by
+         * current, voltage, duty, speed, timing, and fault contracts.
          */
-        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 512u << 16,
+        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 = 8192u << 16,
         ALIGNED_TORQUE_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
         /*
          * The 80%-carrier trigger completes DMA near 45 us. The measured
@@ -2301,6 +2321,7 @@ int main(void)
          */
         VELOCITY_MAXIMUM_COMMAND_Q16_16 = 16u << 16,
         VELOCITY_MAXIMUM_TARGET_Q16_16 = 17u << 16,
+        VELOCITY_DEFAULT_COMMAND_ACCELERATION_Q16_16 = 16u << 16,
         VELOCITY_MAXIMUM_ACCELERATION_Q16_16 = 256u << 16,
         VELOCITY_MAXIMUM_CURRENT_COUNTS = 495u,
         VELOCITY_MAXIMUM_FEEDBACK_INTERVAL_US = 2000u,
@@ -2372,9 +2393,14 @@ int main(void)
     _Static_assert(POSITION_MAXIMUM_ACCELERATION_Q16_16 * 4u <=
                        VELOCITY_MAXIMUM_ACCELERATION_Q16_16,
                    "inner velocity slew requires fourfold profile headroom");
-    _Static_assert(VELOCITY_MAXIMUM_ACCELERATION_Q16_16 * 2u ==
+    _Static_assert(VELOCITY_DEFAULT_COMMAND_ACCELERATION_Q16_16 <=
+                       VELOCITY_MAXIMUM_ACCELERATION_Q16_16,
+                   "default velocity acceleration exceeds its contract");
+    _Static_assert(VELOCITY_MAXIMUM_ACCELERATION_Q16_16 * 4u <=
                        ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16,
-                   "observed acceleration shutdown requires twofold slew headroom");
+                   "observed acceleration shutdown lacks slew headroom");
+    _Static_assert(ALIGNED_TORQUE_MAXIMUM_ACCELERATION_Q16_16 <= INT32_MAX,
+                   "observed acceleration shutdown exceeds Q16.16 range");
     _Static_assert(POSITION_MINIMUM_DURATION_MS >=
                        VELOCITY_MINIMUM_DURATION_MS,
                    "position duration is unsupported by the velocity layer");
@@ -2584,6 +2610,8 @@ int main(void)
         .raw_input_levels = &raw_input_levels,
         .maximum_command_velocity_revolutions_per_second_q16_16 =
             VELOCITY_MAXIMUM_COMMAND_Q16_16,
+        .default_command_acceleration_revolutions_per_second2_q16_16 =
+            VELOCITY_DEFAULT_COMMAND_ACCELERATION_Q16_16,
     };
     position_command_context_t position_commands = {
         .supervisor = &drive_supervisor,
@@ -2633,6 +2661,8 @@ int main(void)
             CURRENT_LOOP_REFERENCE_LIMIT_COUNTS,
         .test_amplitude_counts = CURRENT_TEST_AMPLITUDE_COUNTS,
         .test_frequency_millihz = CURRENT_TEST_FREQUENCY_MILLIHZ,
+        .test_controller_mode =
+            COMMAND_CURRENT_TEST_CONTROLLER_STATIONARY,
         .velocity_commands = &velocity_commands,
         .position_commands = &position_commands,
     };
@@ -3344,6 +3374,8 @@ int main(void)
                     &rotor_control_runtime,
                     velocity_commands.
                         requested_velocity_revolutions_per_second_q16_16,
+                    velocity_commands.
+                        requested_acceleration_revolutions_per_second2_q16_16,
                     velocity_commands.requested_current_limit_counts,
                     velocity_commands.requested_duration_millis))
             {
@@ -3467,7 +3499,9 @@ int main(void)
                             commissioning_context.remote_start_leg),
                         current_test_ramp_step_count(
                             commissioning_context.
-                                remote_start_ramp_duration_millis)) ||
+                                remote_start_ramp_duration_millis),
+                        (current_loop_backend_controller_t)
+                            commissioning_context.test_controller_mode) ||
                     !current_loop_backend_start())
                 {
                     commissioning_context.remote_authority_active = false;

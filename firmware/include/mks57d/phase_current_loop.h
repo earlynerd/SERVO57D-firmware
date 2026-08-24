@@ -93,5 +93,20 @@ bool phase_current_loop_step_prevalidated(
     uint16_t current_a_raw,
     uint16_t current_b_raw,
     phase_current_loop_output_t* output);
+/* Fixed-point rotating-frame hot path. Measurements are Park-transformed at
+ * sample_electrical_phase_q32; the d/q PI voltage is inverse-Park-transformed
+ * at pwm_application_phase_q32. The prevalidated-config contract matches the
+ * stationary hot-path variant, while raw ADC, hard-current, d/q reference,
+ * per-phase voltage/duty, runtime-state, and fault checks remain enforced. */
+bool phase_current_loop_step_rotating_prevalidated(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    uint16_t current_a_raw,
+    uint16_t current_b_raw,
+    int16_t current_d_reference_counts,
+    int16_t current_q_reference_counts,
+    uint32_t sample_electrical_phase_q32,
+    uint32_t pwm_application_phase_q32,
+    phase_current_loop_output_t* output);
 
 #endif

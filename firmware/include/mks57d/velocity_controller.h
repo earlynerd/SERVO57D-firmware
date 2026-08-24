@@ -81,6 +81,7 @@ typedef struct
     pi_controller_t current_controller;
     float target_velocity_revolutions_per_second;
     float reference_velocity_revolutions_per_second;
+    float target_acceleration_revolutions_per_second_squared;
     uint32_t start_millis;
     uint32_t deadline_millis;
     uint32_t last_feedback_timestamp_us;
@@ -96,6 +97,7 @@ bool velocity_controller_init(
 bool velocity_controller_start(
     velocity_controller_t* controller,
     int32_t target_velocity_revolutions_per_second_q16_16,
+    int32_t target_acceleration_revolutions_per_second2_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
     int8_t actuator_direction,

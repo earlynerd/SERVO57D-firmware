@@ -537,7 +537,9 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u32_be(
                     &response_frame->payload[74],
                     status->maximum_consecutive_missed_pwm_updates);
-                payload_length = 78u;
+                response_frame->payload[78] =
+                    status->test_controller_mode;
+                payload_length = 79u;
                 break;
             }
 
@@ -550,7 +552,11 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                     &response_frame->payload[3],
                     command_response->data.current_test_config.
                         frequency_millihz);
-                payload_length = 7u;
+                response_frame->payload[7] =
+                    command_response->data.current_test_config.
+                        controller_mode;
+                payload_length = command_response->data.current_test_config.
+                    controller_mode_present ? 8u : 7u;
                 break;
 
             case COMMAND_RESPONSE_BOOT_STATUS:

@@ -1,6 +1,8 @@
 # Firmware Architecture
 
-Status: firmware 0.32.2 source implements the reset-safe foundation, synchronous ADC
+Status: firmware 0.37.0 is the current source candidate and firmware 0.36.1 is
+the flashed baseline. The source
+implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV own the
@@ -42,6 +44,14 @@ explicit trace arm, and replaces the 4 kHz full-controller publication with a
 56-byte progress record plus 100 Hz/event-driven full state. Foreground safety
 housekeeping consumes progress at 1 ms; raw Right-button sampling and RS-485
 draining remain wake-driven.
+Firmware 0.34.0 moves the diagnostic oscillator to the 20 kHz backend.
+Firmware 0.35.0 adds a selectable fixed-point d/q PI only for that bounded
+diagnostic, using sample-angle Park and 55 us application-angle inverse Park;
+the stationary A/B PI remains the default and retains product-motion ownership.
+Firmware 0.36.0 promotes the fixed-point d/q PI into the aligned-q actuator:
+torque, velocity, and position command `d=0` plus signed q current through the
+existing 20 kHz predictor/backend, while static references and alignment retain
+stationary A/B PI. No outer controller or bridge-authority owner changes.
 
 ## Design priorities
 
@@ -163,9 +173,10 @@ The current image implements:
   generation, PI anti-windup, cascaded position/velocity control, Park and
   inverse-Park transforms, and vector-limited d/q current regulation with
   deterministic mechanical and electrical host-plant tests.
-- Standalone cumulative-count step/direction decoding and portable d/q current
-  regulation remain host-tested and Arm-compiled for future integration. They
-  do not own product motion or bridge authority.
+- Standalone cumulative-count step/direction decoding and the portable
+  floating-point d/q controller remain host-tested and Arm-compiled for future
+  integration. A distinct fixed-point d/q branch is linked only for the bounded
+  rotating-current diagnostic; neither path owns product motion or authority.
 
 The drive supervisor is the only application-level bridge authority. The
 current-loop backend owns TIM3, DMA channel 1 completion, independent electrical
@@ -181,7 +192,9 @@ The focused product velocity and relative-position controllers, their
 trajectory/PI dependencies, and the encoder-liveness guard are linked. The
 standalone step/direction decoder and d/q current controller form the
 `mks57d_future_control` compile target and remain outside the product image;
-both also retain host tests. Their contracts use revolutions, seconds,
+both also retain host tests. The active diagnostic's fixed-point d/q branch is
+implemented inside the board-specific phase-current loop and does not link this
+portable future controller. Their contracts use revolutions, seconds,
 amperes, volts, and radians explicitly.
 
 `rotor_control_runtime` alone consumes raw encoder samples and owns the
@@ -192,8 +205,9 @@ consume that immutable observation and independently enforce feedback age,
 deadlines, speed, acceleration, current, and following-error limits. The
 portable d/q current controller accepts stationary measured current plus d/q
 references and emits a bounded stationary voltage vector, but that unqualified
-future output is not connected to PWM. Product q-current is instead transformed
-into A/B current references and regulated by the proven board-specific backend.
+future output is not connected to PWM. The bounded diagnostic may instead
+select the backend's fixed-point d/q PI; product q-current is still transformed
+into A/B current references and regulated by the proven stationary PI path.
 
 `main.c` uses `product_command_context_t` as the foreground composition
 aggregate for diagnostics, alignment, torque, configuration, and telemetry.

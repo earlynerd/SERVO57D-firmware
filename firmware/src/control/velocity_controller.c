@@ -91,6 +91,7 @@ bool velocity_controller_init(
 static bool start_controller(
     velocity_controller_t* controller,
     int32_t target_velocity_revolutions_per_second_q16_16,
+    float target_acceleration_revolutions_per_second_squared,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
     int8_t actuator_direction,
@@ -107,6 +108,11 @@ static bool start_controller(
         !isfinite(observation->velocity_revolutions_per_second) ||
         (!allow_zero_target &&
          (target_velocity_revolutions_per_second_q16_16 == 0)) ||
+        !finite_positive(
+            target_acceleration_revolutions_per_second_squared) ||
+        (target_acceleration_revolutions_per_second_squared >
+         controller->config.
+             maximum_target_acceleration_revolutions_per_second_squared) ||
         (current_limit_counts == 0u) ||
         (current_limit_counts > controller->config.maximum_current_counts) ||
         (duration_millis < controller->config.minimum_duration_millis) ||
@@ -139,6 +145,8 @@ static bool start_controller(
     controller->target_velocity_revolutions_per_second = target_velocity;
     controller->reference_velocity_revolutions_per_second =
         observation->velocity_revolutions_per_second;
+    controller->target_acceleration_revolutions_per_second_squared =
+        target_acceleration_revolutions_per_second_squared;
     controller->start_millis = now_millis;
     controller->deadline_millis = now_millis + duration_millis;
     controller->last_feedback_timestamp_us = observation->timestamp_us;
@@ -150,15 +158,20 @@ static bool start_controller(
 bool velocity_controller_start(
     velocity_controller_t* controller,
     int32_t target_velocity_revolutions_per_second_q16_16,
+    int32_t target_acceleration_revolutions_per_second2_q16_16,
     uint16_t current_limit_counts,
     uint32_t duration_millis,
     int8_t actuator_direction,
     uint32_t now_millis,
     const rotor_observation_t* observation)
 {
+    const float target_acceleration = q16_16_to_float(
+        target_acceleration_revolutions_per_second2_q16_16);
+
     return start_controller(
         controller,
         target_velocity_revolutions_per_second_q16_16,
+        target_acceleration,
         current_limit_counts,
         duration_millis,
         actuator_direction,
@@ -176,9 +189,15 @@ bool velocity_controller_start_tracking(
     uint32_t now_millis,
     const rotor_observation_t* observation)
 {
+    if (controller == NULL)
+    {
+        return false;
+    }
     return start_controller(
         controller,
         target_velocity_revolutions_per_second_q16_16,
+        controller->config.
+            maximum_target_acceleration_revolutions_per_second_squared,
         current_limit_counts,
         duration_millis,
         actuator_direction,
@@ -282,8 +301,7 @@ velocity_control_event_t velocity_controller_update(
 
     elapsed_seconds = (float)elapsed_us / (float)MICROSECONDS_PER_SECOND;
     maximum_reference_delta =
-        controller->config.
-            maximum_target_acceleration_revolutions_per_second_squared *
+        controller->target_acceleration_revolutions_per_second_squared *
         elapsed_seconds;
     remaining_reference_delta =
         controller->target_velocity_revolutions_per_second -

@@ -5,8 +5,8 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.34.0 / native protocol 1.16 is the current source candidate and
-flashed baseline. Firmware 0.30.1 corrected the fast
+Firmware 0.37.0 / native protocol 1.18 is the current source candidate;
+firmware 0.36.1 / protocol 1.17 is the flashed baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -68,6 +68,53 @@ millisecond. Protocol 1.16 status and tuning reports also expose each run's
 total missed PWM-output boundaries and maximum consecutive misses; the existing
 guardian still faults on the second consecutive miss.
 
+Firmware 0.35.0 adds a selectable fixed-point rotating-frame PI only to that
+bounded diagnostic. It Park-transforms measured A/B current at the ADC sample
+angle and inverse-Park-transforms its d/q voltage at the measured 55 us PWM
+application boundary. The existing stationary A/B PI remains the default and
+the production torque/velocity/position path is unchanged. Protocol 1.17 keeps
+the legacy six-byte diagnostic configuration request, adds an optional
+controller-mode byte, and reports the active diagnostic mode in status schema
+5. Tuning reports now plot and summarize d/q current and voltage for direct
+same-condition comparison.
+
+Firmware 0.35.1 widens only the rotating-current diagnostic permission from
+250 to 1,000 electrical Hz. At that ceiling the 20 kHz current loop retains 20
+updates per electrical cycle and the 4 kHz encoder retains four observations
+per cycle. This is an implementation-based search bound for other motors, not
+qualification of the attached motor; current, voltage, duty, timing, deadline,
+STOP, fault, and `ZERO` enforcement are unchanged.
+
+Firmware 0.36.0 promotes the proven fixed-point rotating-frame PI into the
+production aligned-q actuator used by torque, velocity, and position control.
+Each 20 kHz current event predicts both the current-sample phase for Park and
+the measured 55 us PWM-application phase for inverse Park, then regulates
+`d=0` and the signed q-current command. Static current vectors and alignment
+remain on stationary A/B PI because they deliberately operate without a valid
+rotor-aligned frame. Protocol, configuration persistence, bridge authority,
+electrical limits, deadlines, guardian, STOP, faults, and `ZERO` are unchanged.
+
+Firmware 0.36.1 raises the aligned actuator's independent observed-acceleration
+shutdown from 512 to 8,192 rev/s². Acceleration alone has no defensible board or
+motor protection threshold without qualified torque and inertia data, so the
+new plausibility boundary sits above the approximately 5,350 rev/s² largest
+nominal-cadence velocity change the 4 kHz filtered estimator can legitimately
+publish. Current, voltage, duty, speed, following-error, feedback-age, deadline,
+authority, fault, and `ZERO` enforcement remain independent and unchanged.
+
+Firmware 0.37.0 makes direct-velocity acceleration an explicit command value.
+New host commands default to the bench-proven 16 rev/s² launch, and legacy
+10-byte requests receive the same default; callers may explicitly select a
+positive value through the retained 256 rev/s² controller capability. Position
+profiles and their inner-loop slew headroom are unchanged.
+
+Paired 303 mA, Kp=9/Ki=0.5 captures now bench-confirm that diagnostic through
+200 electrical Hz. At 200 Hz, rotating mode reduced phase lag from 39.09 to
+-0.01 degrees and RMS current error from 149.4 to 7.9 mA, while using 445/700
+permille peak phase voltage. Its worst DMA-to-stage time was 21.73 us with
+30.59 us minimum preload margin, zero missed PWM updates, no faults, normal
+`ZERO` release, and restoration of the prior stationary configuration.
+
 The flashed baseline has a bench-proven 20 kHz two-phase current loop, a
 deterministic 4 kHz rotor service, persisted alignment, and bounded aligned
 torque, signed velocity, and relative-position control. At 24 V, a +8 rev/s
@@ -77,9 +124,10 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next control work is repeating fixed-condition tuning points to refine
-high-frequency current tracking while retaining zero missed PWM
-updates, alongside formal 8 MHz / 4 kHz encoder timing and acquisition evidence,
+The next current-control work is bench-validating the promoted aligned-q path
+through conservative signed torque, velocity, and position gates, with an
+armed timing burst before expanding speed or current. That runs alongside formal
+8 MHz / 4 kHz encoder timing and acquisition evidence,
 outer-loop numerical/timing health,
 volatile gain apply/revert, and explicit persistence across a power cycle, then
 using its fixed-condition sweep before negative-direction speed staging and the

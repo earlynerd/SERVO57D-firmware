@@ -92,8 +92,10 @@ the already-tested board.
 
 ## Stage 6 — Current-regulated motor operation
 
-Current product firmware operates an attached two-phase stepper through
-independent 20 kHz winding-current loops. The retired local Left/Center selector
+Current product motion operates an attached two-phase stepper through a 20 kHz
+fixed-point rotating d/q PI for encoder-aligned current. Static vectors and
+alignment retain independent stationary A/B PI, and the bounded rotating-current
+diagnostic may select either controller for comparison. The retired local Left/Center selector
 cannot request bridge authority. RS-485 requests diagnostic authority from the
 product drive supervisor after current-path and encoder readiness and provides
 configurable current amplitude, electrical
@@ -117,7 +119,7 @@ the report, and restores the prior inactive test configuration. Use
 `--no-open` when no browser is wanted and `--replot RUN_DIRECTORY` to rebuild a
 saved report without touching the motor.
 
-On protocol 1.16, use the production tuner to compare PI candidates under the
+On protocol 1.16 or later, use the production tuner to compare PI candidates under the
 same fixed current and electrical-frequency points. The sweep applies gains only
 while inactive, runs each point through the same supervisor/current backend,
 aborts on fault or abnormal terminal state, and restores the starting gains and
@@ -125,6 +127,16 @@ diagnostic configuration even after interruption:
 
 ```powershell
 py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
+```
+
+Protocol 1.17 retains stationary A/B PI as the default and adds
+`--controller rotating`. For the first rotating-frame gate, keep the known
+303 mA and Kp=9/Ki=0.5 point, stage only through 100 Hz, inspect normal release,
+faults, missed PWM updates, and minimum preload margin, and only then repeat at
+150/200 Hz:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 sweep --controller rotating --kp 9 --ki 0.5 --electrical-hz 5,20,50,100 --current-ma 303 --seconds 2
 ```
 
 The tuner defaults to a 50 electrical-Hz/s field ramp before every trial's
@@ -138,8 +150,11 @@ settling interval.
 Review `session.json`, `summary.csv`, and `report.html` under the printed
 `scratch/tuning-runs/` session. The report includes both cross-trial comparisons
 and the settled 20 kHz current/voltage waveform for every completed trial, plus
-the per-run total and maximum-consecutive missed PWM update counts. Both counts
-should remain zero.
+color-coded d/q current and voltage plots and the per-run total and maximum-
+consecutive missed PWM update counts. Both counts should remain zero. Compare
+controller modes only at identical current, gains, ramp, frequency, and hold
+time; lower q-current error and better d-current tracking do not compensate for
+lost timing margin or abnormal motion.
 Replotting is offline. The sweep never persists a candidate. Apply the selected
 gains in RAM first, repeat a bounded validation, then promote them explicitly
 only after reviewing voltage headroom, overshoot, tracking, encoder motion,
@@ -188,7 +203,7 @@ Use the telemetry to evaluate each run directly:
 5. After timeout or STOP, authority flags clear and the hardware returns to
    the all-low zero vector.
 
-The current interface accepts 1-495 counts, 0.001-250 Hz, and a
+The current interface accepts 1-495 counts, 0.001-1,000 Hz, and a
 0.003-2,147,483.647 second hold. An optional nonnegative frequency ramp runs
 before that hold, with ramp plus hold constrained to the same wrap-safe maximum.
 Expand current, speed, bus voltage, and duration deliberately while
@@ -206,7 +221,9 @@ step has 6.53 ms rise time and 8% overshoot. The tested motor tracked 606 mA /
 15 Hz at -17.78 RPM and completed 1.97 revolutions during a five-second 757 mA /
 20 Hz run, with zero faults and 25.2% peak voltage effort. Operation through
 757 mA / 20 Hz is accepted on this motor; stage the enabled 1.503 A, 2.25 A,
-2.999 A, and 50-250 Hz evaluation points separately. The 256-sample startup trace is available after a run with
+2.999 A, and 50-1,000 Hz evaluation points separately. The upper frequency is
+an implementation search limit for other motors, not evidence for this motor.
+The 256-sample startup trace is available after a run with
 `trace`; analyze saved JSON lines with `tools/analyze_current_trace.py`.
 Firmware 0.30.3 bench-tested Kp=4 at +8 rev/s without changing Ki or any
 electrical bound; firmware 0.31.0 makes both gains volatile-first product
@@ -337,6 +354,10 @@ electrical phase through the production `RUN`/motion-authority path. This is not
 a speed or position command: an unloaded shaft can accelerate. Keep clear of
 the motor, use 12 V and the current-limited supply, start at or below the accepted
 757 mA envelope, and keep generic STOP plus immediate supply cutoff available.
+Firmware 0.36.0 changes the aligned-q inner controller from stationary A/B PI
+to rotating d/q PI but retains this authority and safety procedure. Treat its
+first flash as a new controller gate inside the already proven bridge/timing
+backend: repeat both signs at 30.3 mA before increasing current or speed.
 
 Confirm 0.23.2 / protocol 1.7, restored alignment, `READY`, and the complete
 firmware policy before energizing:

@@ -62,7 +62,9 @@ except ImportError:  # Direct execution from tools/.
 
 
 DIAGNOSTIC_MINIMUM_FREQUENCY_HZ = 0.001
-DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ = 250.0
+LEGACY_DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ = 250.0
+DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ = 1_000.0
+WIDE_DIAGNOSTIC_FREQUENCY_FIRMWARE_VERSION = (0, 35, 1)
 DIAGNOSTIC_MINIMUM_DURATION_SECONDS = 0.003
 DIAGNOSTIC_MAXIMUM_DURATION_SECONDS = 2_147_483.647
 LEGACY_DIAGNOSTIC_REFERENCE_UPDATE_HZ = 1_000
@@ -80,6 +82,7 @@ SUMMARY_FIELDS = (
     "ki",
     "kp_q16",
     "ki_q16",
+    "controller_mode",
     "electrical_frequency_hz",
     "current_milliamperes",
     "ramp_duration_seconds",
@@ -98,6 +101,18 @@ SUMMARY_FIELDS = (
     "maximum_dma_to_pwm_stage_us",
     "missed_pwm_update_count",
     "maximum_consecutive_missed_pwm_updates",
+    "rotating_current_d_mean_milliamperes",
+    "rotating_current_d_ripple_rms_milliamperes",
+    "rotating_current_d_ripple_peak_to_peak_milliamperes",
+    "rotating_current_q_mean_milliamperes",
+    "rotating_current_q_ripple_rms_milliamperes",
+    "rotating_current_q_ripple_peak_to_peak_milliamperes",
+    "rotating_current_d_error_rms_milliamperes",
+    "rotating_current_q_error_rms_milliamperes",
+    "rotating_voltage_d_mean_permille",
+    "rotating_voltage_d_ripple_rms_permille",
+    "rotating_voltage_q_mean_permille",
+    "rotating_voltage_q_ripple_rms_permille",
     "faults",
     "artifact_directory",
 )
@@ -197,11 +212,14 @@ def _validate_sweep(
     args: argparse.Namespace,
     configuration: dict[str, Any],
     status: dict[str, Any],
+    maximum_frequency_hz: float = DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ,
 ) -> tuple[int, int, list[tuple[float, float, float]]]:
     if not configuration.get("tuning_supported"):
         raise ProtocolError(
             "configuration schema 2 is required for volatile tuning"
         )
+    if args.controller not in {"stationary", "rotating"}:
+        raise ProtocolError("controller mode must be stationary or rotating")
     if args.current_ma <= 0.0 or not math.isfinite(args.current_ma):
         raise ProtocolError("--current-ma must be a finite positive value")
     counts = round(args.current_ma / COUNTS_TO_MILLIAMPERES)
@@ -244,13 +262,13 @@ def _validate_sweep(
     frequencies = _unique(args.electrical_hz)
     if any(
         frequency < DIAGNOSTIC_MINIMUM_FREQUENCY_HZ
-        or frequency > DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ
+        or frequency > maximum_frequency_hz
         for frequency in frequencies
     ):
         raise ProtocolError(
             "electrical frequencies must be in the diagnostic range "
             f"{DIAGNOSTIC_MINIMUM_FREQUENCY_HZ:g}.."
-            f"{DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ:g} Hz"
+            f"{maximum_frequency_hz:g} Hz"
         )
     duration_ms = round(args.seconds * 1000.0)
     for frequency in frequencies:
@@ -311,6 +329,22 @@ def _protocol_version(identity: dict[str, Any]) -> tuple[int, int]:
         return int(major), int(minor)
     except (KeyError, TypeError, ValueError) as error:
         raise ProtocolError("identity has an invalid protocol version") from error
+
+
+def _firmware_version(identity: dict[str, Any]) -> tuple[int, int, int]:
+    try:
+        major, minor, patch = str(identity["firmware"]).split(".", 2)
+        return int(major), int(minor), int(patch)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError("identity has an invalid firmware version") from error
+
+
+def _diagnostic_maximum_frequency_hz(identity: dict[str, Any]) -> float:
+    if _firmware_version(identity) >= (
+        WIDE_DIAGNOSTIC_FREQUENCY_FIRMWARE_VERSION
+    ):
+        return DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ
+    return LEGACY_DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ
 
 
 def _make_session_directory(root: Path) -> Path:
@@ -386,6 +420,147 @@ def _analyze_encoder_motion(
     }
 
 
+def _diagnostic_controller_mode(status: dict[str, Any]) -> str:
+    if int(status.get("schema", 0)) <= 4:
+        return "stationary"
+    test = status.get("test", {})
+    mode = test.get("controller_mode", test.get("controller"))
+    return mode if mode in {"stationary", "rotating"} else "stationary"
+
+
+def _statistics(values: list[float]) -> dict[str, float]:
+    mean = sum(values) / len(values)
+    return {
+        "mean": mean,
+        "rms": math.sqrt(sum(value * value for value in values) / len(values)),
+        "ripple_rms": math.sqrt(
+            sum((value - mean) ** 2 for value in values) / len(values)
+        ),
+        "ripple_peak_to_peak": max(values) - min(values),
+        "minimum": min(values),
+        "maximum": max(values),
+    }
+
+
+def _scaled_statistics(
+    values: list[float], scale: float
+) -> dict[str, float]:
+    return {
+        key: value * scale for key, value in _statistics(values).items()
+    }
+
+
+def _rotating_frame_trace(
+    trace: list[dict[str, Any]],
+) -> tuple[list[dict[str, float]], dict[str, Any] | None]:
+    rows: list[dict[str, float]] = []
+    for index, sample in enumerate(trace):
+        try:
+            reference_a = float(sample["reference_counts"]["a"])
+            reference_b = float(sample["reference_counts"]["b"])
+            measured_a = float(sample["measured_counts"]["a"])
+            measured_b = float(sample["measured_counts"]["b"])
+            voltage_a = float(sample["phase_voltage_permille"]["a"])
+            voltage_b = float(sample["phase_voltage_permille"]["b"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        reference_d = math.hypot(reference_a, reference_b)
+        if reference_d <= 1.0e-12:
+            continue
+        cosine = reference_a / reference_d
+        sine = reference_b / reference_d
+        try:
+            time_seconds = float(sample["time_seconds"])
+        except (KeyError, TypeError, ValueError):
+            time_seconds = index / motor_test.LOOP_FREQUENCY_HZ
+        row = {
+            "time_seconds": time_seconds,
+            "command_angle_radians": math.atan2(reference_b, reference_a),
+            "command_angle_degrees": math.degrees(
+                math.atan2(reference_b, reference_a)
+            ),
+            "current_reference_d_counts": reference_d,
+            "current_reference_q_counts": 0.0,
+            "current_measured_d_counts": measured_a * cosine + measured_b * sine,
+            "current_measured_q_counts": -measured_a * sine + measured_b * cosine,
+            "voltage_d_permille": voltage_a * cosine + voltage_b * sine,
+            "voltage_q_permille": -voltage_a * sine + voltage_b * cosine,
+        }
+        row["current_error_d_counts"] = (
+            row["current_measured_d_counts"] - reference_d
+        )
+        row["current_error_q_counts"] = row["current_measured_q_counts"]
+        voltage_command = sample.get("phase_voltage_command_volts", {})
+        if (
+            voltage_command.get("a") is not None
+            and voltage_command.get("b") is not None
+        ):
+            try:
+                voltage_a_volts = float(voltage_command["a"])
+                voltage_b_volts = float(voltage_command["b"])
+            except (TypeError, ValueError):
+                pass
+            else:
+                row["voltage_d_volts"] = (
+                    voltage_a_volts * cosine + voltage_b_volts * sine
+                )
+                row["voltage_q_volts"] = (
+                    -voltage_a_volts * sine + voltage_b_volts * cosine
+                )
+        rows.append(row)
+    if not rows:
+        return [], None
+
+    current_keys = (
+        "current_reference_d_counts",
+        "current_reference_q_counts",
+        "current_measured_d_counts",
+        "current_measured_q_counts",
+        "current_error_d_counts",
+        "current_error_q_counts",
+    )
+    current_counts = {
+        key.removesuffix("_counts"): _statistics(
+            [row[key] for row in rows]
+        )
+        for key in current_keys
+    }
+    current_milliamperes = {
+        key.removesuffix("_counts"): _scaled_statistics(
+            [row[key] for row in rows], COUNTS_TO_MILLIAMPERES
+        )
+        for key in current_keys
+    }
+    voltage_permille = {
+        axis: _statistics(
+            [row[f"voltage_{axis}_permille"] for row in rows]
+        )
+        for axis in ("d", "q")
+    }
+    voltage_volts = None
+    if all(
+        "voltage_d_volts" in row and "voltage_q_volts" in row
+        for row in rows
+    ):
+        voltage_volts = {
+            axis: _statistics(
+                [row[f"voltage_{axis}_volts"] for row in rows]
+            )
+            for axis in ("d", "q")
+        }
+    return rows, {
+        "sample_count": len(rows),
+        "command_angle_degrees": {
+            "first": rows[0]["command_angle_degrees"],
+            "last": rows[-1]["command_angle_degrees"],
+        },
+        "current_counts": current_counts,
+        "current_milliamperes": current_milliamperes,
+        "voltage_permille": voltage_permille,
+        "voltage_volts": voltage_volts,
+    }
+
+
 def analyze_trial(
     samples: list[dict[str, Any]],
     trace: list[dict[str, Any]],
@@ -442,6 +617,11 @@ def analyze_trial(
         for axis in ("a", "b")
         if sample.get("phase_voltage_command_volts", {}).get(axis) is not None
     ]
+    _, rotating_frame = _rotating_frame_trace(trace)
+    if rotating_frame is None:
+        raise ProtocolError(
+            "high-resolution trace has no nonzero rotating-current reference"
+        )
     return {
         "source": "20 kHz current trace",
         "trace_sample_count": len(trace),
@@ -460,6 +640,7 @@ def analyze_trial(
         "voltage_saturation_fraction": sum(
             value >= voltage_limit_permille for value in voltages
         ) / len(voltages),
+        "rotating_frame": rotating_frame,
         "encoder": _analyze_encoder_motion(samples, settle_seconds),
     }
 
@@ -483,10 +664,46 @@ def _trace_timing(trace: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _rotating_summary_fields(rotating: dict[str, Any]) -> dict[str, float]:
+    current = rotating["current_milliamperes"]
+    voltage = rotating["voltage_permille"]
+    return {
+        "rotating_current_d_mean_milliamperes": current[
+            "current_measured_d"
+        ]["mean"],
+        "rotating_current_d_ripple_rms_milliamperes": current[
+            "current_measured_d"
+        ]["ripple_rms"],
+        "rotating_current_d_ripple_peak_to_peak_milliamperes": current[
+            "current_measured_d"
+        ]["ripple_peak_to_peak"],
+        "rotating_current_q_mean_milliamperes": current[
+            "current_measured_q"
+        ]["mean"],
+        "rotating_current_q_ripple_rms_milliamperes": current[
+            "current_measured_q"
+        ]["ripple_rms"],
+        "rotating_current_q_ripple_peak_to_peak_milliamperes": current[
+            "current_measured_q"
+        ]["ripple_peak_to_peak"],
+        "rotating_current_d_error_rms_milliamperes": current[
+            "current_error_d"
+        ]["rms"],
+        "rotating_current_q_error_rms_milliamperes": current[
+            "current_error_q"
+        ]["rms"],
+        "rotating_voltage_d_mean_permille": voltage["d"]["mean"],
+        "rotating_voltage_d_ripple_rms_permille": voltage["d"]["ripple_rms"],
+        "rotating_voltage_q_mean_permille": voltage["q"]["mean"],
+        "rotating_voltage_q_ripple_rms_permille": voltage["q"]["ripple_rms"],
+    }
+
+
 def _trial_summary(
     index: int,
     kp: float,
     ki: float,
+    controller_mode: str,
     frequency: float,
     current_ma: float,
     ramp_duration_s: float,
@@ -500,6 +717,7 @@ def _trial_summary(
     encoder = analysis.get("encoder", {})
     loop_status = final_status.get("loop", {})
     timing = _trace_timing(trace)
+    rotating = analysis["rotating_frame"]
     return {
         "trial": index,
         "status": "pass" if not faults else "fault",
@@ -507,6 +725,7 @@ def _trial_summary(
         "ki": ki,
         "kp_q16": current_loop_gain_to_q16(kp, "Kp"),
         "ki_q16": current_loop_gain_to_q16(ki, "Ki"),
+        "controller_mode": controller_mode,
         "electrical_frequency_hz": frequency,
         "current_milliamperes": current_ma,
         "ramp_duration_seconds": ramp_duration_s,
@@ -532,6 +751,7 @@ def _trial_summary(
         "maximum_consecutive_missed_pwm_updates": loop_status.get(
             "maximum_consecutive_missed_pwm_updates"
         ),
+        **_rotating_summary_fields(rotating),
         **timing,
         "faults": faults,
         "artifact_directory": artifact_directory,
@@ -557,9 +777,16 @@ def _comparison_plot(
     usable = [trial for trial in trials if trial.get(value_key) is not None]
     if not usable:
         return f"<section><h2>{html.escape(title)}</h2><p>No data.</p></section>"
-    groups: dict[tuple[float, float], list[dict[str, Any]]] = {}
+    groups: dict[tuple[float, float, str], list[dict[str, Any]]] = {}
     for trial in usable:
-        groups.setdefault((trial["kp"], trial["ki"]), []).append(trial)
+        groups.setdefault(
+            (
+                trial["kp"],
+                trial["ki"],
+                str(trial.get("controller_mode", "stationary")),
+            ),
+            [],
+        ).append(trial)
     width, height = 1060.0, 340.0
     left, right, top, bottom = 74.0, 24.0, 18.0, 54.0
     plot_w, plot_h = width - left - right, height - top - bottom
@@ -607,7 +834,8 @@ def _comparison_plot(
             for row in ordered
         )
         legends.append(
-            f'<span><i class="legend-line {color_class}"></i>Kp={gains[0]:g}, Ki={gains[1]:g}</span>'
+            f'<span><i class="legend-line {color_class}"></i>'
+            f'{html.escape(gains[2])}: Kp={gains[0]:g}, Ki={gains[1]:g}</span>'
         )
     return f"""
     <section><h2>{html.escape(title)}</h2>
@@ -729,12 +957,170 @@ def _trial_waveform_plots(
                 ),
             ],
         )
+        rotating_rows, rotating = _rotating_frame_trace(usable)
+        rotating_content = (
+            "<section><h2>Rotating-frame waveforms</h2>"
+            "<p class=\"note\">This legacy trace has no nonzero command "
+            "vector from which to derive a rotating frame.</p></section>"
+        )
+        if rotating is not None:
+            rotating_time_ms = [
+                row["time_seconds"] * 1000.0 for row in rotating_rows
+            ]
+            rotating_current_plot = motor_test._polyline_plot(
+                "d/q current in the commanded frame",
+                "Burst time (ms)",
+                "Current (mA nominal)",
+                rotating_time_ms,
+                [
+                    (
+                        "d reference",
+                        [
+                            row["current_reference_d_counts"]
+                            * COUNTS_TO_MILLIAMPERES
+                            for row in rotating_rows
+                        ],
+                        5,
+                        True,
+                    ),
+                    (
+                        "d measured",
+                        [
+                            row["current_measured_d_counts"]
+                            * COUNTS_TO_MILLIAMPERES
+                            for row in rotating_rows
+                        ],
+                        1,
+                        False,
+                    ),
+                    (
+                        "q measured",
+                        [
+                            row["current_measured_q_counts"]
+                            * COUNTS_TO_MILLIAMPERES
+                            for row in rotating_rows
+                        ],
+                        2,
+                        False,
+                    ),
+                ],
+            )
+            rotating_voltage_plot = motor_test._polyline_plot(
+                "d/q commanded voltage in the commanded frame",
+                "Burst time (ms)",
+                "Command (permille of bus)",
+                rotating_time_ms,
+                [
+                    (
+                        "d voltage",
+                        [row["voltage_d_permille"] for row in rotating_rows],
+                        1,
+                        False,
+                    ),
+                    (
+                        "q voltage",
+                        [row["voltage_q_permille"] for row in rotating_rows],
+                        2,
+                        False,
+                    ),
+                ],
+            )
+            current_metrics = rotating["current_milliamperes"]
+            voltage_metrics = rotating["voltage_permille"]
+
+            def metric(label: str, value: float, unit: str) -> str:
+                return (
+                    '<div class="rf-stat"><span>'
+                    + html.escape(label)
+                    + "</span><b>"
+                    + html.escape(f"{value:.3f} {unit}")
+                    + "</b></div>"
+                )
+
+            rotating_content = (
+                '<section class="rotating-frame"><h2>Rotating-frame '
+                "waveforms and metrics</h2><p class=\"note\">The command "
+                "angle is derived from atan2(reference B, reference A). "
+                "Blue is d-axis, orange is q-axis, and the red dashed line "
+                "is the d-axis current reference.</p>"
+                '<div class="rf-stats">'
+                + "".join(
+                    (
+                        metric(
+                            "d current mean",
+                            current_metrics["current_measured_d"]["mean"],
+                            "mA",
+                        ),
+                        metric(
+                            "d current ripple RMS",
+                            current_metrics["current_measured_d"]["ripple_rms"],
+                            "mA",
+                        ),
+                        metric(
+                            "d current ripple pk-pk",
+                            current_metrics["current_measured_d"]["ripple_peak_to_peak"],
+                            "mA",
+                        ),
+                        metric(
+                            "q current mean",
+                            current_metrics["current_measured_q"]["mean"],
+                            "mA",
+                        ),
+                        metric(
+                            "q current ripple RMS",
+                            current_metrics["current_measured_q"]["ripple_rms"],
+                            "mA",
+                        ),
+                        metric(
+                            "q current ripple pk-pk",
+                            current_metrics["current_measured_q"]["ripple_peak_to_peak"],
+                            "mA",
+                        ),
+                        metric(
+                            "d current error RMS",
+                            current_metrics["current_error_d"]["rms"],
+                            "mA",
+                        ),
+                        metric(
+                            "q current error RMS",
+                            current_metrics["current_error_q"]["rms"],
+                            "mA",
+                        ),
+                        metric(
+                            "d voltage mean",
+                            voltage_metrics["d"]["mean"],
+                            "permille",
+                        ),
+                        metric(
+                            "d voltage ripple RMS",
+                            voltage_metrics["d"]["ripple_rms"],
+                            "permille",
+                        ),
+                        metric(
+                            "q voltage mean",
+                            voltage_metrics["q"]["mean"],
+                            "permille",
+                        ),
+                        metric(
+                            "q voltage ripple RMS",
+                            voltage_metrics["q"]["ripple_rms"],
+                            "permille",
+                        ),
+                    )
+                )
+                + "</div>"
+                + rotating_current_plot
+                + rotating_voltage_plot
+                + "</section>"
+            )
         sections.append(
             "<div class=\"trial-waveforms\"><h2>Trial "
             f"{trial.get('trial', '?')}: Kp={trial.get('kp', '?')}, "
             f"Ki={trial.get('ki', '?')}, "
-            f"{trial.get('electrical_frequency_hz', '?')} Hz</h2>"
-            f"{current_plot}{voltage_plot}</div>"
+            f"{trial.get('electrical_frequency_hz', '?')} Hz, "
+            f"{html.escape(str(trial.get('controller_mode', 'stationary')))}"
+            " controller</h2>"
+            f"{current_plot}{voltage_plot}{rotating_content}</div>"
         )
     if not sections:
         return ""
@@ -754,6 +1140,7 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
         rows.append(
             "<tr>"
             f"<td>{trial['trial']}</td><td>{html.escape(trial.get('status', 'unknown'))}</td><td>{trial['kp']:g}</td><td>{trial['ki']:g}</td>"
+            f"<td>{html.escape(str(trial.get('controller_mode', 'stationary')))}</td>"
             f"<td>{trial['electrical_frequency_hz']:g}</td>"
             f"<td>{trial.get('ramp_duration_seconds', 0.0):g}</td>"
             f"<td>{trial.get('fundamental_gain', float('nan')):.3f}</td>"
@@ -818,22 +1205,30 @@ def write_report(path: Path, session: dict[str, Any]) -> None:
 <title>MKS57D current-loop tuning report</title><style>
 :root{{--bg:#f7f8fa;--fg:#172033;--muted:#667085;--card:#fff;--grid:#d0d5dd;--s1:#1769aa;--s2:#d97706;--s3:#0f8a62;--s4:#7c3aed;--s5:#b91c1c;--s6:#0891b2}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#111827;--fg:#f3f4f6;--muted:#9ca3af;--card:#1f2937;--grid:#4b5563;--s1:#63b3ed;--s2:#f6ad55;--s3:#68d391;--s4:#b794f4;--s5:#fc8181;--s6:#67e8f9}}}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}main{{max-width:1200px;margin:auto;padding:24px}}h1{{margin:0}}h2{{font-size:1.1rem;margin-bottom:8px}}.sub,.note{{color:var(--muted)}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:18px 0}}.card,section{{background:var(--card);border:1px solid var(--grid);border-radius:8px;padding:14px}}section{{margin:18px 0}}.card b{{display:block;font-size:1.08rem}}svg{{display:block;width:100%;height:auto}}.frame{{fill:var(--card);stroke:var(--grid)}}.grid{{stroke:var(--grid);stroke-width:1}}.tick{{fill:var(--muted);font-size:12px}}.axis,.axis-label{{fill:var(--fg);font-size:13px}}{motor_test._plot_series_css(6, "8 5", 18)}.legend{{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted)}}.legend span{{display:flex;align-items:center;gap:6px}}.trial-waveforms{{border-left:4px solid var(--grid);padding-left:14px}}.table-wrap{{overflow:auto}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}th,td{{padding:7px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}code{{white-space:pre-wrap;overflow-wrap:anywhere}}@media(max-width:600px){{main{{padding:12px}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}main{{max-width:1200px;margin:auto;padding:24px}}h1{{margin:0}}h2{{font-size:1.1rem;margin-bottom:8px}}.sub,.note{{color:var(--muted)}}.cards,.rf-stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:18px 0}}.card,.rf-stat,section{{background:var(--card);border:1px solid var(--grid);border-radius:8px;padding:14px}}section{{margin:18px 0}}.card b,.rf-stat b{{display:block;font-size:1.08rem}}.rf-stat span{{display:block;color:var(--muted);font-size:.82rem}}svg{{display:block;width:100%;height:auto}}.frame{{fill:var(--card);stroke:var(--grid)}}.grid{{stroke:var(--grid);stroke-width:1}}.tick{{fill:var(--muted);font-size:12px}}.axis,.axis-label{{fill:var(--fg);font-size:13px}}{motor_test._plot_series_css(6, "8 5", 18)}.legend{{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted)}}.legend span{{display:flex;align-items:center;gap:6px}}.trial-waveforms{{border-left:4px solid var(--grid);padding-left:14px}}.rotating-frame{{border-color:var(--s1)}}.table-wrap{{overflow:auto}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}th,td{{padding:7px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}code{{white-space:pre-wrap;overflow-wrap:anywhere}}@media(max-width:600px){{main{{padding:12px}}}}
 </style></head><body><main>
 <h1>MKS57D current-loop tuning</h1><p class="sub">{html.escape(session.get('generated_at', ''))} · {html.escape(session.get('status', 'unknown'))}</p>
-<div class="cards"><div class="card"><span>Trials</span><b>{len(trials)}</b></div><div class="card"><span>Current</span><b>{request.get('current_milliamperes', 0):.1f} mA</b></div><div class="card"><span>Ramp</span><b>{html.escape(ramp_card)}</b></div><div class="card"><span>Firmware</span><b>{html.escape(session.get('identity', {}).get('firmware', 'unknown'))}</b></div><div class="card"><span>Restored</span><b>{'yes' if session.get('restore', {}).get('gains_restored') else 'no'}</b></div></div>
+<div class="cards"><div class="card"><span>Trials</span><b>{len(trials)}</b></div><div class="card"><span>Current</span><b>{request.get('current_milliamperes', 0):.1f} mA</b></div><div class="card"><span>Controller</span><b>{html.escape(str(request.get('controller_mode', session.get('controller_mode', 'stationary'))))}</b></div><div class="card"><span>Ramp</span><b>{html.escape(ramp_card)}</b></div><div class="card"><span>Firmware</span><b>{html.escape(session.get('identity', {}).get('firmware', 'unknown'))}</b></div><div class="card"><span>Restored</span><b>{'yes' if session.get('restore', {}).get('gains_restored') else 'no'}</b></div></div>
 <p class="note">{html.escape(measurement_note)} The rotating-current diagnostic updates its reference at {reference_update_hz} Hz. Persistence is {html.escape(persistence_text)}. Sweeps never save configuration.</p>
 {plots}
 {waveform_plots}
-<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Hz</th><th>Ramp s</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Missed PWM</th><th>Max consecutive</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
+<section><h2>Trial and safety summary</h2><div class="table-wrap"><table><thead><tr><th>Trial</th><th>Status</th><th>Kp</th><th>Ki</th><th>Controller</th><th>Hz</th><th>Ramp s</th><th>Gain</th><th>Lag deg</th><th>RMS mA</th><th>Peak permille</th><th>Clamp</th><th>Encoder errors</th><th>Min margin us</th><th>Max trigger-DMA us</th><th>Max DMA-stage us</th><th>Missed PWM</th><th>Max consecutive</th><th>Faults</th><th>Error</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></section>
 <section><h2>Apply and persist separately</h2><p>Choose a result deliberately; this report does not nominate or save a winner.</p><p><code>{html.escape(commands.get('apply_template', ''))}</code></p><p><code>{html.escape(commands.get('persist', ''))}</code></p></section>
 </main></body></html>"""
     path.write_text(document, encoding="utf-8")
 
 
-def _trial_directory(session_directory: Path, index: int, kp: float, ki: float, frequency: float) -> Path:
+def _trial_directory(
+    session_directory: Path,
+    index: int,
+    kp: float,
+    ki: float,
+    frequency: float,
+    controller_mode: str,
+) -> Path:
     path = session_directory / (
-        f"trial-{index:03d}-kp{kp:g}-ki{ki:g}-{frequency:g}Hz"
+        f"trial-{index:03d}-kp{kp:g}-ki{ki:g}-{frequency:g}Hz-"
+        f"{controller_mode}"
     )
     path.mkdir()
     return path
@@ -845,6 +1240,7 @@ def execute_sweep(
     session_directory: Path,
 ) -> dict[str, Any]:
     identity = query_identity(client)
+    maximum_frequency_hz = _diagnostic_maximum_frequency_hz(identity)
     reference_update_hz = (
         FAST_DIAGNOSTIC_REFERENCE_UPDATE_HZ
         if _protocol_version(identity) >= FAST_REFERENCE_PROTOCOL_VERSION
@@ -855,7 +1251,10 @@ def execute_sweep(
     initial_encoder = query_encoder(client)
     motor_test._check_encoder_preflight(initial_encoder)
     counts, duration_ms, requested_trials = _validate_sweep(
-        args, initial_configuration, initial_status
+        args,
+        initial_configuration,
+        initial_status,
+        maximum_frequency_hz,
     )
     if (
         args.ramp_electrical_hz_per_second > 0.0
@@ -871,10 +1270,12 @@ def execute_sweep(
     )
     initial_test_counts = int(initial_status["test"]["amplitude_counts"])
     initial_test_frequency = float(initial_status["test"]["frequency_hz"])
+    initial_controller_mode = _diagnostic_controller_mode(initial_status)
     session: dict[str, Any] = {
         "schema": 1,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "status": "running",
+        "controller_mode": args.controller,
         "identity": identity,
         "request": {
             "current_milliamperes": counts * COUNTS_TO_MILLIAMPERES,
@@ -886,6 +1287,7 @@ def execute_sweep(
             "telemetry_interval_seconds": args.interval,
             "kp": _unique(args.kp),
             "ki": _unique(args.ki),
+            "controller_mode": args.controller,
             "electrical_frequency_hz": _unique(args.electrical_hz),
             "trial_count": len(requested_trials),
         },
@@ -895,8 +1297,8 @@ def execute_sweep(
             ),
             "frequency_hz": {
                 "minimum": DIAGNOSTIC_MINIMUM_FREQUENCY_HZ,
-                "maximum": DIAGNOSTIC_MAXIMUM_FREQUENCY_HZ,
-                "source": "protocol-1.15 diagnostic contract",
+                "maximum": maximum_frequency_hz,
+                "source": "firmware identity diagnostic contract",
             },
             "duration_seconds": {
                 "minimum": DIAGNOSTIC_MINIMUM_DURATION_SECONDS,
@@ -919,6 +1321,7 @@ def execute_sweep(
             "gain_restore_error": None,
             "diagnostic_configuration_restored": False,
             "diagnostic_configuration_restore_error": None,
+            "initial_controller_mode": initial_controller_mode,
         },
         "commands": {
             "apply_template": (
@@ -941,7 +1344,12 @@ def execute_sweep(
                 frequency, args.ramp_electrical_hz_per_second
             )
             trial_path = _trial_directory(
-                session_directory, index, kp, ki, frequency
+                session_directory,
+                index,
+                kp,
+                ki,
+                frequency,
+                args.controller,
             )
             active_trial = {
                 "trial": index,
@@ -951,6 +1359,7 @@ def execute_sweep(
                 "ki": ki,
                 "kp_q16": current_loop_gain_to_q16(kp, "Kp"),
                 "ki_q16": current_loop_gain_to_q16(ki, "Ki"),
+                "controller_mode": args.controller,
                 "electrical_frequency_hz": frequency,
                 "current_milliamperes": counts * COUNTS_TO_MILLIAMPERES,
                 "ramp_duration_seconds": ramp_duration_ms / 1000.0,
@@ -960,7 +1369,8 @@ def execute_sweep(
             }
             print(
                 f"[{index}/{len(requested_trials)}] Kp={kp:g}, Ki={ki:g}, "
-                f"{frequency:g} Hz, {ramp_duration_ms / 1000.0:g} s ramp"
+                f"{frequency:g} Hz, {args.controller} controller, "
+                f"{ramp_duration_ms / 1000.0:g} s ramp"
             )
             status = query_status(client)
             _tuning_preflight(status, counts)
@@ -983,11 +1393,17 @@ def execute_sweep(
             applied_q16 = _gain_q16(applied_configuration, "active")
             if applied_q16 != expected_q16:
                 raise ProtocolError("volatile gain readback does not match request")
-            applied = motor_test._configure(client, counts, frequency)
+            applied = motor_test._configure(
+                client, counts, frequency, args.controller
+            )
             if not math.isclose(
                 float(applied["frequency_hz"]), frequency, abs_tol=0.0005
             ):
                 raise ProtocolError("diagnostic frequency readback does not match")
+            if applied.get("controller_mode", args.controller) != args.controller:
+                raise ProtocolError(
+                    "diagnostic controller-mode readback does not match"
+                )
             telemetry_path = trial_path / "telemetry.jsonl"
             samples, completed = motor_test._run_capture(
                 client,
@@ -1026,6 +1442,7 @@ def execute_sweep(
                 index,
                 kp,
                 ki,
+                args.controller,
                 float(applied["frequency_hz"]),
                 float(applied["counts"]) * COUNTS_TO_MILLIAMPERES,
                 ramp_duration_ms / 1000.0,
@@ -1094,7 +1511,10 @@ def execute_sweep(
             session["restore"]["gain_restore_error"] = str(error)
         try:
             motor_test._configure(
-                client, initial_test_counts, initial_test_frequency
+                client,
+                initial_test_counts,
+                initial_test_frequency,
+                initial_controller_mode,
             )
             session["restore"]["diagnostic_configuration_restored"] = True
         except (ProtocolError, OSError) as error:
@@ -1121,9 +1541,34 @@ def _open_report(path: Path) -> None:
         print(f"Could not open a browser automatically; open {path.resolve()}")
 
 
+def _augment_offline_rotating_summaries(
+    path: Path, session: dict[str, Any]
+) -> None:
+    default_mode = str(
+        session.get("request", {}).get(
+            "controller_mode", session.get("controller_mode", "stationary")
+        )
+    )
+    for trial in session.get("trials", []):
+        trial.setdefault("controller_mode", default_mode)
+        artifact_directory = trial.get("artifact_directory")
+        if not artifact_directory:
+            continue
+        try:
+            trace = _read_jsonl(
+                path / str(artifact_directory) / "trace.jsonl"
+            )
+        except (OSError, ValueError):
+            continue
+        _, rotating = _rotating_frame_trace(trace)
+        if rotating is not None:
+            trial.update(_rotating_summary_fields(rotating))
+
+
 def _replot(path: Path, open_browser: bool) -> int:
     session_path = path / "session.json"
     session = json.loads(session_path.read_text(encoding="utf-8"))
+    _augment_offline_rotating_summaries(path, session)
     _write_summary_csv(path / "summary.csv", session.get("trials", []))
     report = path / "report.html"
     write_report(report, session)
@@ -1215,6 +1660,12 @@ def make_parser() -> argparse.ArgumentParser:
         required=True,
         type=lambda text: _parse_float_list(text, "--electrical-hz"),
         help="comma-separated rotating-current frequencies",
+    )
+    sweep.add_argument(
+        "--controller",
+        choices=("stationary", "rotating"),
+        default="stationary",
+        help="current-controller coordinate frame used for every trial",
     )
     sweep.add_argument("--current-ma", type=float, required=True)
     sweep.add_argument(

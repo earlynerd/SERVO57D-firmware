@@ -15,11 +15,15 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.34.0 / protocol 1.16 is flashed. Its high-resolution current
+- Firmware 0.35.1 / protocol 1.17 is flashed. Its high-resolution current
   captures show continuous 20 kHz sample sequence, 4.25-4.375 us
   trigger-to-DMA time, 13.734-14.359 us DMA-to-stage time, and
   39.281-39.906 us preload margin without faults. The tuning ramp and expanded
-  Ki search range are available on the bench.
+  Ki search range are available on the bench. Paired 303 mA, Kp=9/Ki=0.5
+  captures through 200 Hz bench-confirm the new rotating diagnostic: at 200 Hz
+  lag fell from 39.09 to -0.01 degrees and RMS current error from 149.4 to
+  7.9 mA. Worst DMA-to-stage time was 21.73 us, minimum preload margin was
+  30.59 us, and missed-update, fault, reset, and panic evidence remained clear.
 - Firmware 0.30.3 corrected the
   predictor's nominal 7 us lead to the measured 55 us DMA-to-application
   interval. Matched +8 rev/s Kp=2/3/4 bursts then reduced velocity RMS error
@@ -27,7 +31,12 @@ and fault bounds.
   to 100 to 87 counts without a control, timing, encoder, backend, reset, or
   panic fault. Kp=4 remains the active bench candidate, not a universal motor
   default.
-- Firmware 0.34.0 / protocol 1.16 is the performance/tuning source candidate.
+- Firmware 0.36.0 / protocol 1.17 is the performance/control source candidate;
+  firmware 0.35.1 remains flashed. The candidate retains the rotating-current
+  diagnostic search ceiling of 1,000 electrical Hz, retaining at
+  least 20 current-loop updates and four encoder observations per electrical
+  cycle at the endpoint. This is evaluation permission for lower-inductance
+  motors, not qualification of the attached motor.
   It retains 0.31.0's safe-state volatile current-gain apply/revert,
   active/stored/default status, schema-1 migration, explicit persistence, and
   guided sweep. It also stages an 8 MHz MT6816 transport and deterministic
@@ -41,7 +50,12 @@ and fault bounds.
   rotating-current diagnostic can ramp to each target before the full tuning
   hold window and now advances at 20 kHz rather than 1 kHz. Schema-4 status
   exposes isolated missed PWM updates without weakening the existing deadline
-  fault.
+  fault. The diagnostic controller selector keeps stationary A/B PI as its
+  compatibility default and adds fixed-point d/q PI with sample-angle Park and 55 us
+  application-angle inverse Park. Schema-5 status reports that selection, and
+  the tuner produces d/q waveforms and metrics. Firmware 0.36.0 promotes that
+  fixed-point d/q controller into production aligned-q torque, velocity, and
+  position while retaining stationary control for static vectors and alignment.
 - Firmware 0.29.2 / protocol 1.12 is flashed. Its inherited drive baseline is
   bench-proven for the current
   20 kHz two-phase current backend, 1 kHz deterministic rotor service, persisted
@@ -76,10 +90,11 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Repeat fixed-current tuning across candidate Kp/Ki values at 100-200 Hz;
-  the first 0.34.0 Kp=5/Ki=0.7 sweep retained 35.59 us minimum preload margin,
-  reported zero missed PWM updates and no faults, but reached 1.48 fundamental
-  gain and 26.1 degrees lag at 200 Hz.
+- [ ] Bench-validate firmware 0.36.0's promoted aligned-q rotating PI, beginning
+  with bounded signed standstill torque and low-speed velocity, then representative
+  position moves and staged 606 mA/1.503 A points. Require clean q polarity,
+  d-current rejection, tracking, timing margin, STOP/release, predictor, encoder,
+  supply, thermal, mechanical, and fault evidence before expanding speed.
 - [ ] Capture formal firmware 0.34.0 evidence and bench-validate 8 MHz SPI
   integrity, 4 kHz sample/acquisition timing and noise, PendSV/current-ISR preemption and stack margin, controller
   numerical behavior, current-gain status, idle-only volatile apply/revert,

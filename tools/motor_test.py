@@ -18,7 +18,6 @@ from typing import Any, Iterable
 try:
     from .analyze_current_loop import analyze as analyze_current_loop
     from .mks57d_rs485 import (
-        COMMAND_CONFIGURE_CURRENT_TEST,
         COMMAND_START_CURRENT_TEST,
         COMMAND_STOP_CURRENT_TEST,
         COUNTS_TO_MILLIAMPERES,
@@ -27,6 +26,7 @@ try:
         Client,
         ProtocolError,
         arm_current_trace,
+        configure_current_test,
         open_serial,
         query_encoder,
         query_status,
@@ -35,7 +35,6 @@ try:
 except ImportError:  # Direct execution from tools/.
     from analyze_current_loop import analyze as analyze_current_loop
     from mks57d_rs485 import (
-        COMMAND_CONFIGURE_CURRENT_TEST,
         COMMAND_START_CURRENT_TEST,
         COMMAND_STOP_CURRENT_TEST,
         COUNTS_TO_MILLIAMPERES,
@@ -44,6 +43,7 @@ except ImportError:  # Direct execution from tools/.
         Client,
         ProtocolError,
         arm_current_trace,
+        configure_current_test,
         open_serial,
         query_encoder,
         query_status,
@@ -518,19 +518,18 @@ def write_report(
 
 
 def _configure(
-    client: Client, counts: int, frequency_hz: float
-) -> dict[str, float | int]:
-    frequency_millihz = round(frequency_hz * 1000.0)
-    body = client.transact(
-        COMMAND_CONFIGURE_CURRENT_TEST,
-        struct.pack(">HI", counts, frequency_millihz),
+    client: Client,
+    counts: int,
+    frequency_hz: float,
+    controller_mode: str = "stationary",
+) -> dict[str, float | int | str]:
+    applied = configure_current_test(
+        client, counts, frequency_hz, controller_mode
     )
-    if len(body) != 6:
-        raise ProtocolError("configure response has an unexpected length")
-    applied_counts, applied_frequency_millihz = struct.unpack(">HI", body)
     return {
-        "counts": applied_counts,
-        "frequency_hz": applied_frequency_millihz / 1000.0,
+        "counts": applied["amplitude_counts"],
+        "frequency_hz": applied["frequency_hz"],
+        "controller_mode": applied["controller_mode"],
     }
 
 
@@ -657,8 +656,10 @@ def _validate_run_arguments(args: argparse.Namespace) -> tuple[int, float, int]:
         if args.rpm <= 0.0:
             raise ValueError("--rpm must be positive; the present test does not expose direction control")
         frequency_hz = args.rpm / 1.2
-    if frequency_hz is None or not 0.001 <= frequency_hz <= 250.0:
-        raise ValueError("electrical frequency must be in the range 0.001..250 Hz")
+    if frequency_hz is None or not 0.001 <= frequency_hz <= 1000.0:
+        raise ValueError(
+            "electrical frequency must be in the range 0.001..1000 Hz"
+        )
     if args.seconds is None or not 0.003 <= args.seconds <= 2147483.647:
         raise ValueError("--seconds must be in the range 0.003..2147483.647")
     if not 0.01 <= args.interval <= 2.0:
@@ -701,6 +702,12 @@ def make_parser() -> argparse.ArgumentParser:
     speed.add_argument("--rpm", type=float, help="shaft-speed magnitude, converted using 1.2 RPM per electrical Hz")
     parser.add_argument("--seconds", type=float, help="bounded run duration")
     parser.add_argument("--leg", choices=LEG_VALUES, default="A1", help="initial electrical phase, not direction")
+    parser.add_argument(
+        "--controller",
+        choices=("stationary", "rotating"),
+        default="stationary",
+        help="stationary A/B PI or synchronous rotating-frame PI",
+    )
     parser.add_argument("--interval", type=float, default=0.05, help="telemetry polling interval")
     parser.add_argument("--settle-seconds", type=float, default=0.2, help="exclude this startup interval from summary metrics")
     parser.add_argument("--output-root", type=Path, default=Path("scratch/motor-runs"))
@@ -747,7 +754,12 @@ def main() -> int:
         _check_encoder_preflight(encoder)
         original_counts = int(initial_status["test"]["amplitude_counts"])
         original_frequency_hz = float(initial_status["test"]["frequency_hz"])
-        applied = _configure(client, counts, frequency_hz)
+        original_controller_mode = str(
+            initial_status["test"].get("controller_mode", "stationary")
+        )
+        applied = _configure(
+            client, counts, frequency_hz, args.controller
+        )
         expected_rpm = applied["frequency_hz"] * 1.2
         expected_revolutions = (
             applied["frequency_hz"]
@@ -789,7 +801,12 @@ def main() -> int:
                     )
             if not args.keep_config and stop_succeeded:
                 try:
-                    _configure(client, original_counts, original_frequency_hz)
+                    _configure(
+                        client,
+                        original_counts,
+                        original_frequency_hz,
+                        original_controller_mode,
+                    )
                     restored_status = query_status(client)
                 except (ProtocolError, OSError) as error:
                     restore_error = str(error)
@@ -805,6 +822,7 @@ def main() -> int:
         "applied_current_ma": applied["counts"] * COUNTS_TO_MILLIAMPERES,
         "counts": applied["counts"],
         "electrical_hz": applied["frequency_hz"],
+        "controller_mode": applied["controller_mode"],
         "duration_s": duration_ms / 1000.0,
         "expected_rpm": applied["frequency_hz"] * 1.2,
         "expected_revolutions": applied["frequency_hz"]

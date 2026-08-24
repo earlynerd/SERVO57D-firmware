@@ -464,3 +464,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** host-frame-size-contract-drift
 - **Recently-touched?** yes — the firmware frame capacity and status schema changed in the immediately preceding edit.
 - **Status:** Bench-confirmed. Passive identity/status succeeded, then the four-trial 5-200 Hz sweep completed, restored starting gains, and reported zero missed PWM updates and no faults.
+
+## 2026-08-23 — High-frequency current error is nearly stationary in the rotating frame
+
+- **Observation:** The 303 mA, 200 electrical Hz Kp=9/Ki=0.5 trial was smooth and quiet with 1.074 fundamental gain, 39.13 degrees phase lag, no voltage clamp, zero missed PWM updates, and no fault.
+- **Root cause/evidence:** `firmware/src/control/phase_current_loop.c:298-311` regulates the sinusoidal A/B references with two stationary-frame PI axes. Offline Park transformation of the 256-sample trace makes the requested current approximately d=50, q=0 counts and the measured current d=41.53, q=-33.79 counts, with only 1.16/1.33 counts standard deviation. The lag is therefore a nearly constant rotating-frame error, not observed scheduling jitter or deadline loss.
+- **Fix under test:** Firmware 0.35.0 adds a diagnostic-selectable fixed-point d/q PI through the existing current backend. It transforms current at the ADC sample phase and transforms voltage at the measured 55 us PWM-application phase while reusing the established current, voltage, duty, guardian, authority, STOP, fault, and `ZERO` paths. The tuner now captures controller identity and reports d/q current/error/voltage traces for a same-condition comparison.
+- **Class:** stationary-frame-sinusoidal-tracking-bandwidth
+- **Recently-touched?** no — firmware 0.34.0 changed reference scheduling, while the independent A/B PI structure predates it.
+- **Status:** Source validated by native/Python tests and Debug/Release Arm builds. Flash and staged 5-200 Hz stationary/rotating comparison remain open; product integration and feedforward/decoupling remain deferred until that evidence exists.
+
+## 2026-08-23 — Rotating-frame diagnostic removes the measured 200 Hz lag
+
+- **Observation:** Paired firmware 0.35.0 captures at 303 mA and Kp=9/Ki=0.5 completed in stationary and rotating modes at 5, 20, 50, 100, 150, and 200 electrical Hz. At 200 Hz the stationary controller measured 1.075 gain, 39.09 degrees lag, and 149.4 mA RMS error; rotating mode measured 1.006 gain, -0.01 degrees lag, and 7.9 mA RMS error.
+- **Root cause:** The prior stationary A/B PI at `firmware/src/control/phase_current_loop.c` saw a sinusoidal error that its integral term could not remove at high electrical frequency; the new fixed-point Park transform makes that error nearly DC on d/q axes and targets voltage at the PWM-application phase.
+- **Fix:** Firmware 0.35.0 selects `phase_current_loop_step_rotating_prevalidated()` for the bounded diagnostic while preserving the established stationary product-motion path and every common safety limit.
+- **Class:** stationary-frame-sinusoidal-tracking-bandwidth
+- **Recently-touched?** yes — this session added and bench-tested the rotating branch.
+- **Evidence:** Across all six rotating trials, maximum DMA-to-stage time was 21.73 us, minimum preload margin was 29.91 us, voltage clamp fraction was zero, missed PWM counts were zero, no fault/reset/panic appeared, and cleanup restored stationary mode with all outputs at zero. Higher-current and product-motion promotion remain open.

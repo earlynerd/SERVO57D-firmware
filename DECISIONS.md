@@ -905,3 +905,61 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Safety and telemetry:** Current, voltage, duty, duration, STOP, fault, and all-low `ZERO` contracts are unchanged. Status schema 4 appends per-run missing-output totals and maximum consecutive misses; the guardian still faults on the second consecutive miss.
 - **Affects:** diagnostic generation, backend timing, commissioning status, frame capacity, tuner reports, and hardware qualification.
 - **Validation:** Host and Python tests plus Debug/Release Arm builds pass; hardware timing, waveform, and vibration confirmation remains open.
+
+## 2026-08-23 — Stage rotating-frame PI as a diagnostic comparison
+
+- **Decision:** Firmware 0.35.0 / protocol 1.17 retains stationary A/B PI as the default and adds a selectable fixed-point d/q PI only to the supervisor-owned rotating-current diagnostic. The legacy six-byte configuration request still selects stationary mode; an optional seventh byte selects the controller, and commissioning status schema 5 appends the configured mode.
+- **Timing and safety contract:** Rotating mode Park-transforms measured A/B current at the oscillator's ADC-sample phase, applies the existing Kp/Ki units and bounded anti-windup on d/q error, and inverse-Park-transforms voltage at the phase predicted to the measured 55 us PWM-application boundary. Both modes share raw ADC, hard-current, reference, per-phase voltage, duty, deadline, guardian, fault, STOP, and all-low `ZERO` enforcement.
+- **Scope:** Aligned torque, velocity, and position retain the established stationary A/B PI. The separate portable floating-point d/q/PMSM controller remains outside the product image. Promotion requires same-condition tracking and fast-loop timing evidence; feedforward/decoupling remains later work.
+- **Supersedes:** Only the rotating-current diagnostic's stationary-controller-only assumption; it does not supersede product-motion or future-PMSM ownership decisions.
+- **Validation:** Native tests, all 54 Python tests with two skips, and clean Debug/Release Arm builds pass at 63,620/58,564 bytes Flash and 11,680 bytes SRAM1. Release disassembly shows no division or floating-point helper inside the new fixed-point step. Hardware comparison remains open.
+- **Affects:** phase-current loop, current backend timing, diagnostic configuration/status protocol, tuner capture/plots, operating limits, and product-promotion gate
+
+## 2026-08-23 — Make the diagnostic frequency ceiling implementation-based
+
+- **Decision:** Firmware 0.35.1 / protocol 1.17 raises only the rotating-current diagnostic configuration ceiling from 250 to 1,000 electrical Hz. At the endpoint, the 20 kHz controller retains 20 updates per electrical cycle and the 4 kHz encoder retains four observations per cycle.
+- **Why:** The former ceiling described the attached motor's initial 5 rev/s exploration rather than a firmware implementation boundary and would unnecessarily block lower-inductance motors.
+- **Supersedes:** The 250 electrical-Hz diagnostic permission in “Open the performance search space before optimizing it.” It does not qualify this motor above measured points or change current, voltage, duty, timing, deadline, STOP, fault, authority, or all-low `ZERO` contracts.
+- **Affects:** diagnostic validation, firmware version 0.35.1, host tuning tools, protocol range documentation, and operating limits
+
+## 2026-08-24 — Promote fixed-point d/q PI into aligned-q product current
+
+- **Decision:** Firmware 0.36.0 uses the fixed-point rotating-frame PI for encoder-aligned torque, velocity, and position with `d=0` and signed q demand. Static current vectors and alignment retain stationary A/B PI; the diagnostic keeps its explicit comparison selector.
+- **Why:** Same-condition captures through the attached motor's useful voltage boundary showed near-unity gain, negligible phase error, clean timing, and materially smoother operation, while stationary PI accumulated high-frequency lag.
+- **Supersedes:** The product-motion scope restriction in “Stage rotating-frame PI as a diagnostic comparison”; it does not promote the separate floating-point PMSM controller or change outer-loop ownership.
+- **Affects:** The 20 kHz aligned-q backend now predicts separate current-sample and 55 us PWM-application phases. Protocol 1.17, persistent configuration, bridge authority, electrical limits, guardian, deadlines, STOP, fault convergence, and all-low `ZERO` remain unchanged.
+
+## 2026-08-24 — Keep evaluation limits traceable and above healthy behavior
+
+- **Decision:** Firmware 0.36.1 raises the aligned actuator's observed-acceleration shutdown from 512 to 1,024 rev/s². Evaluation and plausibility bounds must have a traceable basis and must not become accidental capability ceilings; physical protection limits remain evidence-bound and independently enforced.
+- **Why:** A healthy 4 rev/s direct-velocity launch on 0.36.0 produced a one-sample 525.2 rev/s² filtered-velocity difference and tripped the 512 limit despite correct tracking and no electrical, encoder, predictor, or timing fault. The new value is four times the 256 rev/s² command slew and almost twice that observed transient.
+- **Supersedes:** The twofold 512 rev/s² clause in “Make acceleration and cascade deadlines explicit contracts.”
+- **Affects:** aligned-torque acceleration policy, production motion evaluation, operating limits, firmware identity, and future limit selection.
+
+## 2026-08-24 — Place acceleration plausibility above estimator-valid motion
+
+- **Decision:** Firmware 0.36.1 sets the aligned actuator's observed-acceleration shutdown to 8,192 rev/s². Evaluation/plausibility limits require a traceable basis and must not act as accidental capability ceilings; physical protection limits remain evidence-bound and independently enforced.
+- **Why:** Acceleration has no defensible hardware threshold without qualified motor torque and rotor/load inertia. At the nominal 4 kHz cadence, the 20 rev/s raw-motion boundary and `alpha=0.03283179` filter can legitimately publish about 5,350 rev/s² for a full accepted velocity reversal. The new finite boundary lies above that estimator-valid behavior while retaining detection of internal or timestamp discontinuities.
+- **Supersedes:** “Keep evaluation limits traceable and above healthy behavior,” whose proposed 1,024 rev/s² value still lacked a hardware or estimator-bound basis.
+- **Affects:** aligned-torque acceleration policy, estimator plausibility, production motion evaluation, operating limits, and future limit selection.
+
+## 2026-08-24 — Require every enforced limit to serve a concrete safety purpose
+
+- **Decision:** Every firmware limit must protect hardware, preserve control or safety integrity, or ensure that an operation is explicit and intentional. Each limit needs a traceable owner and basis. A bound that serves none of those purposes must be removed or placed above all legitimate behavior admitted by the surrounding hardware, sensing, numerical, and scheduling contracts.
+- **Why:** Arbitrary permission ceilings repeatedly deny reasonable evaluation requests without reducing physical or operational risk. Apparent conservatism is not evidence and must not substitute for an identified failure mode.
+- **Supersedes:** Generalizes “Place acceleration plausibility above estimator-valid motion” from one acceleration guard into the project-wide limit-selection rule; physical protection limits remain evidence-bound and independent.
+- **Affects:** operating-limit inventory, command validation, controller policies, host tooling, and future design reviews.
+
+## 2026-08-24 — Make direct-velocity acceleration an explicit trajectory input
+
+- **Decision:** Firmware 0.37.0 / protocol 1.18 appends positive Q16.16 acceleration to `START_VELOCITY`. New host requests and legacy 10-byte requests default to 16 rev/s²; explicit requests may use the retained controller capability through 256 rev/s². Position profiles continue to use their caller-selected acceleration and the velocity layer's existing 256 rev/s² inner slew.
+- **Why:** The attached motor remained synchronized at 16 rev/s² but physically skipped steps at 32 rev/s², while current-loop timing and both PI loops remained healthy. The former hidden 256 rev/s² direct launch reached 4 rev/s in 15.6 ms and made motor-dependent trajectory behavior impossible to choose intentionally.
+- **Supersedes:** Only the fixed 256 rev/s² direct-velocity ramp in “Make acceleration and cascade deadlines explicit contracts”; it does not reduce controller capability, change either PI loop, or alter independent current, voltage, duty, speed, feedback-age, following-error, deadline, fault, or `ZERO` enforcement.
+- **Affects:** native velocity command payload, command service, rotor runtime mailbox, velocity reference generation, host capture metadata, and operating limits.
+
+## 2026-08-24 — Separate motor feasibility from drive operating bounds
+
+- **Decision:** Motion defaults should be broadly achievable starting points, while command ceilings are set by drive hardware, sensing, numeric, timing, and control-integrity constraints—not by the pull-out behavior of the motor presently on the bench. It is acceptable for exposed velocity or acceleration ranges to exceed what most motors can follow. Loss of synchronism alone is not a drive-protection fault; independent electrical limits remain authoritative, while position following error may still stop motion to preserve commanded-control integrity.
+- **Why:** MKS57D is a general NEMA23 drive. Motor/load/supply feasibility belongs to application configuration and operator responsibility, and must not silently narrow reusable firmware capability.
+- **Supersedes:** Clarifies “Make direct-velocity acceleration an explicit trajectory input” and “Require every enforced limit to serve a concrete safety purpose”; the 16 rev/s² default remains conservative, and the 256 rev/s² ceiling remains a controller envelope rather than motor qualification.
+- **Affects:** motion defaults, operating-limit classification, host guidance, qualification language, and future configuration design.

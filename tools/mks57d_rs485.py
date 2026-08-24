@@ -54,6 +54,14 @@ COMMAND_GET_VELOCITY_STATUS = 0x0501
 COMMAND_START_POSITION_RELATIVE = 0x0600
 COMMAND_GET_POSITION_STATUS = 0x0601
 
+CURRENT_TEST_CONTROLLER_VALUES = {
+    "stationary": 0,
+    "rotating": 1,
+}
+CURRENT_TEST_CONTROLLER_NAMES = {
+    value: name for name, value in CURRENT_TEST_CONTROLLER_VALUES.items()
+}
+
 STATUS_NAMES = {
     0: "ok",
     1: "unknown_command",
@@ -361,6 +369,7 @@ POSITION_FAULT_NAMES = {
 STATUS_V2_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBB")
 STATUS_V3_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHI")
 STATUS_V4_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHIII")
+STATUS_V5_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHIIIB")
 CURRENT_TRACE_V1_BODY = struct.Struct(">BHHIhhhhhh")
 CURRENT_TRACE_V2_BODY = struct.Struct(">BHHIhhhhhhIHHHHHH")
 TRACE_CYCLE_COUNTER_HZ = 64_000_000
@@ -700,6 +709,40 @@ def query_identity(client: Client) -> dict[str, Any]:
     }
 
 
+def configure_current_test(
+    client: Client,
+    amplitude_counts: int,
+    frequency_hz: float,
+    controller_mode: str = "stationary",
+) -> dict[str, Any]:
+    if controller_mode not in CURRENT_TEST_CONTROLLER_VALUES:
+        raise ProtocolError(
+            "current-test controller must be stationary or rotating"
+        )
+    frequency_millihz = round(frequency_hz * 1000.0)
+    mode_value = CURRENT_TEST_CONTROLLER_VALUES[controller_mode]
+    payload = struct.pack(">HI", amplitude_counts, frequency_millihz)
+    if controller_mode != "stationary":
+        payload += struct.pack(">B", mode_value)
+    body = client.transact(COMMAND_CONFIGURE_CURRENT_TEST, payload)
+    if len(body) == 6:
+        applied_counts, applied_frequency_millihz = struct.unpack(">HI", body)
+        applied_mode = CURRENT_TEST_CONTROLLER_VALUES["stationary"]
+    elif len(body) == 7:
+        applied_counts, applied_frequency_millihz, applied_mode = struct.unpack(
+            ">HIB", body
+        )
+    else:
+        raise ProtocolError("configure response has an unexpected length")
+    if applied_mode not in CURRENT_TEST_CONTROLLER_NAMES:
+        raise ProtocolError("configure response has an unknown controller mode")
+    return {
+        "amplitude_counts": applied_counts,
+        "frequency_hz": applied_frequency_millihz / 1000.0,
+        "controller_mode": CURRENT_TEST_CONTROLLER_NAMES[applied_mode],
+    }
+
+
 def input_state(levels: int) -> dict[str, bool]:
     return {name: not bool(levels & (1 << bit)) for bit, name in INPUT_BITS.items()}
 
@@ -709,11 +752,13 @@ def parse_status(body: bytes) -> dict[str, Any]:
         STATUS_V2_BODY.size,
         STATUS_V3_BODY.size,
         STATUS_V4_BODY.size,
+        STATUS_V5_BODY.size,
     }:
         raise ProtocolError(
             "commissioning status is "
             f"{len(body)} bytes, expected {STATUS_V2_BODY.size} or "
-            f"{STATUS_V3_BODY.size} or {STATUS_V4_BODY.size}"
+            f"{STATUS_V3_BODY.size}, {STATUS_V4_BODY.size}, or "
+            f"{STATUS_V5_BODY.size}"
         )
     values = iter(STATUS_V2_BODY.unpack(body[: STATUS_V2_BODY.size]))
     schema = next(values)
@@ -747,15 +792,23 @@ def parse_status(body: bytes) -> dict[str, Any]:
     vbus_sample_count = None
     missed_pwm_update_count = None
     maximum_consecutive_missed_pwm_updates = None
+    controller_mode = "stationary"
     if len(body) >= STATUS_V3_BODY.size:
         vbus_raw, vbus_sample_count = struct.unpack(
             ">HI", body[STATUS_V2_BODY.size : STATUS_V3_BODY.size]
         )
-    if len(body) == STATUS_V4_BODY.size:
+    if len(body) >= STATUS_V4_BODY.size:
         (
             missed_pwm_update_count,
             maximum_consecutive_missed_pwm_updates,
-        ) = struct.unpack(">II", body[STATUS_V3_BODY.size :])
+        ) = struct.unpack(
+            ">II", body[STATUS_V3_BODY.size : STATUS_V4_BODY.size]
+        )
+    if len(body) == STATUS_V5_BODY.size:
+        mode_value = body[STATUS_V4_BODY.size]
+        controller_mode = CURRENT_TEST_CONTROLLER_NAMES.get(
+            mode_value, f"mode_{mode_value}"
+        )
     vbus_valid = bool(flags & (1 << 11)) and vbus_raw is not None
     bus_voltage_unrounded = (
         vbus_raw * VBUS_VOLTS_PER_COUNT
@@ -804,6 +857,7 @@ def parse_status(body: bytes) -> dict[str, Any]:
             ),
             "maximum_amplitude_counts": maximum_amplitude,
             "frequency_hz": frequency_millihz / 1000.0,
+            "controller_mode": controller_mode,
             "remote_run_remaining_millis": remaining_millis,
         },
         "loop": {
@@ -2045,6 +2099,9 @@ def _run_velocity_capture(
         "request": {
             "target_velocity_revolutions_per_second": args.rps,
             "target_velocity_q16_16": target_velocity_q16_16,
+            "acceleration_revolutions_per_second_squared": (
+                args.acceleration_rps2
+            ),
             "current_limit_counts": current_limit_counts,
             "current_limit_nominal_milliamperes": round(
                 current_limit_counts * COUNTS_TO_MILLIAMPERES, 1
@@ -2116,10 +2173,11 @@ def _run_velocity_capture(
                 client.transact(
                     COMMAND_START_VELOCITY,
                     struct.pack(
-                        ">iHI",
+                        ">iHIi",
                         target_velocity_q16_16,
                         current_limit_counts,
                         args.duration_ms,
+                        round(args.acceleration_rps2 * 65536.0),
                     ),
                 )
                 while True:
@@ -2916,6 +2974,12 @@ def make_parser() -> argparse.ArgumentParser:
     configure_current.add_argument("--current-ma", type=float)
     configure_current.add_argument("--counts", type=int)
     configure.add_argument("--frequency-hz", type=float, required=True)
+    configure.add_argument(
+        "--controller",
+        choices=CURRENT_TEST_CONTROLLER_VALUES,
+        default="stationary",
+        help="stationary A/B PI or synchronous rotating-frame PI",
+    )
 
     start = commands.add_parser("start", help="start a bounded remote run")
     start.add_argument("--leg", choices=LEG_VALUES, default="A1")
@@ -2959,6 +3023,12 @@ def make_parser() -> argparse.ArgumentParser:
     velocity_current = velocity.add_mutually_exclusive_group(required=True)
     velocity_current.add_argument("--current-limit-ma", type=float)
     velocity_current.add_argument("--current-limit-counts", type=int)
+    velocity.add_argument(
+        "--acceleration-rps2",
+        type=float,
+        default=16.0,
+        help="velocity-reference acceleration in rev/s^2 (default: 16)",
+    )
     velocity.add_argument("--duration-ms", type=int, default=5000)
     velocity.add_argument("--interval", type=float, default=0.05)
     velocity.add_argument(
@@ -3186,21 +3256,21 @@ def main() -> int:
                 raise ProtocolError(
                     "test current must encode as 1..65535 counts"
                 )
-            frequency_millihz = round(args.frequency_hz * 1000.0)
-            body = client.transact(
-                COMMAND_CONFIGURE_CURRENT_TEST,
-                struct.pack(">HI", amplitude_counts, frequency_millihz),
+            applied = configure_current_test(
+                client,
+                amplitude_counts,
+                args.frequency_hz,
+                args.controller,
             )
-            if len(body) != 6:
-                raise ProtocolError("configure response has an unexpected length")
-            amplitude, frequency_millihz = struct.unpack(">HI", body)
             print_json(
                 {
-                    "amplitude_counts": amplitude,
+                    "amplitude_counts": applied["amplitude_counts"],
                     "amplitude_nominal_milliamperes": round(
-                        amplitude * COUNTS_TO_MILLIAMPERES, 1
+                        applied["amplitude_counts"] * COUNTS_TO_MILLIAMPERES,
+                        1,
                     ),
-                    "frequency_hz": frequency_millihz / 1000.0,
+                    "frequency_hz": applied["frequency_hz"],
+                    "controller_mode": applied["controller_mode"],
                 }
             )
         elif args.command == "start":
@@ -3344,6 +3414,16 @@ def main() -> int:
                 raise ProtocolError("--rps does not encode as signed Q16.16")
             if target_velocity_q16_16 == 0:
                 raise ProtocolError("--rps is too small to encode as Q16.16")
+            if (
+                not math.isfinite(args.acceleration_rps2)
+                or args.acceleration_rps2 <= 0.0
+            ):
+                raise ProtocolError("--acceleration-rps2 must be positive")
+            acceleration_q16_16 = round(args.acceleration_rps2 * 65536.0)
+            if not 1 <= acceleration_q16_16 <= 0x7FFFFFFF:
+                raise ProtocolError(
+                    "--acceleration-rps2 does not encode as positive Q16.16"
+                )
             if args.current_limit_counts is not None:
                 current_limit_counts = args.current_limit_counts
             else:
@@ -3396,6 +3476,14 @@ def main() -> int:
                     "velocity is outside the firmware-reported range "
                     f"±{policy['maximum_target_velocity_revolutions_per_second']} "
                     "revolutions per second"
+                )
+            if args.acceleration_rps2 > policy[
+                "maximum_target_acceleration_revolutions_per_second2"
+            ]:
+                raise ProtocolError(
+                    "acceleration exceeds the firmware-reported maximum "
+                    f"of {policy['maximum_target_acceleration_revolutions_per_second2']} "
+                    "revolutions per second squared"
                 )
             if current_limit_counts > policy["maximum_current_counts"]:
                 raise ProtocolError(

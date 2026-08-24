@@ -122,6 +122,7 @@ typedef struct
     int16_t requested_q_current_counts;
     uint32_t requested_torque_duration_millis;
     int32_t requested_velocity_revolutions_per_second_q16_16;
+    int32_t requested_velocity_acceleration_q16_16;
     uint16_t requested_velocity_current_limit_counts;
     uint32_t requested_velocity_duration_millis;
     int32_t requested_position_displacement_revolutions_q16_16;
@@ -614,13 +615,16 @@ static command_status_t mock_velocity_start(
     void* context,
     int32_t velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
-    uint32_t duration_millis)
+    uint32_t duration_millis,
+    int32_t acceleration_revolutions_per_second2_q16_16)
 {
     mock_commissioning_t* mock = context;
 
     ++mock->velocity_start_calls;
     mock->requested_velocity_revolutions_per_second_q16_16 =
         velocity_revolutions_per_second_q16_16;
+    mock->requested_velocity_acceleration_q16_16 =
+        acceleration_revolutions_per_second2_q16_16;
     mock->requested_velocity_current_limit_counts = current_limit_counts;
     mock->requested_velocity_duration_millis = duration_millis;
     return COMMAND_STATUS_OK;
@@ -1749,7 +1753,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
-    EXPECT_TRUE(protocol_minor == 16u);
+    EXPECT_TRUE(protocol_minor == 18u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -1779,6 +1783,14 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     static const uint8_t configure_payload[] = {
         0x00u, 0x2Au, 0x00u, 0x00u, 0x03u, 0xE8u
     };
+    static const uint8_t rotating_configure_payload[] = {
+        0x00u, 0x2Au, 0x00u, 0x00u, 0x03u, 0xE8u,
+        COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME
+    };
+    static const uint8_t invalid_controller_payload[] = {
+        0x00u, 0x2Au, 0x00u, 0x00u, 0x03u, 0xE8u,
+        COMMAND_CURRENT_TEST_CONTROLLER_COUNT
+    };
     static const uint8_t start_payload[] = {
         0x02u, 0x00u, 0x00u, 0x13u, 0x88u
     };
@@ -1793,7 +1805,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     mock_protocol_tx_t transmit = {.accept = true};
     mock_commissioning_t commissioning = {
         .status = {
-            .schema_version = 4u,
+            .schema_version = 5u,
             .flags = 0x00000FFFu,
             .raw_input_levels = 0xA5u,
             .debounced_input_levels = 0x5Au,
@@ -1827,6 +1839,8 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .vbus_sample_count = 0x11121314u,
             .missed_pwm_update_count = 0x21222324u,
             .maximum_consecutive_missed_pwm_updates = 0x31323334u,
+            .test_controller_mode =
+                COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME,
         },
         .encoder_status = {
             .schema_version = 2u,
@@ -2050,9 +2064,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 78u);
+    EXPECT_TRUE(response.payload_length == 79u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 4u);
+    EXPECT_TRUE(response.payload[1] == 5u);
     EXPECT_TRUE(response.payload[2] == 0u);
     EXPECT_TRUE(response.payload[5] == 0xFFu);
     EXPECT_TRUE(response.payload[6] == 0xA5u);
@@ -2073,6 +2087,8 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[73] == 0x24u);
     EXPECT_TRUE(response.payload[74] == 0x31u);
     EXPECT_TRUE(response.payload[77] == 0x34u);
+    EXPECT_TRUE(response.payload[78] ==
+                COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -2091,9 +2107,51 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(commissioning.configure_calls == 1u);
     EXPECT_TRUE(commissioning.requested_config.amplitude_counts == 42u);
     EXPECT_TRUE(commissioning.requested_config.frequency_millihz == 1000u);
+    EXPECT_TRUE(commissioning.requested_config.controller_mode ==
+                COMMAND_CURRENT_TEST_CONTROLLER_STATIONARY);
     EXPECT_TRUE(response.payload_length == 7u);
     EXPECT_TRUE(response.payload[1] == 0u);
     EXPECT_TRUE(response.payload[2] == 42u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        121u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_CONFIGURE_CURRENT_TEST,
+        rotating_configure_payload,
+        sizeof(rotating_configure_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.configure_calls == 2u);
+    EXPECT_TRUE(commissioning.requested_config.controller_mode ==
+                COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME);
+    EXPECT_TRUE(response.payload_length == 8u);
+    EXPECT_TRUE(response.payload[7] ==
+                COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        123u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_CONFIGURE_CURRENT_TEST,
+        invalid_controller_payload,
+        sizeof(invalid_controller_payload),
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.configure_calls == 2u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] ==
+                NATIVE_PROTOCOL_STATUS_INVALID_PAYLOAD);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -2675,13 +2733,44 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             commissioning.requested_velocity_current_limit_counts == 100u);
         EXPECT_TRUE(
             commissioning.requested_velocity_duration_millis == 5000u);
+        EXPECT_TRUE(
+            commissioning.requested_velocity_acceleration_q16_16 == 0);
+        EXPECT_TRUE(response.payload_length == 1u);
+        EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    }
+
+    {
+        static const uint8_t velocity_payload[] = {
+            0x00u, 0x04u, 0x00u, 0x00u,
+            0x00u, 0x64u,
+            0x00u, 0x00u, 0x07u, 0xD0u,
+            0x00u, 0x10u, 0x00u, 0x00u};
+
+        wire_length = encode_native_request(
+            NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+            36u,
+            NATIVE_PROTOCOL_MESSAGE_REQUEST,
+            NATIVE_PROTOCOL_COMMAND_START_VELOCITY,
+            velocity_payload,
+            sizeof(velocity_payload),
+            wire,
+            sizeof(wire));
+        native_protocol_server_consume(&server, wire, wire_length);
+        EXPECT_TRUE(native_protocol_decode_wire_frame(
+                        transmit.bytes,
+                        transmit.length,
+                        &response) == NATIVE_PROTOCOL_DECODE_OK);
+        EXPECT_TRUE(commissioning.velocity_start_calls == 2u);
+        EXPECT_TRUE(
+            commissioning.requested_velocity_acceleration_q16_16 ==
+            (16 << 16));
         EXPECT_TRUE(response.payload_length == 1u);
         EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
     }
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
-        36u,
+        37u,
         NATIVE_PROTOCOL_MESSAGE_REQUEST,
         NATIVE_PROTOCOL_COMMAND_GET_VELOCITY_STATUS,
         NULL,
@@ -3138,7 +3227,9 @@ static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
     const electrical_phase_predictor_config_t config =
         test_electrical_phase_predictor_config();
     electrical_phase_predictor_t predictor;
-    uint32_t phase_at_sample = 0u;
+    uint32_t sample_phase = 0u;
+    uint32_t pwm_application_phase = 0u;
+    uint32_t legacy_application_phase = 0u;
     uint32_t phase_after_one_fast_step = 0u;
     uint32_t phase_after_one_encoder_period = 0u;
     uint32_t age_us = 0u;
@@ -3149,11 +3240,19 @@ static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
     EXPECT_TRUE(electrical_phase_predictor_init(&predictor, &config));
     EXPECT_TRUE(electrical_phase_predictor_set_observation(
         &predictor, 0x10000000u, 4 << 16, 1, 1000u));
-    EXPECT_TRUE(electrical_phase_predictor_predict(
-        &predictor, 1000u, &phase_at_sample, &age_us));
+    EXPECT_TRUE(electrical_phase_predictor_predict_horizons(
+        &predictor,
+        1000u,
+        &sample_phase,
+        &pwm_application_phase,
+        &age_us));
     EXPECT_TRUE(age_us == 0u);
-    EXPECT_TRUE((phase_at_sample - 0x10000000u) > 0x005BB000u);
-    EXPECT_TRUE((phase_at_sample - 0x10000000u) < 0x005BD000u);
+    EXPECT_TRUE(sample_phase == 0x10000000u);
+    EXPECT_TRUE((pwm_application_phase - sample_phase) > 0x005BB000u);
+    EXPECT_TRUE((pwm_application_phase - sample_phase) < 0x005BD000u);
+    EXPECT_TRUE(electrical_phase_predictor_predict(
+        &predictor, 1000u, &legacy_application_phase, &age_us));
+    EXPECT_TRUE(legacy_application_phase == pwm_application_phase);
     EXPECT_TRUE(electrical_phase_predictor_predict(
         &predictor, 1050u, &phase_after_one_fast_step, &age_us));
     EXPECT_TRUE(age_us == 50u);
@@ -3161,15 +3260,20 @@ static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
         &predictor, 2000u, &phase_after_one_encoder_period, &age_us));
     EXPECT_TRUE(age_us == 1000u);
 
-    fast_step_delta = phase_after_one_fast_step - phase_at_sample;
+    fast_step_delta =
+        phase_after_one_fast_step - pwm_application_phase;
     encoder_period_delta =
-        phase_after_one_encoder_period - phase_at_sample;
+        phase_after_one_encoder_period - pwm_application_phase;
     /* 4 mechanical rev/s * 50 cycles/rev advances 3.6 electrical degrees
        per 50 us current-loop period and 72 degrees per 1 ms encoder period. */
     EXPECT_TRUE(fast_step_delta > 0x028F5900u);
     EXPECT_TRUE(fast_step_delta < 0x028F6000u);
     EXPECT_TRUE(encoder_period_delta > 0x33333000u);
     EXPECT_TRUE(encoder_period_delta < 0x33333600u);
+    EXPECT_TRUE(!electrical_phase_predictor_predict_horizons(
+        &predictor, 1000u, NULL, &pwm_application_phase, &age_us));
+    EXPECT_TRUE(!electrical_phase_predictor_predict_horizons(
+        &predictor, 1000u, &sample_phase, NULL, &age_us));
 }
 
 static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
@@ -3922,7 +4026,7 @@ static void test_velocity_controller_tracks_bounded_simple_plant(void)
     EXPECT_TRUE(velocity_controller_config_is_valid(&config));
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 14, 50u, 5000u, 1, 0u, &observation));
+        &controller, 1 << 14, 1 << 16, 50u, 5000u, 1, 0u, &observation));
 
     for (step = 1u; step <= 3000u; ++step)
     {
@@ -3974,15 +4078,24 @@ static void test_velocity_controller_rejects_bounds_and_faults_feedback(void)
     config = test_velocity_controller_config();
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, 0, 25u, 100u, 1, 0u, &observation));
+        &controller, 0, 1 << 16, 25u, 100u, 1, 0u, &observation));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, (1 << 16) + 1, 25u, 100u, 1, 0u, &observation));
+        &controller, (1 << 16) + 1, 1 << 16, 25u, 100u, 1, 0u,
+        &observation));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, 1 << 15, 101u, 100u, 1, 0u, &observation));
+        &controller, 1 << 15, 1 << 16, 101u, 100u, 1, 0u,
+        &observation));
     EXPECT_TRUE(!velocity_controller_start(
-        &controller, 1 << 15, 25u, 100u, 0, 0u, &observation));
+        &controller, 1 << 15, 1 << 16, 25u, 100u, 0, 0u,
+        &observation));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, 1 << 15, 0, 25u, 100u, 1, 0u, &observation));
+    EXPECT_TRUE(!velocity_controller_start(
+        &controller, 1 << 15, (1 << 16) + 1, 25u, 100u, 1, 0u,
+        &observation));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 15, 25u, 100u, 1, 0u, &observation));
+        &controller, 1 << 15, 1 << 16, 25u, 100u, 1, 0u,
+        &observation));
     EXPECT_TRUE(velocity_controller_update(
         &controller, 1u, &observation, &requested_current) ==
         VELOCITY_CONTROL_EVENT_FAILED);
@@ -3993,7 +4106,8 @@ static void test_velocity_controller_rejects_bounds_and_faults_feedback(void)
                  VELOCITY_CONTROL_FAULT_FEEDBACK_TIMING) != 0u);
 
     EXPECT_TRUE(velocity_controller_start(
-        &controller, -(1 << 15), 25u, 100u, 1, 10u, &observation));
+        &controller, -(1 << 15), 1 << 16, 25u, 100u, 1, 10u,
+        &observation));
     observation.timestamp_us = 2000u;
     observation.velocity_revolutions_per_second = 5.01f;
     EXPECT_TRUE(velocity_controller_update(
@@ -4019,7 +4133,8 @@ static void test_velocity_controller_deadline_clears_current(void)
 
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 14, 25u, 3u, 1, 100u, &observation));
+        &controller, 1 << 14, 1 << 16, 25u, 3u, 1, 100u,
+        &observation));
     observation.timestamp_us = 1000u;
     EXPECT_TRUE(velocity_controller_update(
         &controller, 101u, &observation, &requested_current) ==
@@ -4056,7 +4171,8 @@ static void test_velocity_controller_limits_current_and_recovers(void)
 
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 16, 10u, 1000u, 1, 0u, &observation));
+        &controller, 1 << 16, 1 << 16, 10u, 1000u, 1, 0u,
+        &observation));
     for (step = 1u; step <= 100u; ++step)
     {
         observation.timestamp_us = 1000u + step * 1000u;
@@ -4089,7 +4205,8 @@ static void test_velocity_controller_limits_current_and_recovers(void)
     observation.velocity_revolutions_per_second = 0.0f;
     observation.timestamp_us += 1000u;
     EXPECT_TRUE(velocity_controller_start(
-        &controller, -(1 << 15), 10u, 1000u, 1, 200u, &observation));
+        &controller, -(1 << 15), 1 << 16, 10u, 1000u, 1, 200u,
+        &observation));
     for (step = 1u; step <= 10u; ++step)
     {
         observation.timestamp_us += 1000u;
@@ -4120,7 +4237,8 @@ static void test_velocity_controller_applies_alignment_direction(void)
 
     EXPECT_TRUE(velocity_controller_init(&controller, &config));
     EXPECT_TRUE(velocity_controller_start(
-        &controller, 1 << 16, 25u, 1000u, -1, 0u, &observation));
+        &controller, 1 << 16, 1 << 16, 25u, 1000u, -1, 0u,
+        &observation));
     for (step = 1u; step <= 20u; ++step)
     {
         observation.timestamp_us = step * 1000u;
@@ -4727,6 +4845,158 @@ static void test_phase_current_loop_anti_windup_recovers_from_saturation(void)
     EXPECT_TRUE(output.duty_permille[3] == 0u);
 }
 
+static void test_phase_current_loop_rotating_uses_application_phase(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    config.integral_gain_q16_per_count_per_step = 0;
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        config.current_b_zero_raw,
+        20,
+        0,
+        0u,
+        0x40000000u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille == 40);
+    EXPECT_TRUE(output.duty_permille[0] == 0u);
+    EXPECT_TRUE(output.duty_permille[1] == 0u);
+    EXPECT_TRUE(output.duty_permille[2] == 40u);
+    EXPECT_TRUE(output.duty_permille[3] == 0u);
+}
+
+static void test_phase_current_loop_rotating_parks_sampled_current(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    config.integral_gain_q16_per_count_per_step = 0;
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        (uint16_t)(config.current_b_zero_raw - 20u),
+        20,
+        0,
+        0x40000000u,
+        0x40000000u,
+        &output));
+    EXPECT_TRUE(output.current_a_measured_counts == 0);
+    EXPECT_TRUE(output.current_b_measured_counts == 20);
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille == 0);
+}
+
+static void test_phase_current_loop_rotating_regulates_signed_q_current(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    config.integral_gain_q16_per_count_per_step = 0;
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        config.current_b_zero_raw,
+        0,
+        20,
+        0u,
+        0u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille == 40);
+    EXPECT_TRUE(output.duty_permille[2] == 40u);
+    EXPECT_TRUE(output.duty_permille[3] == 0u);
+
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        (uint16_t)(config.current_b_zero_raw - 20u),
+        0,
+        20,
+        0u,
+        0u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille == 0);
+
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        config.current_b_zero_raw,
+        0,
+        -20,
+        0u,
+        0u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille == -40);
+    EXPECT_TRUE(output.duty_permille[2] == 0u);
+    EXPECT_TRUE(output.duty_permille[3] == 40u);
+
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        config.current_b_zero_raw,
+        0,
+        20,
+        0x40000000u,
+        0x40000000u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille == -40);
+    EXPECT_TRUE(output.phase_b_voltage_permille == 0);
+    EXPECT_TRUE(output.duty_permille[0] == 40u);
+    EXPECT_TRUE(output.duty_permille[1] == 0u);
+}
+
+static void test_phase_current_loop_rotating_limits_and_freezes_integrators(void)
+{
+    phase_current_loop_config_t config = test_phase_current_loop_config();
+    phase_current_loop_t loop;
+    phase_current_loop_output_t output;
+
+    config.proportional_gain_q16_per_count =
+        PHASE_CURRENT_LOOP_PROPORTIONAL_GAIN_MAXIMUM_Q16;
+    config.integral_gain_q16_per_count_per_step =
+        PHASE_CURRENT_LOOP_INTEGRAL_GAIN_MAXIMUM_Q16;
+    EXPECT_TRUE(phase_current_loop_init(&loop, &config));
+    EXPECT_TRUE(phase_current_loop_start(&loop));
+    EXPECT_TRUE(phase_current_loop_step_rotating_prevalidated(
+        &loop,
+        &config,
+        config.current_a_zero_raw,
+        config.current_b_zero_raw,
+        (int16_t)config.reference_limit_counts,
+        (int16_t)config.reference_limit_counts,
+        0u,
+        0u,
+        &output));
+    EXPECT_TRUE(output.phase_a_voltage_permille > 0);
+    EXPECT_TRUE(output.phase_a_voltage_permille <=
+                (int16_t)config.phase_voltage_limit_permille);
+    EXPECT_TRUE(output.phase_b_voltage_permille > 0);
+    EXPECT_TRUE(output.phase_b_voltage_permille <=
+                (int16_t)config.phase_voltage_limit_permille);
+    EXPECT_TRUE(loop.current_a_integrator_q16 == 0);
+    EXPECT_TRUE(loop.current_b_integrator_q16 == 0);
+}
+
 static void test_rotating_current_test_generates_quadrature_references(void)
 {
     rotating_current_test_t generator = {0};
@@ -5063,7 +5333,7 @@ static void test_aligned_torque_accepts_motor_rated_evaluation_envelope(void)
         .maximum_current_counts = 495u,
         .maximum_current_slew_counts_per_second = 10000u,
         .maximum_velocity_revolutions_per_second_q16_16 = 5 << 16,
-        .maximum_acceleration_revolutions_per_second2_q16_16 = 1000 << 16,
+        .maximum_acceleration_revolutions_per_second2_q16_16 = 8192 << 16,
         .maximum_feedback_interval_us = 2000u,
         .minimum_duration_millis = 3u,
         .maximum_duration_millis = INT32_MAX,
@@ -5231,6 +5501,10 @@ int main(void)
     test_phase_current_loop_rejects_excess_reference();
     test_phase_current_loop_rejects_out_of_policy_gains();
     test_phase_current_loop_anti_windup_recovers_from_saturation();
+    test_phase_current_loop_rotating_uses_application_phase();
+    test_phase_current_loop_rotating_parks_sampled_current();
+    test_phase_current_loop_rotating_regulates_signed_q_current();
+    test_phase_current_loop_rotating_limits_and_freezes_integrators();
     test_rotating_current_test_generates_quadrature_references();
     test_rotating_current_test_ramps_phase_increment();
     test_rotating_current_test_supports_long_fractional_ramps();

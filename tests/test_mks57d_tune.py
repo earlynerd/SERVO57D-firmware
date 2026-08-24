@@ -1,3 +1,4 @@
+import csv
 import json
 import math
 import struct
@@ -68,6 +69,16 @@ def healthy_encoder() -> dict:
 
 
 def analysis() -> dict:
+    def stats(mean: float, ripple: float = 1.0) -> dict:
+        return {
+            "mean": mean,
+            "rms": math.hypot(mean, ripple),
+            "ripple_rms": ripple,
+            "ripple_peak_to_peak": 2.0 * ripple,
+            "minimum": mean - ripple,
+            "maximum": mean + ripple,
+        }
+
     return {
         "fundamental_gain": 0.91,
         "phase_lag_degrees": 9.0,
@@ -75,6 +86,19 @@ def analysis() -> dict:
         "maximum_absolute_voltage_permille": 430.0,
         "maximum_absolute_phase_voltage_volts": 10.3,
         "voltage_saturation_fraction": 0.0,
+        "rotating_frame": {
+            "sample_count": 256,
+            "current_milliamperes": {
+                "current_measured_d": stats(250.0),
+                "current_measured_q": stats(-20.0),
+                "current_error_d": stats(-53.0),
+                "current_error_q": stats(-20.0),
+            },
+            "voltage_permille": {
+                "d": stats(300.0, 4.0),
+                "q": stats(40.0, 3.0),
+            },
+        },
         "encoder": {
             "revolutions": 0.1,
             "rpm": 6.0,
@@ -106,6 +130,7 @@ def sweep_args(root: Path) -> SimpleNamespace:
         kp=[3.0],
         ki=[0.015625],
         electrical_hz=[20.0],
+        controller="stationary",
         leg="A1",
         output_root=root,
     )
@@ -116,6 +141,7 @@ class FakeClient:
         self.active_kp = 4 * 65536
         self.active_ki = 1024
         self.commands: list[tuple[int, bytes]] = []
+        self.configured_modes: list[str] = []
 
     def transact(self, command: int, payload: bytes = b"") -> bytes:
         self.commands.append((command, payload))
@@ -173,6 +199,7 @@ class TuningWorkflowTests(unittest.TestCase):
                 math.cos(math.radians(-30.0)),
                 math.sin(math.radians(-30.0)),
             )
+            voltage = (reference / abs(reference)) * complex(300.0, 50.0)
             captured.append(
                 {
                     "reference_counts": {
@@ -183,8 +210,14 @@ class TuningWorkflowTests(unittest.TestCase):
                         "a": measured.real,
                         "b": measured.imag,
                     },
-                    "phase_voltage_permille": {"a": 100, "b": -100},
-                    "phase_voltage_command_volts": {"a": 2.4, "b": -2.4},
+                    "phase_voltage_permille": {
+                        "a": voltage.real,
+                        "b": voltage.imag,
+                    },
+                    "phase_voltage_command_volts": {
+                        "a": voltage.real * 0.024,
+                        "b": voltage.imag * 0.024,
+                    },
                 }
             )
 
@@ -194,8 +227,33 @@ class TuningWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(result["phase_lag_degrees"], 30.0, places=6)
         self.assertEqual(result["source"], "20 kHz current trace")
         self.assertEqual(result["voltage_saturation_fraction"], 0.0)
+        rotating = result["rotating_frame"]
+        self.assertAlmostEqual(
+            rotating["current_counts"]["current_measured_d"]["mean"],
+            160.0 * math.cos(math.radians(30.0)),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            rotating["current_counts"]["current_measured_q"]["mean"],
+            -80.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            rotating["voltage_permille"]["d"]["mean"], 300.0, places=6
+        )
+        self.assertAlmostEqual(
+            rotating["voltage_permille"]["q"]["mean"], 50.0, places=6
+        )
 
     def common_patches(self, client: FakeClient):
+        def configure(_client, counts, frequency, controller_mode):
+            client.configured_modes.append(controller_mode)
+            return {
+                "counts": counts,
+                "frequency_hz": frequency,
+                "controller_mode": controller_mode,
+            }
+
         def capture(
             _client,
             _leg,
@@ -228,10 +286,7 @@ class TuningWorkflowTests(unittest.TestCase):
             mock.patch.object(
                 tune.motor_test,
                 "_configure",
-                side_effect=lambda _client, counts, frequency: {
-                    "counts": counts,
-                    "frequency_hz": frequency,
-                },
+                side_effect=configure,
             ),
             mock.patch.object(tune, "analyze_trial", return_value=analysis()),
         )
@@ -253,6 +308,13 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 session["trials"][0]["ramp_duration_seconds"], 0.4
             )
+            self.assertEqual(session["controller_mode"], "stationary")
+            self.assertEqual(
+                session["trials"][0]["controller_mode"], "stationary"
+            )
+            self.assertEqual(
+                client.configured_modes, ["stationary", "stationary"]
+            )
             self.assertEqual(client.active_kp, 4 * 65536)
             self.assertNotIn(
                 tune.COMMAND_SAVE_CONFIGURATION,
@@ -269,6 +331,12 @@ class TuningWorkflowTests(unittest.TestCase):
             )
             self.assertIn("Current magnitude tracking", report)
             self.assertIn("Sweeps never save configuration", report)
+            self.assertIn("stationary: Kp=3, Ki=0.015625", report)
+            summary_csv = (session_directory / "summary.csv").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("controller_mode", summary_csv.splitlines()[0])
+            self.assertIn("stationary", summary_csv)
             self.assertIn(
                 ".series{fill:none;stroke:var(--series-color)", report
             )
@@ -286,6 +354,36 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertTrue((trial_directory / "telemetry.jsonl").exists())
             self.assertTrue((trial_directory / "trace.jsonl").exists())
             self.assertTrue((trial_directory / "trial.json").exists())
+
+    def test_rotating_sweep_restores_the_initial_stationary_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client = FakeClient()
+            args = sweep_args(root)
+            args.controller = "rotating"
+            patches = self.common_patches(client)
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+                session = tune.execute_sweep(client, args, root)
+
+            self.assertEqual(session["request"]["controller_mode"], "rotating")
+            self.assertEqual(
+                client.configured_modes, ["rotating", "stationary"]
+            )
+
+    def test_controller_mode_status_compatibility(self) -> None:
+        legacy = ready_status()
+        legacy["schema"] = 4
+        legacy["test"]["controller_mode"] = "rotating"
+        current = ready_status()
+        current["schema"] = 5
+        current["test"]["controller_mode"] = "rotating"
+
+        self.assertEqual(
+            tune._diagnostic_controller_mode(legacy), "stationary"
+        )
+        self.assertEqual(
+            tune._diagnostic_controller_mode(current), "rotating"
+        )
 
     def test_shared_plot_style_keeps_lines_open_and_colors_legends(self) -> None:
         style = tune.motor_test._plot_series_css()
@@ -354,6 +452,72 @@ class TuningWorkflowTests(unittest.TestCase):
                 (root / "report.html").read_text(encoding="utf-8"),
             )
 
+    def test_replot_upgrades_legacy_trace_with_rotating_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trial_path = root / "trial-001"
+            trial_path.mkdir()
+            captured = []
+            for index in range(8):
+                phase = 2.0 * math.pi * index / 8.0
+                reference = complex(
+                    100.0 * math.cos(phase), 100.0 * math.sin(phase)
+                )
+                captured.append(
+                    {
+                        "time_seconds": index / 20_000.0,
+                        "reference_counts": {
+                            "a": reference.real,
+                            "b": reference.imag,
+                        },
+                        "measured_counts": {
+                            "a": 0.9 * reference.real,
+                            "b": 0.9 * reference.imag,
+                        },
+                        "phase_voltage_permille": {
+                            "a": 2.0 * reference.real,
+                            "b": 2.0 * reference.imag,
+                        },
+                    }
+                )
+            tune._write_jsonl(trial_path / "trace.jsonl", captured)
+            session = {
+                "schema": 1,
+                "status": "complete",
+                "generated_at": "2026-08-22T00:00:00-07:00",
+                "identity": {"firmware": "0.31.0"},
+                "request": {"current_milliamperes": 303.0},
+                "restore": {"gains_restored": True},
+                "persistence": {"available": True},
+                "commands": {},
+                "trials": [
+                    {
+                        "trial": 1,
+                        "status": "pass",
+                        "kp": 4.0,
+                        "ki": 0.015625,
+                        "electrical_frequency_hz": 20.0,
+                        "artifact_directory": trial_path.name,
+                        "faults": [],
+                    }
+                ],
+            }
+            tune._write_json(root / "session.json", session)
+
+            tune._replot(root, False)
+
+            with (root / "summary.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(row["controller_mode"], "stationary")
+            self.assertAlmostEqual(
+                float(row["rotating_current_d_mean_milliamperes"]),
+                90.0 * tune.COUNTS_TO_MILLIAMPERES,
+            )
+            report = (root / "report.html").read_text(encoding="utf-8")
+            self.assertIn("d/q current in the commanded frame", report)
+
     def test_report_embeds_saved_high_resolution_waveforms(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -401,6 +565,30 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertIn("Settled 20 kHz trial waveforms", document)
             self.assertIn("Current reference and measurement", document)
             self.assertIn("Phase-voltage command", document)
+            self.assertIn("d/q current in the commanded frame", document)
+            self.assertIn("d/q commanded voltage", document)
+            self.assertIn("Blue is d-axis, orange is q-axis", document)
+            self.assertIn("d current ripple RMS", document)
+
+    def test_parser_defaults_stationary_and_accepts_rotating_controller(self) -> None:
+        parser = tune.make_parser()
+        base = [
+            "sweep",
+            "--kp",
+            "4",
+            "--ki",
+            "0.015625",
+            "--electrical-hz",
+            "20",
+            "--current-ma",
+            "303",
+        ]
+
+        self.assertEqual(parser.parse_args(base).controller, "stationary")
+        self.assertEqual(
+            parser.parse_args(base + ["--controller", "rotating"]).controller,
+            "rotating",
+        )
 
     def test_validation_uses_live_current_and_gain_limits(self) -> None:
         args = sweep_args(Path("unused"))
@@ -424,6 +612,32 @@ class TuningWorkflowTests(unittest.TestCase):
         args.ramp_electrical_hz_per_second = -1.0
         with self.assertRaisesRegex(tune.ProtocolError, "nonnegative"):
             tune._validate_sweep(args, configuration(), ready_status())
+
+    def test_validation_accepts_implementation_frequency_ceiling(self) -> None:
+        args = sweep_args(Path("unused"))
+        args.electrical_hz = [1000.0]
+        _, _, trials = tune._validate_sweep(
+            args, configuration(), ready_status()
+        )
+        self.assertEqual(trials, [(3.0, 0.015625, 1000.0)])
+
+        args.electrical_hz = [1000.001]
+        with self.assertRaisesRegex(tune.ProtocolError, "0.001..1000 Hz"):
+            tune._validate_sweep(args, configuration(), ready_status())
+
+    def test_frequency_ceiling_tracks_firmware_identity(self) -> None:
+        self.assertEqual(
+            tune._diagnostic_maximum_frequency_hz(
+                {"firmware": "0.35.0"}
+            ),
+            250.0,
+        )
+        self.assertEqual(
+            tune._diagnostic_maximum_frequency_hz(
+                {"firmware": "0.35.1"}
+            ),
+            1000.0,
+        )
 
     def test_persist_requires_confirmation_and_valid_alignment(self) -> None:
         client = mock.Mock()

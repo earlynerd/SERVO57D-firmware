@@ -61,6 +61,14 @@ persists a sweep result:
 py tools/mks57d_tune.py --port COM14 sweep --kp 2,3,4 --ki 0.015625 --electrical-hz 5,20,50,100,200 --current-ma 303 --seconds 2
 ```
 
+Protocol 1.17 adds `--controller rotating` for a fixed-point d/q comparison;
+omitting it keeps the established stationary A/B PI and legacy wire request.
+Use identical current, gains, ramp, frequency, and hold time when comparing:
+
+```powershell
+py tools/mks57d_tune.py --port COM14 sweep --controller rotating --kp 9 --ki 0.5 --electrical-hz 5,20,50,100 --current-ma 303 --seconds 2
+```
+
 Each trial now ramps its rotating field from zero before the complete
 `--seconds` hold/test window. The default is 50 electrical Hz/s (1 rev/s² for
 the present 50-cycle/revolution motor), so a 200 Hz trial ramps for four seconds
@@ -75,7 +83,9 @@ Each timestamped `scratch/tuning-runs/*-current-loop/` session contains
 telemetry/trace JSON lines plus `trial.json`. The report combines cross-trial
 gain, phase, error, voltage, motion, and timing comparisons with each trial's
 settled 20 kHz current and phase-voltage waveforms and per-run
-missed-PWM-update evidence. Rebuild it without opening
+missed-PWM-update evidence. It also transforms every trace into the commanded
+frame and plots color-coded d/q current and voltage with mean, ripple RMS,
+peak-to-peak, and d/q error metrics. Rebuild it without opening
 the serial port with `--replot SESSION_DIRECTORY`. Promotion is deliberately
 separate:
 
@@ -111,7 +121,7 @@ py tools/mks57d_rs485.py --port COM14 clear-calibration
 py tools/mks57d_rs485.py --port COM14 torque-status
 py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --current-limit-ma 151.5 --duration-ms 2000 --trace-at-seconds 1
+py tools/mks57d_rs485.py --port COM14 velocity --rps 0.1 --acceleration-rps2 16 --current-limit-ma 151.5 --duration-ms 2000 --trace-at-seconds 1
 py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 py tools/mks57d_rs485.py --port COM14 status
@@ -176,8 +186,9 @@ electrical phase/A-B references in the 20 kHz backend; existing torque, drive,
 velocity, position, and encoder captures require no decoder changes. `velocity` accepts either `--rps` or `--rpm`, while
 `velocity-status` is passive and reports target, acceleration, feedback-speed,
 current, feedback-age, PI-gain, and deadline policy. `velocity` accepts a
-signed mechanical target in revolutions per second plus an explicit positive
-q-current limit in counts or nominal milliamperes. It preflights the request
+signed mechanical target in revolutions per second, an explicit positive
+reference acceleration (default 16 rev/s²), and a positive q-current limit in
+counts or nominal milliamperes. It preflights the request
 against the live firmware policy, starts through `RUN` motion authority, and
 captures target, acceleration-limited reference, measured velocity, requested
 and applied current, saturation, faults, and selected drive/encoder evidence.
@@ -197,8 +208,9 @@ motion and writes normalized `current_trace.csv` after authority ends. It
 contains A/B tracking, predicted phase/age, 32 MHz carrier-timer trigger and
 ADC/DMA timing, 64 MHz DWT ISR timing, and PWM preload margin. No trace bytes
 are transported while the backend is active; `arm-trace` exposes the same
-active-only operation for specialized clients. The 0.27.1 evaluation envelope is ±16 rev/s (±960 RPM), 256 rev/s²
-reference slew, and at most 495 counts (about 2.999 A nominal). The independent
+active-only operation for specialized clients. The evaluation envelope is ±16 rev/s (±960 RPM), a caller-selected
+positive reference slew through 256 rev/s², and at most 495 counts (about
+2.999 A nominal). The host and legacy-request default is 16 rev/s². The independent
 observed-speed shutdown remains 20 rev/s. Positive-direction 0.27.1 captures
 now exercise the predictor through a 12 rev/s request. At 24 V, +8 rev/s reaches
 target without q-current clipping; +12 rev/s saturates q-demand and phase

@@ -36,6 +36,22 @@ static int16_t sine_q15(uint32_t phase)
                   SINE_INTERPOLATION_BITS));
 }
 
+bool phase_current_reference_sin_cos_q15(
+    uint32_t electrical_phase_q32,
+    int16_t* sine,
+    int16_t* cosine)
+{
+    if ((sine == NULL) || (cosine == NULL))
+    {
+        return false;
+    }
+
+    *sine = sine_q15(electrical_phase_q32);
+    *cosine = sine_q15(
+        electrical_phase_q32 + QUARTER_CYCLE_PHASE);
+    return true;
+}
+
 static int16_t scale_reference(int16_t q15, int16_t magnitude)
 {
     int32_t scaled = (int32_t)q15 * magnitude;
@@ -73,10 +89,16 @@ bool phase_current_reference_from_polar(
         return false;
     }
 
-    *current_a_reference_counts = scale_reference(
-        sine_q15(electrical_phase_q32 + QUARTER_CYCLE_PHASE),
-        magnitude_counts);
-    *current_b_reference_counts = scale_reference(
-        sine_q15(electrical_phase_q32), magnitude_counts);
+    {
+        int16_t sine;
+        int16_t cosine;
+
+        (void)phase_current_reference_sin_cos_q15(
+            electrical_phase_q32, &sine, &cosine);
+        *current_a_reference_counts = scale_reference(
+            cosine, magnitude_counts);
+        *current_b_reference_counts = scale_reference(
+            sine, magnitude_counts);
+    }
     return true;
 }

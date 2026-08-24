@@ -110,17 +110,19 @@ bool electrical_phase_predictor_set_observation(
     return true;
 }
 
-bool electrical_phase_predictor_predict(
+bool electrical_phase_predictor_predict_horizons(
     const electrical_phase_predictor_t* predictor,
     uint32_t now_us,
-    uint32_t* electrical_phase_q32,
+    uint32_t* sample_phase_q32,
+    uint32_t* pwm_application_phase_q32,
     uint32_t* prediction_age_us)
 {
     uint32_t age_us;
-    uint32_t prediction_interval_us;
-    int64_t phase_delta;
+    int64_t sample_phase_delta;
+    int64_t output_lead_phase_delta;
 
-    if ((predictor == NULL) || (electrical_phase_q32 == NULL) ||
+    if ((predictor == NULL) || (sample_phase_q32 == NULL) ||
+        (pwm_application_phase_q32 == NULL) ||
         !predictor->initialized || !predictor->observation_valid)
     {
         return false;
@@ -135,14 +137,34 @@ bool electrical_phase_predictor_predict(
     {
         return false;
     }
-    prediction_interval_us =
-        age_us + (uint32_t)predictor->config.output_lead_us;
-    phase_delta =
+    sample_phase_delta =
         (int64_t)predictor->electrical_phase_rate_q32_per_us *
-        (int64_t)prediction_interval_us;
-    *electrical_phase_q32 =
-        predictor->observed_electrical_phase_q32 + (uint32_t)phase_delta;
+        (int64_t)age_us;
+    output_lead_phase_delta =
+        (int64_t)predictor->electrical_phase_rate_q32_per_us *
+        (int64_t)predictor->config.output_lead_us;
+    *sample_phase_q32 =
+        predictor->observed_electrical_phase_q32 +
+        (uint32_t)sample_phase_delta;
+    *pwm_application_phase_q32 =
+        *sample_phase_q32 + (uint32_t)output_lead_phase_delta;
     return true;
+}
+
+bool electrical_phase_predictor_predict(
+    const electrical_phase_predictor_t* predictor,
+    uint32_t now_us,
+    uint32_t* electrical_phase_q32,
+    uint32_t* prediction_age_us)
+{
+    uint32_t sample_phase_q32;
+
+    return electrical_phase_predictor_predict_horizons(
+        predictor,
+        now_us,
+        &sample_phase_q32,
+        electrical_phase_q32,
+        prediction_age_us);
 }
 
 void electrical_phase_predictor_reset(

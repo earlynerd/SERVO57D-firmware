@@ -52,6 +52,13 @@ typedef enum
 
 typedef enum
 {
+    COMMAND_CURRENT_TEST_CONTROLLER_STATIONARY = 0u,
+    COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME = 1u,
+    COMMAND_CURRENT_TEST_CONTROLLER_COUNT
+} command_current_test_controller_t;
+
+typedef enum
+{
     COMMAND_COMMISSIONING_FLAG_ADC_READY = 1u << 0,
     COMMAND_COMMISSIONING_FLAG_ADC_SNAPSHOT_VALID = 1u << 1,
     COMMAND_COMMISSIONING_FLAG_ADC_CALIBRATION_READY = 1u << 2,
@@ -105,6 +112,8 @@ typedef struct
 {
     uint16_t amplitude_counts;
     uint32_t frequency_millihz;
+    uint8_t controller_mode;
+    bool controller_mode_present;
 } command_current_test_config_t;
 
 typedef struct
@@ -143,6 +152,7 @@ typedef struct
     uint32_t vbus_sample_count;
     uint32_t missed_pwm_update_count;
     uint32_t maximum_consecutive_missed_pwm_updates;
+    uint8_t test_controller_mode;
 } command_commissioning_status_t;
 
 typedef struct
@@ -449,7 +459,8 @@ typedef command_status_t (*command_velocity_start_fn)(
     void* context,
     int32_t velocity_revolutions_per_second_q16_16,
     uint16_t current_limit_counts,
-    uint32_t duration_millis);
+    uint32_t duration_millis,
+    int32_t acceleration_revolutions_per_second2_q16_16);
 typedef command_status_t (*command_velocity_get_status_fn)(
     void* context,
     command_velocity_status_t* status);
