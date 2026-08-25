@@ -23,6 +23,7 @@ MAX_RESPONSE_FRAMES_PER_TRANSACTION = 4
 CURRENT_TRACE_SAMPLE_ATTEMPTS = 3
 VELOCITY_MINIMUM_DURATION_MILLIS = 3
 POSITION_MINIMUM_DURATION_MILLIS = 100
+TORQUE_CONSOLE_INTERVAL_SECONDS = 0.2
 VELOCITY_CONSOLE_INTERVAL_SECONDS = 0.2
 POSITION_CONSOLE_INTERVAL_SECONDS = 0.2
 MESSAGE_REQUEST = 1
@@ -386,6 +387,58 @@ ALIGNED_TORQUE_STATUS_V2_BODY = struct.Struct(">BBBBIhhhhIiiIIHHiiHIIIBIHH")
 VELOCITY_STATUS_BODY = struct.Struct(">BBBBIiiihhHIIiiiHHiiI")
 POSITION_STATUS_BODY = struct.Struct(">BBBBIiiiiiihhHIIiiii")
 FAULT_RECOVERY_STATUS_BODY = struct.Struct(">BBIII")
+TORQUE_TELEMETRY_FIELDS = (
+    "host_elapsed_seconds",
+    "controller_elapsed_millis",
+    "remaining_millis",
+    "state",
+    "result",
+    "requested_q_current_amperes",
+    "applied_q_current_amperes",
+    "requested_q_current_counts",
+    "applied_q_current_counts",
+    "phase_a_reference_counts",
+    "phase_b_reference_counts",
+    "controller_velocity_rps",
+    "controller_acceleration_rps2",
+    "torque_flags_hex",
+    "torque_flags",
+    "torque_fault_flags_hex",
+    "torque_faults",
+    "backend_fault_flags_hex",
+    "phase_prediction_reject_reason",
+    "phase_prediction_rejected_age_us",
+    "phase_prediction_maximum_observed_age_us",
+    "phase_prediction_maximum_age_us",
+    "drive_flags_hex",
+    "drive_flags",
+    "loop_fault_flags_hex",
+    "loop_faults",
+    "loop_sample_count",
+    "measured_current_a_counts",
+    "measured_current_b_counts",
+    "bus_voltage_volts",
+    "phase_a_voltage_command_volts",
+    "phase_b_voltage_command_volts",
+    "phase_voltage_limit_volts",
+    "missed_pwm_update_count",
+    "maximum_consecutive_missed_pwm_updates",
+    "encoder_status",
+    "encoder_transport_status",
+    "encoder_flags_hex",
+    "encoder_error_count",
+    "encoder_angle_raw",
+    "encoder_position_revolutions",
+    "encoder_velocity_rps",
+    "encoder_sample_interval_us",
+    "encoder_maximum_sample_interval_us",
+    "estimator_flags_hex",
+    "estimator_flags",
+    "estimator_fault_flags_hex",
+    "estimator_faults",
+    "retained_panic",
+    "watchdog_reset",
+)
 VELOCITY_TELEMETRY_FIELDS = (
     "host_elapsed_seconds",
     "controller_elapsed_millis",
@@ -1843,6 +1896,1091 @@ def _joined_names(value: Any) -> str:
     return "|".join(str(item) for item in (value or []))
 
 
+def _load_loadcell_host_module() -> Any:
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from instruments.rp2040_loadcell.host import loadcell_capture
+    except (ImportError, ModuleNotFoundError) as error:
+        raise ProtocolError(
+            "load-cell integration is unavailable; expected "
+            "instruments/rp2040_loadcell/host/loadcell_capture.py"
+        ) from error
+    return loadcell_capture
+
+
+class TorqueLoadCellCapture:
+    """Own one passive load-cell stream coordinated with a torque run."""
+
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        output_directory: Path,
+    ) -> None:
+        self.module = _load_loadcell_host_module()
+        self.run_id = datetime.now().strftime("torque-%Y%m%dT%H%M%S")
+        self.started_at = datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        )
+        self.transport: Any | None = None
+        self.artifacts: Any | None = None
+        self.runner: Any | None = None
+        self.responses: dict[str, Any] = {}
+        self.events: list[dict[str, Any]] = []
+        self.tare_result: dict[str, Any] | None = None
+        self.prepared = False
+        self.started = False
+        self.stop_requested = False
+        self.finalized = False
+        self.failure: str | None = None
+        self.motor_time_origin: float | None = None
+        self.loadcell_start_monotonic: float | None = None
+        self.configuration = {
+            "port": args.loadcell_port,
+            "baudrate": args.loadcell_baudrate,
+            "sample_rate_sps": args.loadcell_sample_rate_sps,
+            "gain": args.loadcell_gain,
+            "tare_sample_count": args.loadcell_tare_samples,
+            "connect_delay_seconds": args.loadcell_connect_delay_seconds,
+        }
+        self.calibration = {
+            "counts_per_newton": args.loadcell_counts_per_newton,
+            "force_sign": args.loadcell_force_sign,
+            "lever_radius_m": args.loadcell_lever_radius_m,
+            "application": (
+                "metadata_only; force/torque derivation is not embedded in "
+                "raw CSV"
+            ),
+        }
+        try:
+            self.transport = self.module.SerialLineTransport(
+                args.loadcell_port,
+                baudrate=args.loadcell_baudrate,
+                read_timeout_seconds=0.001,
+            )
+            self.artifacts = self.module.CaptureArtifacts(
+                output_directory,
+                create_directory=False,
+                metadata_name="loadcell_metadata.json",
+                telemetry_name="force_telemetry.csv",
+            )
+            self.runner = self.module.CaptureRunner(
+                self.transport,
+                self.artifacts,
+                command_timeout_seconds=args.loadcell_command_timeout_seconds,
+                drain_timeout_seconds=args.loadcell_drain_timeout_seconds,
+                quiet=True,
+            )
+            if args.loadcell_connect_delay_seconds:
+                time.sleep(args.loadcell_connect_delay_seconds)
+        except Exception as error:
+            if self.transport is not None:
+                self.transport.close()
+            raise ProtocolError(
+                f"load-cell setup failed before motor START: {error}"
+            ) from error
+
+    def _require_runner(self) -> Any:
+        if self.runner is None:
+            raise ProtocolError("load-cell capture is not initialized")
+        return self.runner
+
+    def _record_response(self, name: str, response: Any) -> None:
+        self.responses[name] = self.module.response_to_json(response)
+
+    def _raise_integration_error(self, action: str, error: Exception) -> None:
+        if self.failure is None:
+            self.failure = f"{action}: {error}"
+        raise ProtocolError(f"load-cell {action} failed: {error}") from error
+
+    def _assert_integrity(self) -> None:
+        session = self._require_runner().session
+        problems = []
+        if session.sequence_missing_count:
+            problems.append(
+                f"{session.sequence_missing_count} missing sample(s)"
+            )
+        if session.duplicate_or_out_of_order_count:
+            problems.append("duplicate or out-of-order samples")
+        if session.timestamp_regression_count:
+            problems.append("timestamp regression")
+        if session.malformed_record_count:
+            problems.append("malformed protocol record")
+        if session.last_dropped_total:
+            problems.append(
+                f"device reported {session.last_dropped_total} dropped sample(s)"
+            )
+        if session.saturation_sample_count:
+            problems.append(
+                f"{session.saturation_sample_count} saturated sample(s)"
+            )
+        if problems:
+            raise ProtocolError(
+                "load-cell data integrity failure: " + "; ".join(problems)
+            )
+
+    def prepare(self) -> None:
+        runner = self._require_runner()
+        try:
+            info = runner.transact("INFO")
+            self.module.validate_info_response(info)
+            self._record_response("info", info)
+            status = runner.transact("STATUS")
+            status = runner.recover_reconnected_capture(status)
+            self._record_response("status_on_connect", status)
+            configuration = runner.transact(
+                f"CONFIG {self.configuration['sample_rate_sps']} "
+                f"{self.configuration['gain']}"
+            )
+            self.module.validate_config_response(
+                configuration,
+                self.configuration["sample_rate_sps"],
+                self.configuration["gain"],
+            )
+            self._record_response("configuration", configuration)
+            tare_started = runner.transact(
+                f"TARE {self.configuration['tare_sample_count']}"
+            )
+            self.module.validate_tare_started_response(
+                tare_started,
+                self.configuration["tare_sample_count"],
+            )
+            tare_timeout = max(
+                runner.command_timeout_seconds,
+                (
+                    self.configuration["tare_sample_count"]
+                    / self.configuration["sample_rate_sps"]
+                )
+                * 2.5
+                + 3.0,
+            )
+            tare_complete = runner.wait_for_command_phase(
+                "TARE", "COMPLETE", timeout_seconds=tare_timeout
+            )
+            self.tare_result = self.module.parse_tare_complete(tare_complete)
+            self.responses["tare"] = {
+                "timeout_seconds": tare_timeout,
+                "started": self.module.response_to_json(tare_started),
+                "complete": self.module.response_to_json(tare_complete),
+                "result": self.tare_result,
+            }
+            status = runner.transact("STATUS")
+            self.module.validate_status_response(status)
+            if self.module.status_state(status) != "IDLE":
+                raise self.module.ProtocolError(
+                    "load-cell instrument is not IDLE after tare"
+                )
+            self._record_response("status_before_start", status)
+            self.prepared = True
+        except Exception as error:
+            self._raise_integration_error("prepare", error)
+
+    def start(self) -> None:
+        if not self.prepared:
+            raise ProtocolError("load-cell capture was not prepared")
+        runner = self._require_runner()
+        try:
+            start_monotonic = time.monotonic()
+            self.started = True
+            self.loadcell_start_monotonic = start_monotonic
+            runner.session.start_capture(start_monotonic)
+            response = runner.transact(f"START {self.run_id}")
+            self.module.validate_start_response(response, self.run_id)
+            self._record_response("start", response)
+        except Exception as error:
+            self._raise_integration_error("START", error)
+
+    def set_motor_time_origin(self, motor_time_origin: float) -> None:
+        self.motor_time_origin = motor_time_origin
+
+    def mark(self, marker_id: str) -> None:
+        if not self.started or self.stop_requested:
+            raise ProtocolError(
+                f"cannot record load-cell marker {marker_id!r} outside capture"
+            )
+        runner = self._require_runner()
+        try:
+            request_monotonic = time.monotonic()
+            response = runner.transact(f"MARK {marker_id}")
+            response_monotonic = time.monotonic()
+            self.module.validate_mark_response(response, marker_id)
+            device_timestamp_us = int(response.fields[1])
+            self.events.append(
+                {
+                    "marker_id": marker_id,
+                    "device_timestamp_us": device_timestamp_us,
+                    "host_request_monotonic": request_monotonic,
+                    "host_response_monotonic": response_monotonic,
+                }
+            )
+            self.responses.setdefault("markers", []).append(
+                self.module.response_to_json(response)
+            )
+            self._assert_integrity()
+        except Exception as error:
+            self._raise_integration_error(f"MARK {marker_id}", error)
+
+    def poll(self) -> None:
+        if not self.started or self.stop_requested:
+            return
+        try:
+            self._require_runner().poll_available()
+            self._assert_integrity()
+        except Exception as error:
+            self._raise_integration_error("stream", error)
+
+    def stop(self) -> None:
+        if (
+            not self.started
+            or self._require_runner().session.final_summary is not None
+        ):
+            return
+        runner = self._require_runner()
+        pre_stop_error: Exception | None = None
+        try:
+            try:
+                runner.poll_available()
+                self._assert_integrity()
+            except Exception as error:
+                pre_stop_error = error
+            runner.session.expect_final_summary(self.run_id)
+            self.stop_requested = True
+            response = runner.transact("STOP")
+            self.module.validate_stop_response(response)
+            self._record_response("stop", response)
+            final_summary = runner.wait_for_final_summary()
+            if final_summary.run_id != self.run_id:
+                raise self.module.ProtocolError(
+                    "load-cell final summary run ID does not match"
+                )
+            status = runner.transact("STATUS")
+            self.module.validate_status_response(status)
+            if self.module.status_state(status) != "IDLE":
+                raise self.module.ProtocolError(
+                    "load-cell instrument did not return to IDLE"
+                )
+            self._record_response("status_after_stop", status)
+            self._assert_integrity()
+            final = runner.session.final_summary
+            if final is None:
+                raise self.module.ProtocolError(
+                    "load-cell final summary is missing"
+                )
+            if final.dropped_sample_count:
+                raise self.module.ProtocolError(
+                    "load-cell final summary reports dropped samples"
+                )
+            if final.i2c_error_count:
+                raise self.module.ProtocolError(
+                    "load-cell final summary reports I2C errors"
+                )
+            if final.buffer_overrun_count:
+                raise self.module.ProtocolError(
+                    "load-cell final summary reports buffer overruns"
+                )
+            mismatches = runner.session.final_summary_mismatches()
+            if mismatches:
+                raise self.module.ProtocolError(
+                    f"load-cell host/device summary mismatch: {mismatches}"
+                )
+            if pre_stop_error is not None:
+                raise pre_stop_error
+        except Exception as error:
+            self._raise_integration_error("STOP/drain", error)
+
+    def finalize(self, application_failure: str | None = None) -> dict[str, Any]:
+        if self.finalized:
+            raise ProtocolError("load-cell metadata was already finalized")
+        runner = self._require_runner()
+        if self.started and runner.session.final_summary is None:
+            try:
+                self.stop()
+            except ProtocolError:
+                pass
+        completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        origin = self.motor_time_origin
+        events = []
+        for event in self.events:
+            events.append(
+                {
+                    "marker_id": event["marker_id"],
+                    "device_timestamp_us": event["device_timestamp_us"],
+                    "host_request_elapsed_from_motor_start_seconds": (
+                        None
+                        if origin is None
+                        else event["host_request_monotonic"] - origin
+                    ),
+                    "host_response_elapsed_from_motor_start_seconds": (
+                        None
+                        if origin is None
+                        else event["host_response_monotonic"] - origin
+                    ),
+                }
+            )
+        final_summary = runner.session.final_summary
+        metadata = {
+            "schema_version": 1,
+            "capture": {
+                "run_id": self.run_id,
+                "port": self.configuration["port"],
+                "started_at": self.started_at,
+                "completed_at": completed_at,
+                "prepared": self.prepared,
+                "started": self.started,
+                "complete": final_summary is not None and self.failure is None,
+                "instrument_failure": self.failure,
+                "application_failure": application_failure,
+                "loadcell_start_offset_from_motor_start_seconds": (
+                    None
+                    if origin is None or self.loadcell_start_monotonic is None
+                    else self.loadcell_start_monotonic - origin
+                ),
+            },
+            "requested_device_configuration": self.configuration,
+            "calibration": {**self.calibration, "tare": self.tare_result},
+            "motor_timeline": events,
+            "responses": self.responses,
+            "host_summary": runner.session.summary_json(),
+            "device_final_summary": (
+                None
+                if final_summary is None
+                else self.module.response_to_json(final_summary)
+            ),
+            "artifacts": {
+                "metadata": self.artifacts.metadata_path.name,
+                "telemetry": self.artifacts.csv_path.name,
+            },
+        }
+        self.artifacts.finalize(metadata)
+        self.finalized = True
+        return metadata
+
+    def close(self) -> None:
+        if self.artifacts is not None and not self.artifacts._closed:
+            self.artifacts.close_without_metadata()
+        if self.transport is not None:
+            self.transport.close()
+            self.transport = None
+
+
+def _create_torque_loadcell_capture(
+    args: argparse.Namespace,
+    output_directory: Path,
+) -> TorqueLoadCellCapture:
+    return TorqueLoadCellCapture(args, output_directory)
+
+
+def _torque_without_policy(status: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in status.items() if key != "policy"}
+
+
+def _make_torque_run_directory(
+    root: Path,
+    q_current_counts: int,
+    duration_millis: int,
+) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    current_label = f"{q_current_counts:+06d}".replace("+", "p")
+    current_label = current_label.replace("-", "m")
+    label = f"{timestamp}-{current_label}cnt-{duration_millis}ms"
+    path = root / label
+    suffix = 2
+    while path.exists():
+        path = root / f"{label}-{suffix}"
+        suffix += 1
+    path.mkdir(parents=True)
+    return path
+
+
+def _query_torque_capture_snapshot(
+    client: Client,
+    capture_start: float,
+) -> dict[str, Any]:
+    return {
+        "host_elapsed_seconds": round(time.monotonic() - capture_start, 6),
+        "torque": query_aligned_torque(client),
+        "drive": query_status(client),
+        "encoder": query_encoder(client),
+    }
+
+
+def _torque_csv_row(snapshot: dict[str, Any]) -> dict[str, Any]:
+    torque = snapshot["torque"]
+    drive = snapshot["drive"]
+    encoder = snapshot["encoder"]
+    loop = drive.get("loop", {})
+    adc = drive.get("adc", {})
+    reset = drive.get("reset", {})
+    estimator = encoder.get("estimator", {})
+    references = torque.get("phase_current_reference_counts", {})
+    measured = loop.get("measured_counts", {})
+    phase_voltage = loop.get("phase_voltage_command_volts", {})
+    prediction = torque.get("phase_prediction", {})
+
+    return {
+        "host_elapsed_seconds": snapshot["host_elapsed_seconds"],
+        "controller_elapsed_millis": torque["elapsed_millis"],
+        "remaining_millis": torque["remaining_millis"],
+        "state": torque["state"],
+        "result": torque["result"],
+        "requested_q_current_amperes": nominal_amperes_from_counts(
+            torque["requested_q_current_counts"]
+        ),
+        "applied_q_current_amperes": nominal_amperes_from_counts(
+            torque["applied_q_current_counts"]
+        ),
+        "requested_q_current_counts": torque[
+            "requested_q_current_counts"
+        ],
+        "applied_q_current_counts": torque["applied_q_current_counts"],
+        "phase_a_reference_counts": references.get("a", ""),
+        "phase_b_reference_counts": references.get("b", ""),
+        "controller_velocity_rps": torque[
+            "velocity_revolutions_per_second"
+        ],
+        "controller_acceleration_rps2": torque[
+            "acceleration_revolutions_per_second2"
+        ],
+        "torque_flags_hex": torque["flags_hex"],
+        "torque_flags": _joined_names(torque["flags"]),
+        "torque_fault_flags_hex": torque["fault_flags_hex"],
+        "torque_faults": _joined_names(torque["faults"]),
+        "backend_fault_flags_hex": torque["backend_fault_flags_hex"],
+        "phase_prediction_reject_reason": prediction.get(
+            "reject_reason", ""
+        ),
+        "phase_prediction_rejected_age_us": prediction.get(
+            "rejected_age_us", ""
+        ),
+        "phase_prediction_maximum_observed_age_us": prediction.get(
+            "maximum_observed_age_us", ""
+        ),
+        "phase_prediction_maximum_age_us": prediction.get(
+            "maximum_age_us", ""
+        ),
+        "drive_flags_hex": drive.get("flags_hex", ""),
+        "drive_flags": _joined_names(drive.get("flags")),
+        "loop_fault_flags_hex": loop.get("fault_flags_hex", ""),
+        "loop_faults": _joined_names(loop.get("faults")),
+        "loop_sample_count": loop.get("sample_count", ""),
+        "measured_current_a_counts": measured.get("a", ""),
+        "measured_current_b_counts": measured.get("b", ""),
+        "bus_voltage_volts": adc.get("bus_voltage_volts", ""),
+        "phase_a_voltage_command_volts": phase_voltage.get("a", ""),
+        "phase_b_voltage_command_volts": phase_voltage.get("b", ""),
+        "phase_voltage_limit_volts": loop.get(
+            "phase_voltage_limit_volts", ""
+        ),
+        "missed_pwm_update_count": loop.get(
+            "missed_pwm_update_count", ""
+        ),
+        "maximum_consecutive_missed_pwm_updates": loop.get(
+            "maximum_consecutive_missed_pwm_updates", ""
+        ),
+        "encoder_status": encoder.get("status", ""),
+        "encoder_transport_status": encoder.get("transport_status", ""),
+        "encoder_flags_hex": encoder.get("flags_hex", ""),
+        "encoder_error_count": encoder.get("error_count", ""),
+        "encoder_angle_raw": encoder.get("angle_raw", ""),
+        "encoder_position_revolutions": estimator.get(
+            "position_revolutions", ""
+        ),
+        "encoder_velocity_rps": estimator.get(
+            "velocity_revolutions_per_second", ""
+        ),
+        "encoder_sample_interval_us": estimator.get(
+            "sample_interval_us", ""
+        ),
+        "encoder_maximum_sample_interval_us": estimator.get(
+            "maximum_sample_interval_us", ""
+        ),
+        "estimator_flags_hex": estimator.get("flags_hex", ""),
+        "estimator_flags": _joined_names(estimator.get("flags")),
+        "estimator_fault_flags_hex": estimator.get("fault_flags_hex", ""),
+        "estimator_faults": _joined_names(estimator.get("faults")),
+        "retained_panic": reset.get("retained_panic", ""),
+        "watchdog_reset": reset.get("watchdog_reset", ""),
+    }
+
+
+def _new_torque_capture_analysis() -> dict[str, Any]:
+    return {
+        "sample_count": 0,
+        "maximum_absolute_requested_q_current_counts": 0,
+        "maximum_absolute_applied_q_current_counts": 0,
+        "maximum_absolute_controller_velocity_rps": 0.0,
+        "maximum_absolute_encoder_velocity_rps": 0.0,
+        "maximum_absolute_controller_acceleration_rps2": 0.0,
+        "maximum_encoder_sample_interval_us": 0,
+        "maximum_phase_prediction_age_us": None,
+        "maximum_absolute_phase_voltage_command_volts": None,
+        "maximum_missed_pwm_update_count": None,
+        "maximum_consecutive_missed_pwm_updates": None,
+        "observed_states": set(),
+        "faults": set(),
+    }
+
+
+def _update_torque_capture_analysis(
+    analysis: dict[str, Any],
+    row: dict[str, Any],
+) -> None:
+    analysis["sample_count"] += 1
+    analysis["maximum_absolute_requested_q_current_counts"] = max(
+        analysis["maximum_absolute_requested_q_current_counts"],
+        abs(int(row["requested_q_current_counts"])),
+    )
+    analysis["maximum_absolute_applied_q_current_counts"] = max(
+        analysis["maximum_absolute_applied_q_current_counts"],
+        abs(int(row["applied_q_current_counts"])),
+    )
+    analysis["maximum_absolute_controller_velocity_rps"] = max(
+        analysis["maximum_absolute_controller_velocity_rps"],
+        abs(float(row["controller_velocity_rps"])),
+    )
+    if row["encoder_velocity_rps"] != "":
+        analysis["maximum_absolute_encoder_velocity_rps"] = max(
+            analysis["maximum_absolute_encoder_velocity_rps"],
+            abs(float(row["encoder_velocity_rps"])),
+        )
+    analysis["maximum_absolute_controller_acceleration_rps2"] = max(
+        analysis["maximum_absolute_controller_acceleration_rps2"],
+        abs(float(row["controller_acceleration_rps2"])),
+    )
+    if row["encoder_sample_interval_us"] != "":
+        analysis["maximum_encoder_sample_interval_us"] = max(
+            analysis["maximum_encoder_sample_interval_us"],
+            int(row["encoder_sample_interval_us"]),
+        )
+    if row["phase_prediction_maximum_observed_age_us"] not in {"", None}:
+        analysis["maximum_phase_prediction_age_us"] = max(
+            analysis["maximum_phase_prediction_age_us"] or 0,
+            int(row["phase_prediction_maximum_observed_age_us"]),
+        )
+    phase_voltages = (
+        row["phase_a_voltage_command_volts"],
+        row["phase_b_voltage_command_volts"],
+    )
+    for voltage in phase_voltages:
+        if voltage not in {"", None}:
+            analysis["maximum_absolute_phase_voltage_command_volts"] = max(
+                analysis["maximum_absolute_phase_voltage_command_volts"]
+                or 0.0,
+                abs(float(voltage)),
+            )
+    if row["missed_pwm_update_count"] not in {"", None}:
+        analysis["maximum_missed_pwm_update_count"] = max(
+            analysis["maximum_missed_pwm_update_count"] or 0,
+            int(row["missed_pwm_update_count"]),
+        )
+    if row["maximum_consecutive_missed_pwm_updates"] not in {"", None}:
+        analysis["maximum_consecutive_missed_pwm_updates"] = max(
+            analysis["maximum_consecutive_missed_pwm_updates"] or 0,
+            int(row["maximum_consecutive_missed_pwm_updates"]),
+        )
+    analysis["observed_states"].add(str(row["state"]))
+    for prefix, field in (
+        ("torque", "torque_faults"),
+        ("current_loop", "loop_faults"),
+        ("estimator", "estimator_faults"),
+    ):
+        for fault in filter(None, str(row[field]).split("|")):
+            analysis["faults"].add(f"{prefix}_{fault}")
+    if row["backend_fault_flags_hex"] not in {"", "0x00000000"}:
+        analysis["faults"].add("current_backend_fault")
+    if "fault_present" in str(row["drive_flags"]).split("|"):
+        analysis["faults"].add("drive_supervisor_fault")
+    if row["retained_panic"] not in {"", 0, "0"}:
+        analysis["faults"].add("retained_panic")
+    if row["watchdog_reset"] not in {"", False, 0, "0"}:
+        analysis["faults"].add("watchdog_reset")
+
+
+def _finalize_torque_capture_analysis(
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "sample_count": analysis["sample_count"],
+        "maximum_absolute_requested_q_current_counts": analysis[
+            "maximum_absolute_requested_q_current_counts"
+        ],
+        "maximum_absolute_applied_q_current_counts": analysis[
+            "maximum_absolute_applied_q_current_counts"
+        ],
+        "maximum_absolute_controller_velocity_rps": analysis[
+            "maximum_absolute_controller_velocity_rps"
+        ],
+        "maximum_absolute_encoder_velocity_rps": analysis[
+            "maximum_absolute_encoder_velocity_rps"
+        ],
+        "maximum_absolute_controller_acceleration_rps2": analysis[
+            "maximum_absolute_controller_acceleration_rps2"
+        ],
+        "maximum_encoder_sample_interval_us": analysis[
+            "maximum_encoder_sample_interval_us"
+        ],
+        "maximum_phase_prediction_age_us": analysis[
+            "maximum_phase_prediction_age_us"
+        ],
+        "maximum_absolute_phase_voltage_command_volts": analysis[
+            "maximum_absolute_phase_voltage_command_volts"
+        ],
+        "maximum_missed_pwm_update_count": analysis[
+            "maximum_missed_pwm_update_count"
+        ],
+        "maximum_consecutive_missed_pwm_updates": analysis[
+            "maximum_consecutive_missed_pwm_updates"
+        ],
+        "observed_states": sorted(analysis["observed_states"]),
+        "faults": sorted(analysis["faults"]),
+    }
+
+
+def _torque_live_line(
+    row: dict[str, Any],
+    duration_millis: int,
+) -> str:
+    faults = row["torque_faults"] or row["loop_faults"] or "none"
+    voltage_text = "Vbus=unavailable"
+    if row["bus_voltage_volts"] not in {"", None}:
+        phase_voltage = max(
+            abs(float(row["phase_a_voltage_command_volts"])),
+            abs(float(row["phase_b_voltage_command_volts"])),
+        )
+        voltage_text = (
+            f"Vbus={float(row['bus_voltage_volts']):5.2f} V  "
+            f"|Vph|={phase_voltage:5.2f}/"
+            f"{float(row['phase_voltage_limit_volts']):5.2f} V"
+        )
+    return (
+        f"{float(row['host_elapsed_seconds']):6.2f}/"
+        f"{duration_millis / 1000.0:.2f} s  "
+        f"{str(row['state']):8s}  "
+        f"Iq={float(row['applied_q_current_amperes']):+6.3f}/"
+        f"{float(row['requested_q_current_amperes']):+6.3f} A  "
+        f"vel={float(row['encoder_velocity_rps']):+7.3f} rps  "
+        f"acc={float(row['controller_acceleration_rps2']):+8.1f} rps2  "
+        f"{voltage_text}  "
+        f"enc={row['encoder_sample_interval_us']} us  "
+        f"faults={faults}"
+    )
+
+
+def _run_torque_capture(
+    client: Client,
+    args: argparse.Namespace,
+    q_current_counts: int,
+    initial_torque_status: dict[str, Any],
+) -> int:
+    run_directory = _make_torque_run_directory(
+        args.output_root,
+        q_current_counts,
+        args.duration_ms,
+    )
+    metadata_path = run_directory / "metadata.json"
+    telemetry_path = run_directory / "telemetry.csv"
+    full_jsonl_path = run_directory / "telemetry.jsonl"
+    current_trace_path = run_directory / "current_trace.csv"
+    initial_drive = query_status(client)
+    initial_encoder = query_encoder(client)
+    metadata: dict[str, Any] = {
+        "schema": 1,
+        "generated_at": datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        ),
+        "request": {
+            "q_current_counts": q_current_counts,
+            "q_current_nominal_milliamperes": round(
+                q_current_counts * COUNTS_TO_MILLIAMPERES, 1
+            ),
+            "duration_millis": args.duration_ms,
+            "capture_interval_seconds": args.interval,
+            "scheduled_stop_after_seconds": args.stop_after_seconds,
+            "trace_at_seconds": args.trace_at_seconds,
+            "loadcell": (
+                None
+                if args.loadcell_port is None
+                else {
+                    "port": args.loadcell_port,
+                    "sample_rate_sps": args.loadcell_sample_rate_sps,
+                    "gain": args.loadcell_gain,
+                    "tare_sample_count": args.loadcell_tare_samples,
+                    "counts_per_newton": args.loadcell_counts_per_newton,
+                    "force_sign": args.loadcell_force_sign,
+                    "lever_radius_m": args.loadcell_lever_radius_m,
+                }
+            ),
+        },
+        "transport": {
+            "port": args.port,
+            "baud": args.baud,
+            "address": args.address,
+            "timeout_seconds": args.timeout,
+        },
+        "identity": query_identity(client),
+        "configuration": query_configuration(client),
+        "policy": initial_torque_status["policy"],
+        "initial": {
+            "torque": _torque_without_policy(initial_torque_status),
+            "drive": initial_drive,
+            "encoder": initial_encoder,
+        },
+        "capture": {
+            "telemetry_csv": telemetry_path.name,
+            "full_jsonl": full_jsonl_path.name if args.jsonl else None,
+            "current_trace_csv": (
+                current_trace_path.name
+                if args.trace_at_seconds is not None
+                else None
+            ),
+            "force_telemetry_csv": (
+                "force_telemetry.csv"
+                if args.loadcell_port is not None
+                else None
+            ),
+            "loadcell_metadata_json": (
+                "loadcell_metadata.json"
+                if args.loadcell_port is not None
+                else None
+            ),
+            "terminal_update_interval_seconds": (
+                None if args.quiet else TORQUE_CONSOLE_INTERVAL_SECONDS
+            ),
+            "status": "prepared",
+        },
+    }
+    _write_json(metadata_path, metadata)
+    print(f"Capture: {run_directory.resolve()}")
+    if not args.quiet:
+        print("Press Ctrl+C at any time to send STOP.")
+
+    analysis = _new_torque_capture_analysis()
+    capture_start: float | None = None
+    host_deadline: float | None = None
+    next_console_update: float | None = None
+    start_attempted = False
+    terminal = False
+    interrupted = False
+    console_active = False
+    stop_error: str | None = None
+    capture_error: Exception | None = None
+    final_snapshot: dict[str, Any] | None = None
+    scheduled_stop_sent = False
+    trace_arm_sent = False
+    trace_arm_host_elapsed_seconds: float | None = None
+    loadcell: TorqueLoadCellCapture | None = None
+    loadcell_metadata: dict[str, Any] | None = None
+    terminal_marker_sent = False
+    exit_code = 2
+
+    with telemetry_path.open("w", encoding="utf-8", newline="") as csv_stream:
+        writer = csv.DictWriter(csv_stream, fieldnames=TORQUE_TELEMETRY_FIELDS)
+        writer.writeheader()
+        csv_stream.flush()
+        jsonl_stream = (
+            full_jsonl_path.open("w", encoding="utf-8")
+            if args.jsonl
+            else None
+        )
+        try:
+            try:
+                if args.loadcell_port is not None:
+                    loadcell = _create_torque_loadcell_capture(
+                        args, run_directory
+                    )
+                    loadcell.prepare()
+                    loadcell.start()
+                    loadcell.mark("motor_start_request")
+                    metadata["capture"]["loadcell_status"] = "active"
+                    _write_json(metadata_path, metadata)
+                capture_start = time.monotonic()
+                host_deadline = (
+                    capture_start + args.duration_ms / 1000.0 + 5.0
+                )
+                next_console_update = capture_start
+                if loadcell is not None:
+                    loadcell.set_motor_time_origin(capture_start)
+                start_attempted = True
+                client.transact(
+                    COMMAND_START_ALIGNED_TORQUE,
+                    struct.pack(">hI", q_current_counts, args.duration_ms),
+                )
+                if loadcell is not None:
+                    loadcell.mark("motor_start_ack")
+                while True:
+                    snapshot = _query_torque_capture_snapshot(
+                        client, capture_start
+                    )
+                    final_snapshot = snapshot
+                    row = _torque_csv_row(snapshot)
+                    writer.writerow(row)
+                    csv_stream.flush()
+                    if jsonl_stream is not None:
+                        jsonl_stream.write(
+                            json.dumps(snapshot, sort_keys=True) + "\n"
+                        )
+                        jsonl_stream.flush()
+                    _update_torque_capture_analysis(analysis, row)
+                    if loadcell is not None:
+                        loadcell.poll()
+                    terminal = row["state"] in {
+                        "complete",
+                        "stopped",
+                        "failed",
+                    }
+                    now = time.monotonic()
+                    if (
+                        not terminal
+                        and args.trace_at_seconds is not None
+                        and not trace_arm_sent
+                        and now - capture_start >= args.trace_at_seconds
+                    ):
+                        arm_current_trace(client)
+                        trace_arm_sent = True
+                        trace_arm_host_elapsed_seconds = round(
+                            now - capture_start, 6
+                        )
+                    if not args.quiet and (
+                        terminal
+                        or (
+                            next_console_update is not None
+                            and now >= next_console_update
+                        )
+                    ):
+                        print(
+                            "\r"
+                            + _torque_live_line(
+                                row, args.duration_ms
+                            ).ljust(120),
+                            end="",
+                            flush=True,
+                        )
+                        console_active = True
+                        next_console_update = (
+                            now + TORQUE_CONSOLE_INTERVAL_SECONDS
+                        )
+                    if terminal:
+                        if loadcell is not None and not terminal_marker_sent:
+                            loadcell.mark("motor_terminal")
+                            terminal_marker_sent = True
+                        exit_code = (
+                            0
+                            if row["state"] == "complete"
+                            or (
+                                row["state"] == "stopped"
+                                and scheduled_stop_sent
+                            )
+                            else 3
+                        )
+                        break
+                    if (
+                        args.stop_after_seconds is not None
+                        and not scheduled_stop_sent
+                        and now - capture_start >= args.stop_after_seconds
+                    ):
+                        if loadcell is not None:
+                            loadcell.mark("motor_stop_request")
+                        stop_drive(client)
+                        scheduled_stop_sent = True
+                        if loadcell is not None:
+                            loadcell.mark("motor_stop_ack")
+                    if (
+                        host_deadline is not None
+                        and time.monotonic() > host_deadline
+                    ):
+                        raise ProtocolError(
+                            "torque command did not release authority "
+                            "before the host deadline"
+                        )
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                interrupted = True
+                exit_code = 130
+            except (ProtocolError, OSError, ValueError) as error:
+                capture_error = error
+                exit_code = 2
+            finally:
+                if start_attempted and not terminal:
+                    if loadcell is not None:
+                        try:
+                            loadcell.mark("motor_cleanup_stop_request")
+                        except ProtocolError as error:
+                            if capture_error is None:
+                                capture_error = error
+                                exit_code = 2
+                    try:
+                        stop_drive(client)
+                    except (ProtocolError, OSError) as error:
+                        stop_error = str(error)
+                    else:
+                        if loadcell is not None:
+                            try:
+                                loadcell.mark("motor_cleanup_stop_ack")
+                            except ProtocolError as error:
+                                if capture_error is None:
+                                    capture_error = error
+                                    exit_code = 2
+                    if capture_start is not None:
+                        try:
+                            final_snapshot = _query_torque_capture_snapshot(
+                                client, capture_start
+                            )
+                            row = _torque_csv_row(final_snapshot)
+                            writer.writerow(row)
+                            csv_stream.flush()
+                            if jsonl_stream is not None:
+                                jsonl_stream.write(
+                                    json.dumps(final_snapshot, sort_keys=True)
+                                    + "\n"
+                                )
+                                jsonl_stream.flush()
+                            _update_torque_capture_analysis(analysis, row)
+                            if loadcell is not None:
+                                loadcell.poll()
+                        except (ProtocolError, OSError, ValueError) as error:
+                            if capture_error is None:
+                                capture_error = error
+                                exit_code = 2
+        finally:
+            if jsonl_stream is not None:
+                jsonl_stream.close()
+
+    if loadcell is not None:
+        try:
+            loadcell.poll()
+            loadcell.stop()
+        except ProtocolError as error:
+            if capture_error is None:
+                capture_error = error
+                exit_code = 2
+        finally:
+            try:
+                loadcell_metadata = loadcell.finalize(
+                    application_failure=(
+                        str(capture_error)
+                        if capture_error is not None
+                        else "operator interrupt"
+                        if interrupted
+                        else None
+                    )
+                )
+            except Exception as error:
+                if capture_error is None:
+                    capture_error = ProtocolError(
+                        f"load-cell artifact finalization failed: {error}"
+                    )
+                    exit_code = 2
+            finally:
+                try:
+                    loadcell.close()
+                except Exception as error:
+                    if capture_error is None:
+                        capture_error = ProtocolError(
+                            f"load-cell port close failed: {error}"
+                        )
+                        exit_code = 2
+
+    if console_active:
+        print()
+    trace_samples: list[dict[str, Any]] = []
+    if trace_arm_sent:
+        try:
+            trace_samples = read_current_trace(client)
+            write_current_trace_csv(current_trace_path, trace_samples)
+        except (ProtocolError, OSError, ValueError) as error:
+            if capture_error is None:
+                capture_error = error
+                exit_code = 2
+    final_analysis = _finalize_torque_capture_analysis(analysis)
+    metadata["completed_at"] = datetime.now().astimezone().isoformat(
+        timespec="seconds"
+    )
+    metadata["final"] = (
+        {
+            **final_snapshot,
+            "torque": _torque_without_policy(final_snapshot["torque"]),
+        }
+        if final_snapshot is not None
+        else None
+    )
+    metadata["analysis"] = final_analysis
+    metadata["loadcell"] = loadcell_metadata
+    metadata["capture"].update(
+        {
+            "status": (
+                "interrupted"
+                if interrupted
+                else "error"
+                if capture_error is not None
+                else "complete"
+                if exit_code == 0
+                else "device_failed"
+            ),
+            "exit_code": exit_code,
+            "stop_error": stop_error,
+            "scheduled_stop_sent": scheduled_stop_sent,
+            "trace_arm_sent": trace_arm_sent,
+            "trace_arm_host_elapsed_seconds": (
+                trace_arm_host_elapsed_seconds
+            ),
+            "trace_sample_count": len(trace_samples),
+            "trace_duration_seconds": (
+                trace_samples[-1]["time_seconds"]
+                if trace_samples
+                else None
+            ),
+            "error": str(capture_error) if capture_error is not None else None,
+            "loadcell_status": (
+                "disabled"
+                if args.loadcell_port is None
+                else "error"
+                if loadcell_metadata is None
+                or not loadcell_metadata["capture"]["complete"]
+                else "complete"
+            ),
+            "loadcell_sample_count": (
+                None
+                if loadcell_metadata is None
+                else loadcell_metadata["host_summary"]["sample_count"]
+            ),
+        }
+    )
+    _write_json(metadata_path, metadata)
+    final_state = (
+        final_snapshot["torque"]["state"]
+        if final_snapshot is not None
+        else "unavailable"
+    )
+    final_result = (
+        final_snapshot["torque"]["result"]
+        if final_snapshot is not None
+        else "unavailable"
+    )
+    loadcell_result = (
+        ""
+        if loadcell_metadata is None
+        else ", loadcell="
+        f"{loadcell_metadata['host_summary']['sample_count']} samples"
+    )
+    print(
+        f"Result: state={final_state}, result={final_result}, "
+        f"samples={final_analysis['sample_count']}, "
+        f"max speed="
+        f"{final_analysis['maximum_absolute_encoder_velocity_rps']:.3f} rps, "
+        f"faults={final_analysis['faults'] or 'none'}{loadcell_result}"
+    )
+    if stop_error is not None:
+        print(
+            "error: STOP was not acknowledged; rely on the firmware deadline "
+            f"or press the Right button: {stop_error}",
+            file=sys.stderr,
+        )
+    if capture_error is not None:
+        raise capture_error
+    return exit_code
+
+
 def _velocity_without_policy(status: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in status.items() if key != "policy"}
 
@@ -3013,6 +4151,70 @@ def make_parser() -> argparse.ArgumentParser:
     torque_current.add_argument("--counts", type=int)
     torque.add_argument("--duration-ms", type=int, default=250)
     torque.add_argument("--interval", type=float, default=0.05)
+    torque.add_argument(
+        "--stop-after-seconds",
+        type=float,
+        help=(
+            "send generic STOP over the active connection after this many "
+            "seconds, for deterministic shutdown qualification"
+        ),
+    )
+    torque.add_argument(
+        "--trace-at-seconds",
+        type=float,
+        help=(
+            "re-arm the 256-sample timing/current burst this many seconds "
+            "after the torque command starts"
+        ),
+    )
+    torque.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("scratch/torque-runs"),
+        help="parent directory for timestamped capture directories",
+    )
+    torque.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="also retain full nested snapshots as JSON lines",
+    )
+    torque.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress the live terminal status line",
+    )
+    torque.add_argument(
+        "--loadcell-port",
+        help="optional RP2040/NAU7802 USB CDC port, for example COM30",
+    )
+    torque.add_argument("--loadcell-baudrate", type=int, default=115200)
+    torque.add_argument(
+        "--loadcell-sample-rate-sps",
+        type=int,
+        choices=(10, 20, 40, 80, 320),
+        default=320,
+    )
+    torque.add_argument(
+        "--loadcell-gain",
+        type=int,
+        choices=(1, 2, 4, 8, 16, 32, 64, 128),
+        default=128,
+    )
+    torque.add_argument("--loadcell-tare-samples", type=int, default=320)
+    torque.add_argument("--loadcell-counts-per-newton", type=float)
+    torque.add_argument(
+        "--loadcell-force-sign", type=int, choices=(-1, 1), default=1
+    )
+    torque.add_argument("--loadcell-lever-radius-m", type=float)
+    torque.add_argument(
+        "--loadcell-connect-delay-seconds", type=float, default=1.5
+    )
+    torque.add_argument(
+        "--loadcell-command-timeout-seconds", type=float, default=3.0
+    )
+    torque.add_argument(
+        "--loadcell-drain-timeout-seconds", type=float, default=5.0
+    )
 
     velocity = commands.add_parser(
         "velocity", help="run a bounded closed-loop velocity demand"
@@ -3349,7 +4551,11 @@ def main() -> int:
             if args.counts is not None:
                 q_current_counts = args.counts
             else:
-                if args.current_ma is None or args.current_ma == 0.0:
+                if (
+                    args.current_ma is None
+                    or not math.isfinite(args.current_ma)
+                    or args.current_ma == 0.0
+                ):
                     raise ProtocolError("--current-ma must be nonzero")
                 q_current_counts = round(
                     args.current_ma / COUNTS_TO_MILLIAMPERES
@@ -3364,6 +4570,95 @@ def main() -> int:
                 raise ProtocolError(
                     "--interval must be in the range 0.01..2.0 seconds"
                 )
+            if args.stop_after_seconds is not None and (
+                not math.isfinite(args.stop_after_seconds)
+                or args.stop_after_seconds <= 0.0
+                or args.stop_after_seconds >= args.duration_ms / 1000.0
+            ):
+                raise ProtocolError(
+                    "--stop-after-seconds must be positive and earlier than "
+                    "the firmware deadline"
+                )
+            trace_deadline_seconds = (
+                args.stop_after_seconds
+                if args.stop_after_seconds is not None
+                else args.duration_ms / 1000.0
+            )
+            if args.trace_at_seconds is not None and (
+                not math.isfinite(args.trace_at_seconds)
+                or args.trace_at_seconds < 0.0
+                or args.trace_at_seconds >= trace_deadline_seconds
+            ):
+                raise ProtocolError(
+                    "--trace-at-seconds must be nonnegative and earlier than "
+                    "the scheduled STOP or firmware deadline"
+                )
+            if args.loadcell_port is None and (
+                args.loadcell_counts_per_newton is not None
+                or args.loadcell_lever_radius_m is not None
+            ):
+                raise ProtocolError(
+                    "load-cell calibration options require --loadcell-port"
+                )
+            if args.loadcell_port is not None:
+                if args.loadcell_port.casefold() == args.port.casefold():
+                    raise ProtocolError(
+                        "motor and load-cell ports must be different"
+                    )
+                if args.loadcell_baudrate <= 0:
+                    raise ProtocolError("--loadcell-baudrate must be positive")
+                if not 1 <= args.loadcell_tare_samples <= 1024:
+                    raise ProtocolError(
+                        "--loadcell-tare-samples must be in the range 1..1024"
+                    )
+                maximum_loadcell_poll_interval = min(
+                    2.0, 64.0 / args.loadcell_sample_rate_sps
+                )
+                if args.interval > maximum_loadcell_poll_interval:
+                    raise ProtocolError(
+                        "--interval is too slow to drain the selected "
+                        "load-cell sample rate; use at most "
+                        f"{maximum_loadcell_poll_interval:g} seconds"
+                    )
+                if (
+                    args.loadcell_counts_per_newton is not None
+                    and (
+                        not math.isfinite(args.loadcell_counts_per_newton)
+                        or args.loadcell_counts_per_newton <= 0.0
+                    )
+                ):
+                    raise ProtocolError(
+                        "--loadcell-counts-per-newton must be positive"
+                    )
+                if (
+                    args.loadcell_lever_radius_m is not None
+                    and (
+                        not math.isfinite(args.loadcell_lever_radius_m)
+                        or args.loadcell_lever_radius_m <= 0.0
+                    )
+                ):
+                    raise ProtocolError(
+                        "--loadcell-lever-radius-m must be positive"
+                    )
+                if (
+                    not math.isfinite(args.loadcell_connect_delay_seconds)
+                    or args.loadcell_connect_delay_seconds < 0.0
+                ):
+                    raise ProtocolError(
+                        "--loadcell-connect-delay-seconds must be nonnegative"
+                    )
+                for name, value in (
+                    (
+                        "--loadcell-command-timeout-seconds",
+                        args.loadcell_command_timeout_seconds,
+                    ),
+                    (
+                        "--loadcell-drain-timeout-seconds",
+                        args.loadcell_drain_timeout_seconds,
+                    ),
+                ):
+                    if not math.isfinite(value) or value <= 0.0:
+                        raise ProtocolError(f"{name} must be positive")
             torque_status = query_aligned_torque(client)
             policy = torque_status["policy"]
             if abs(q_current_counts) > policy["maximum_current_counts"]:
@@ -3382,28 +4677,12 @@ def main() -> int:
                     f"{policy['minimum_duration_millis']}.."
                     f"{policy['maximum_duration_millis']} ms"
                 )
-            client.transact(
-                COMMAND_START_ALIGNED_TORQUE,
-                struct.pack(">hI", q_current_counts, args.duration_ms),
+            return _run_torque_capture(
+                client,
+                args,
+                q_current_counts,
+                torque_status,
             )
-            try:
-                while True:
-                    torque_status = query_aligned_torque(client)
-                    torque_status["drive"] = query_status(client)
-                    torque_status["encoder"] = query_encoder(client)
-                    print(json.dumps(torque_status, sort_keys=True), flush=True)
-                    if torque_status["state"] in {
-                        "complete",
-                        "stopped",
-                        "failed",
-                    }:
-                        return 0 if torque_status["state"] == "complete" else 3
-                    time.sleep(args.interval)
-            except KeyboardInterrupt:
-                stop_drive(client)
-                print_json(query_aligned_torque(client))
-                print("stopped", file=sys.stderr)
-                return 130
         elif args.command == "velocity":
             if args.rpm is not None:
                 args.rps = args.rpm / 60.0

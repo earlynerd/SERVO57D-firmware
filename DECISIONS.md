@@ -963,3 +963,38 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** MKS57D is a general NEMA23 drive. Motor/load/supply feasibility belongs to application configuration and operator responsibility, and must not silently narrow reusable firmware capability.
 - **Supersedes:** Clarifies “Make direct-velocity acceleration an explicit trajectory input” and “Require every enforced limit to serve a concrete safety purpose”; the 16 rev/s² default remains conservative, and the 256 rev/s² ceiling remains a controller envelope rather than motor qualification.
 - **Affects:** motion defaults, operating-limit classification, host guidance, qualification language, and future configuration design.
+
+## 2026-08-24 — Add a passive RP2040 load-cell capture instrument
+
+- **Decision:** Track a standalone PlatformIO/Arduino-Pico instrument under `instruments/rp2040_loadcell`. The RP2040 I2C controller and NAU7802 SDA, SCL, and DRDY are compile-time settings that default to an unassigned, inert image; sample rate and gain remain idle-only runtime settings. DRDY supplies 64-bit device timestamps, acquisition drains through a bounded ring independently of nonblocking USB CDC, and protocol 1 preserves signed raw counts with explicit error/drop accounting. The host gates final records to the active run's STOP phase and drains an abandoned run before starting another. Physical force and torque calibration stays in host metadata.
+- **Why:** Short motor torque tests need a timestamped measurement domain that can be developed before the final carrier board pinout or load-cell selection and cannot acquire motor or conditioned-output authority.
+- **Supersedes:** The untracked scratch brief as the implementation location; its version-1 passive scope is retained.
+- **Affects:** `instruments/rp2040_loadcell`, external-reference inventory, repository routing, and later MKS57D torque-capture integration.
+
+## 2026-08-24 — Record the reported NAU7802 I2C0 pin pair
+
+- **Decision:** Use RP2040 I2C0 with NAU7802 SDA on GPIO20 and SCL on GPIO21 as the compile-time project defaults. Keep DRDY unassigned at `-1`, which leaves the firmware's hardware path inert until that signal is identified.
+- **Why:** The user supplied the bus pin assignment, but DRDY and the exact board schematic are still pending; recording only known pins avoids guessing the timing input or touching partially identified hardware.
+- **Supersedes:** The all-unassigned pin defaults in “Add a passive RP2040 load-cell capture instrument”; its compile-time configuration and passive-safety contracts remain unchanged.
+- **Affects:** `instruments/rp2040_loadcell/platformio.ini`, hardware setup guidance, and the remaining board-identification gate.
+
+## 2026-08-24 — Poll NAU7802 cycle-ready status without DRDY
+
+- **Decision:** Treat `LOADCELL_DRDY_PIN=-1` as an active I2C polling mode when SDA and SCL are configured. Poll `PU_CTRL.CR`, timestamp the ready observation with the RP2040 clock, and set sample flag `0x0002`; retain optional GPIO interrupt mode for future hardware.
+- **Why:** DRDY is not routed because the board's GPIO budget is exhausted. The NAU7802 exposes the same cycle-ready state in register `0x00` bit 5, so the device remains usable with bounded, explicitly less-precise timestamps and no guessed connection.
+- **Supersedes:** The inert-until-DRDY portion of “Record the reported NAU7802 I2C0 pin pair”; GPIO20/21 and I2C0 remain authoritative.
+- **Affects:** load-cell acquisition timing, sample flags, `INFO` capability reporting, firmware pin guards, and hardware qualification.
+
+## 2026-08-24 — Use the reported active-high status LEDs
+
+- **Decision:** Configure blue GPIO25, red GPIO26, and green GPIO27 as compile-time-selectable active-high onboard indicators. Green means healthy idle, blue covers tare/capture/STOP draining, and red is sticky for sensor unavailability or a data-integrity counter observed since reset. All LEDs are driven inactive before becoming outputs.
+- **Why:** The user identified the board's indicator pins and verified their active-high polarity, enabling useful local state without assuming an unknown electrical topology.
+- **Supersedes:** The no-indicator portion of “Add a passive RP2040 load-cell capture instrument”; conditioned and external outputs remain outside version 1.
+- **Affects:** `instruments/rp2040_loadcell` pin contract, local status behavior, and `INFO` capability reporting.
+
+## 2026-08-24 — Coordinate passive force capture through the torque CLI
+
+- **Decision:** An optional `--loadcell-port` makes the torque CLI prepare, tare, and start the RP2040 instrument before motor START; bracket motor START, STOP, cleanup, and terminal observation with load-cell device-time markers; and drain `force_telemetry.csv` plus `loadcell_metadata.json` into the torque run directory. A load-cell failure before motor START prevents energization, while an integrity or transport failure during torque sends the existing generic motor STOP. The instrument remains passive and never owns motor authority.
+- **Why:** Current qualification needs synchronized force, current, encoder, timing, and release evidence without duplicating the instrument protocol or creating another bridge-control path.
+- **Supersedes:** The MKS57D-integration deferral in “Add a passive RP2040 load-cell capture instrument”; physical force calibration and hardware synchronization remain deferred.
+- **Affects:** `tools/mks57d_rs485.py`, `instruments/rp2040_loadcell/host/loadcell_capture.py`, torque artifacts, and bench qualification workflow.

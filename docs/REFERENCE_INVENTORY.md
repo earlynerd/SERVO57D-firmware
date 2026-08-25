@@ -90,6 +90,24 @@ display profile, passive ADC acquisition, and encoder motion/wrap behavior are
 bench-proven; exact part identity, dynamic ADC behavior, and control-rate
 encoder signal integrity remain open.
 
+## RP2040 load-cell instrument dependencies
+
+The standalone instrument in `instruments/rp2040_loadcell/` uses:
+
+- Earle Philhower's Arduino-Pico core 5.6.1 at revision
+  `832f2c0650585775270b952e49a0623079c6cd42`, selected through the documented
+  PlatformIO integration at pinned platform revision
+  `aa70b802be8851668053d4f09734e4089fe41932`:
+  <https://arduino-pico.readthedocs.io/en/latest/platformio.html>.
+- SparkFun Qwiic Scale NAU7802 Arduino Library v1.0.6, fetched by PlatformIO
+  from <https://github.com/sparkfun/SparkFun_Qwiic_Scale_NAU7802_Arduino_Library/tree/v1.0.6>.
+- Nuvoton NAU7802 Datasheet Rev 2.6, used for the output-register and
+  active-high DRDY behavior:
+  <https://www.nuvoton.com/export/resource-files/en-us--DS_NAU7802_DataSheet_EN_Rev2.6.pdf>.
+
+Neither dependency is vendored into this repository. PlatformIO downloads both
+into its ignored package cache during a firmware build.
+
 ## Publication checklist
 
 - [x] Record the official product/download page and published versions for the Nations SDK and GCC package.

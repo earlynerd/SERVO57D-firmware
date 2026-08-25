@@ -1,0 +1,5 @@
+.pio/
+.venv/
+captures/
+metadata.json
+force_telemetry.csv

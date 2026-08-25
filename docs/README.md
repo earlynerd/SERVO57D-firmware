@@ -11,6 +11,7 @@ read only the rows relevant to the task.
 | Ordinary implementation or review | Current operating snapshot, then the owning subsystem document below |
 | Architecture, timing, pins, protocol, safety contract, or scope | Owning document plus the latest applicable three to five entries found by searching [DECISIONS.md](../DECISIONS.md) |
 | Build or flash | Relevant section of [BUILDING.md](BUILDING.md) |
+| RP2040 load-cell instrument | [Instrument README](../instruments/rp2040_loadcell/README.md) and [requirements](../instruments/rp2040_loadcell/REQUIREMENTS.md) |
 | Bench or hardware test | Safety warning in the root README, stop conditions in [BRINGUP.md](BRINGUP.md#stop-conditions-during-motor-development), and the applicable bring-up stage only |
 | Milestone or priority change | [PLAN.md](../PLAN.md) |
 | Historical audit or reversal | Relevant canonical documents, decision history, recent commits, and debug history as needed |

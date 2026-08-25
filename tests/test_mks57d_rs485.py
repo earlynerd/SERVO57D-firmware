@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from instruments.rp2040_loadcell.host import loadcell_capture as loadcell_host
 from tools import mks57d_rs485 as console
 
 
@@ -58,6 +59,61 @@ def velocity_status(state: str) -> dict:
             "maximum_target_acceleration_revolutions_per_second2": 1.0,
             "maximum_feedback_velocity_revolutions_per_second": 5.0,
             "maximum_current_counts": 100,
+            "minimum_duration_millis": 3,
+            "maximum_duration_millis": 2147483647,
+        },
+    }
+
+
+def torque_status(state: str) -> dict:
+    active = state in {"ramping", "holding"}
+    result = (
+        "deadline"
+        if state == "complete"
+        else "stopped"
+        if state == "stopped"
+        else "none"
+    )
+    return {
+        "schema": 2,
+        "state": state,
+        "result": result,
+        "flags_hex": "0x01" if active else "0x00",
+        "flags": ["active"] if active else [],
+        "fault_flags_hex": "0x00000000",
+        "faults": [],
+        "requested_q_current_counts": 25 if active else 0,
+        "requested_q_current_nominal_milliamperes": (
+            151.5 if active else 0.0
+        ),
+        "applied_q_current_counts": 24 if active else 0,
+        "applied_q_current_nominal_milliamperes": (
+            145.4 if active else 0.0
+        ),
+        "phase_current_reference_counts": {
+            "a": 12 if active else 0,
+            "b": -21 if active else 0,
+        },
+        "electrical_phase_q32_hex": "0x40000000",
+        "velocity_revolutions_per_second": 0.25 if active else 0.0,
+        "acceleration_revolutions_per_second2": 2.0 if active else 0.0,
+        "elapsed_millis": 100 if active else 250,
+        "remaining_millis": 150 if active else 0,
+        "backend_fault_flags_hex": "0x00000000",
+        "phase_prediction": {
+            "reject_reason": "none",
+            "rejected_age_us": None,
+            "maximum_observed_age_us": 1001,
+            "maximum_age_us": 3000,
+        },
+        "policy": {
+            "maximum_current_counts": 495,
+            "maximum_current_nominal_milliamperes": 2999.0,
+            "maximum_current_slew_counts_per_second": 10000,
+            "maximum_current_slew_amperes_per_second": 60.59,
+            "maximum_velocity_revolutions_per_second": 20.0,
+            "maximum_acceleration_revolutions_per_second2": 1000.0,
+            "maximum_feedback_interval_us": 3000,
             "minimum_duration_millis": 3,
             "maximum_duration_millis": 2147483647,
         },
@@ -121,10 +177,16 @@ def position_status(state: str) -> dict:
 DRIVE_STATUS = {
     "flags_hex": "0x00000000",
     "flags": [],
+    "adc": {"bus_voltage_volts": 24.0},
     "loop": {
         "fault_flags_hex": "0x00000000",
         "faults": [],
         "sample_count": 40000,
+        "measured_counts": {"a": 11, "b": -20},
+        "phase_voltage_command_volts": {"a": 2.4, "b": -2.4},
+        "phase_voltage_limit_volts": 16.8,
+        "missed_pwm_update_count": 0,
+        "maximum_consecutive_missed_pwm_updates": 0,
     },
     "reset": {"retained_panic": 0, "watchdog_reset": False},
 }
@@ -196,6 +258,33 @@ def capture_args(root: Path) -> SimpleNamespace:
     )
 
 
+def torque_capture_args(root: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        output_root=root,
+        duration_ms=250,
+        interval=0.01,
+        port="COM14",
+        baud=115200,
+        address=1,
+        timeout=0.75,
+        jsonl=False,
+        quiet=True,
+        stop_after_seconds=None,
+        trace_at_seconds=None,
+        loadcell_port=None,
+        loadcell_baudrate=115200,
+        loadcell_sample_rate_sps=320,
+        loadcell_gain=128,
+        loadcell_tare_samples=320,
+        loadcell_counts_per_newton=None,
+        loadcell_force_sign=1,
+        loadcell_lever_radius_m=None,
+        loadcell_connect_delay_seconds=0.0,
+        loadcell_command_timeout_seconds=3.0,
+        loadcell_drain_timeout_seconds=5.0,
+    )
+
+
 def current_trace_sample() -> dict:
     return {
         "schema": 2,
@@ -230,6 +319,126 @@ def current_trace_sample() -> dict:
         "bus_voltage_volts": 24.0,
         "phase_voltage_limit_volts": 16.8,
     }
+
+
+class FakeLoadCellCapture:
+    def __init__(
+        self,
+        *,
+        prepare_error: Exception | None = None,
+        poll_error: Exception | None = None,
+    ) -> None:
+        self.prepare_error = prepare_error
+        self.poll_error = poll_error
+        self.prepared = False
+        self.started = False
+        self.stopped = False
+        self.closed = False
+        self.motor_time_origin = None
+        self.markers = []
+        self.poll_count = 0
+        self.application_failure = None
+
+    def prepare(self) -> None:
+        if self.prepare_error is not None:
+            raise self.prepare_error
+        self.prepared = True
+
+    def start(self) -> None:
+        self.started = True
+
+    def set_motor_time_origin(self, value: float) -> None:
+        self.motor_time_origin = value
+
+    def mark(self, marker_id: str) -> None:
+        self.markers.append(marker_id)
+
+    def poll(self) -> None:
+        self.poll_count += 1
+        if self.poll_error is not None:
+            raise self.poll_error
+
+    def stop(self) -> None:
+        if self.started:
+            self.stopped = True
+
+    def finalize(self, application_failure=None) -> dict:
+        self.application_failure = application_failure
+        return {
+            "capture": {
+                "complete": self.stopped and self.prepare_error is None,
+            },
+            "host_summary": {"sample_count": 79},
+        }
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeLoadCellTransport:
+    port_name = "COM30"
+
+    def __init__(self, sample_flags: str = "0x2") -> None:
+        self.lines = []
+        self.state = "IDLE"
+        self.run_id = None
+        self.sequence = 0
+        self.closed = False
+        self.sample_flags = sample_flags
+
+    def write_line(self, line: str) -> None:
+        fields = line.split()
+        command = fields[0]
+        if command == "INFO":
+            self.lines.append("OK,1,INFO,rp2040-loadcell,test-build\n")
+        elif command == "STATUS":
+            self.lines.append(f"OK,1,STATUS,{self.state}\n")
+        elif command == "CONFIG":
+            self.lines.append(f"OK,1,CONFIG,{fields[1]},{fields[2]}\n")
+        elif command == "TARE":
+            self.lines.extend(
+                [
+                    f"OK,1,TARE,STARTED,{fields[1]}\n",
+                    f"OK,1,TARE,COMPLETE,{fields[1]},-10.5,1.25\n",
+                ]
+            )
+        elif command == "START":
+            self.run_id = fields[1]
+            self.state = "RUNNING"
+            self.lines.append(f"OK,1,START,{self.run_id},500\n")
+        elif command == "MARK":
+            self.lines.extend(
+                [
+                    (
+                        f"S,1,{self.sequence},1000,25,"
+                        f"{self.sample_flags},0\n"
+                    ),
+                    f"M,1,{fields[1]},2000\n",
+                    f"OK,1,MARK,{fields[1]},2000\n",
+                ]
+            )
+            self.sequence += 1
+        elif command == "STOP":
+            self.state = "IDLE"
+            self.lines.extend(
+                [
+                    f"S,1,{self.sequence},4125,24,0x2,0\n",
+                    "OK,1,STOP,DRAINING,4200\n",
+                    (
+                        f"F,1,{self.run_id},0,{self.sequence},"
+                        f"{self.sequence + 1},0,0,0,1000,4125,320.0\n"
+                    ),
+                ]
+            )
+            self.sequence += 1
+        else:
+            raise AssertionError(f"unexpected load-cell command {line!r}")
+
+    def read_line(self):
+        return self.lines.pop(0) if self.lines else None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def position_capture_args(root: Path) -> SimpleNamespace:
@@ -754,6 +963,14 @@ class VelocityCaptureTests(unittest.TestCase):
         self.assertEqual(position.current_limit_ma, 3000.0)
 
     def test_live_motion_lines_report_nominal_amperes(self) -> None:
+        torque_row = console._torque_csv_row(
+            {
+                "host_elapsed_seconds": 0.1,
+                "torque": torque_status("holding"),
+                "drive": DRIVE_STATUS,
+                "encoder": ENCODER_STATUS,
+            }
+        )
         velocity_row = console._velocity_csv_row(
             {
                 "host_elapsed_seconds": 0.1,
@@ -771,12 +988,37 @@ class VelocityCaptureTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Iq=+0.012/0.151 A", console._velocity_live_line(velocity_row, 2000))
-        self.assertIn("Iq=+0.055/0.606 A", console._position_live_line(position_row, 3000))
+        self.assertIn(
+            "Iq=+0.145/+0.151 A",
+            console._torque_live_line(torque_row, 250),
+        )
+        self.assertIn(
+            "Iq=+0.012/0.151 A",
+            console._velocity_live_line(velocity_row, 2000),
+        )
+        self.assertIn(
+            "Iq=+0.055/0.606 A",
+            console._position_live_line(position_row, 3000),
+        )
 
     def test_stop_after_is_scoped_to_motion_capture_parsers(self) -> None:
         parser = console.make_parser()
         align = parser.parse_args(["align", "--counts", "50"])
+        torque = parser.parse_args(
+            [
+                "torque",
+                "--counts",
+                "25",
+                "--stop-after-seconds",
+                "0.1",
+                "--trace-at-seconds",
+                "0.05",
+                "--loadcell-port",
+                "COM30",
+                "--loadcell-tare-samples",
+                "64",
+            ]
+        )
         velocity = parser.parse_args(
             [
                 "velocity",
@@ -805,6 +1047,10 @@ class VelocityCaptureTests(unittest.TestCase):
         )
 
         self.assertFalse(hasattr(align, "stop_after_seconds"))
+        self.assertEqual(torque.stop_after_seconds, 0.1)
+        self.assertEqual(torque.trace_at_seconds, 0.05)
+        self.assertEqual(torque.loadcell_port, "COM30")
+        self.assertEqual(torque.loadcell_tare_samples, 64)
         self.assertEqual(velocity.stop_after_seconds, 2.0)
         self.assertEqual(position.stop_after_seconds, 2.0)
 
@@ -1091,6 +1337,443 @@ class VelocityCaptureTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["final"]["velocity"]["result"], "stopped"
+            )
+            self.assertTrue(metadata["capture"]["scheduled_stop_sent"])
+            self.assertEqual(metadata["capture"]["status"], "complete")
+
+
+class TorqueCaptureTests(unittest.TestCase):
+    @staticmethod
+    def torque_client(start_error: Exception | None = None) -> FakeClient:
+        return FakeClient(
+            start_error=start_error,
+            start_command=console.COMMAND_START_ALIGNED_TORQUE,
+            payload_length=6,
+        )
+
+    @staticmethod
+    def common_patches(torque_side_effect):
+        return (
+            mock.patch.object(
+                console,
+                "query_aligned_torque",
+                side_effect=torque_side_effect,
+            ),
+            mock.patch.object(console, "query_status", return_value=DRIVE_STATUS),
+            mock.patch.object(
+                console, "query_encoder", return_value=ENCODER_STATUS
+            ),
+            mock.patch.object(
+                console,
+                "query_identity",
+                return_value={"firmware": "0.37.0", "protocol": "1.18"},
+            ),
+            mock.patch.object(console, "query_configuration", return_value={}),
+            mock.patch.object(console.time, "sleep", return_value=None),
+        )
+
+    def test_loadcell_adapter_uses_existing_instrument_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_directory = Path(temporary) / "torque-run"
+            output_directory.mkdir()
+            args = torque_capture_args(output_directory.parent)
+            args.loadcell_port = "COM30"
+            transport = FakeLoadCellTransport()
+            with mock.patch.object(
+                loadcell_host,
+                "SerialLineTransport",
+                return_value=transport,
+            ):
+                capture = console.TorqueLoadCellCapture(
+                    args, output_directory
+                )
+                capture.prepare()
+                capture.start()
+                capture.set_motor_time_origin(10.0)
+                capture.mark("motor_start_request")
+                capture.poll()
+                capture.stop()
+                metadata = capture.finalize()
+                capture.close()
+
+            self.assertTrue(metadata["capture"]["complete"])
+            self.assertEqual(metadata["host_summary"]["sample_count"], 2)
+            self.assertEqual(
+                metadata["host_summary"]["saturation_sample_count"], 0
+            )
+            self.assertEqual(
+                metadata["motor_timeline"][0]["marker_id"],
+                "motor_start_request",
+            )
+            self.assertTrue(
+                (output_directory / "force_telemetry.csv").exists()
+            )
+            self.assertTrue(
+                (output_directory / "loadcell_metadata.json").exists()
+            )
+            self.assertTrue(transport.closed)
+
+    def test_loadcell_integrity_failure_still_drains_instrument(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_directory = Path(temporary) / "torque-run"
+            output_directory.mkdir()
+            args = torque_capture_args(output_directory.parent)
+            args.loadcell_port = "COM30"
+            transport = FakeLoadCellTransport(sample_flags="0x3")
+            with mock.patch.object(
+                loadcell_host,
+                "SerialLineTransport",
+                return_value=transport,
+            ):
+                capture = console.TorqueLoadCellCapture(
+                    args, output_directory
+                )
+                capture.prepare()
+                capture.start()
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "saturated sample"
+                ):
+                    capture.mark("motor_start_request")
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "saturated sample"
+                ):
+                    capture.stop()
+                metadata = capture.finalize()
+                capture.close()
+
+            self.assertEqual(transport.state, "IDLE")
+            self.assertFalse(metadata["capture"]["complete"])
+            self.assertEqual(
+                metadata["host_summary"]["saturation_sample_count"], 1
+            )
+
+    def test_capture_writes_metadata_and_compact_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.common_patches(
+                [
+                    torque_status("ramping"),
+                    torque_status("holding"),
+                    torque_status("complete"),
+                ]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+            ):
+                client = self.torque_client()
+                result = console._run_torque_capture(
+                    client,
+                    torque_capture_args(root),
+                    25,
+                    torque_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            run_directories = list(root.iterdir())
+            self.assertEqual(len(run_directories), 1)
+            run_directory = run_directories[0]
+            metadata = json.loads(
+                (run_directory / "metadata.json").read_text(encoding="utf-8")
+            )
+            with (run_directory / "telemetry.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream))
+
+            self.assertEqual(metadata["capture"]["status"], "complete")
+            self.assertEqual(
+                struct.unpack(">hI", client.last_payload),
+                (25, 250),
+            )
+            self.assertEqual(metadata["request"]["q_current_counts"], 25)
+            self.assertEqual(metadata["analysis"]["sample_count"], 3)
+            self.assertEqual(
+                metadata["analysis"]["maximum_phase_prediction_age_us"],
+                1001,
+            )
+            self.assertEqual(
+                metadata["analysis"]["maximum_missed_pwm_update_count"],
+                0,
+            )
+            self.assertNotIn("policy", metadata["initial"]["torque"])
+            self.assertNotIn("policy", metadata["final"]["torque"])
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[-1]["state"], "complete")
+            self.assertIn("controller_acceleration_rps2", rows[-1])
+            self.assertNotIn("policy", rows[-1])
+            self.assertFalse((run_directory / "telemetry.jsonl").exists())
+
+    def test_capture_coordinates_optional_loadcell_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = torque_capture_args(root)
+            args.loadcell_port = "COM30"
+            loadcell = FakeLoadCellCapture()
+            patches = self.common_patches(
+                [torque_status("holding"), torque_status("complete")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(
+                    console,
+                    "_create_torque_loadcell_capture",
+                    return_value=loadcell,
+                ),
+            ):
+                result = console._run_torque_capture(
+                    self.torque_client(),
+                    args,
+                    25,
+                    torque_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            self.assertTrue(loadcell.prepared)
+            self.assertTrue(loadcell.started)
+            self.assertTrue(loadcell.stopped)
+            self.assertTrue(loadcell.closed)
+            self.assertIsNotNone(loadcell.motor_time_origin)
+            self.assertEqual(
+                loadcell.markers,
+                ["motor_start_request", "motor_start_ack", "motor_terminal"],
+            )
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["capture"]["loadcell_status"], "complete")
+            self.assertEqual(metadata["capture"]["loadcell_sample_count"], 79)
+            self.assertEqual(metadata["request"]["loadcell"]["port"], "COM30")
+
+    def test_loadcell_prepare_failure_does_not_start_motor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = torque_capture_args(root)
+            args.loadcell_port = "COM30"
+            loadcell = FakeLoadCellCapture(
+                prepare_error=console.ProtocolError("tare failed")
+            )
+            client = self.torque_client()
+            stop = mock.Mock()
+            patches = self.common_patches([])
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(
+                    console,
+                    "_create_torque_loadcell_capture",
+                    return_value=loadcell,
+                ),
+                mock.patch.object(console, "stop_drive", stop),
+            ):
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "tare failed"
+                ):
+                    console._run_torque_capture(
+                        client,
+                        args,
+                        25,
+                        torque_status("idle"),
+                    )
+
+            self.assertEqual(client.start_count, 0)
+            stop.assert_not_called()
+            self.assertTrue(loadcell.closed)
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["capture"]["loadcell_status"], "error")
+            self.assertIn("tare failed", metadata["capture"]["error"])
+
+    def test_active_loadcell_failure_stops_motor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = torque_capture_args(root)
+            args.loadcell_port = "COM30"
+            loadcell = FakeLoadCellCapture(
+                poll_error=console.ProtocolError("sequence gap")
+            )
+            stop = mock.Mock()
+            patches = self.common_patches(
+                [torque_status("holding"), torque_status("stopped")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(
+                    console,
+                    "_create_torque_loadcell_capture",
+                    return_value=loadcell,
+                ),
+                mock.patch.object(console, "stop_drive", stop),
+            ):
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "sequence gap"
+                ):
+                    console._run_torque_capture(
+                        self.torque_client(),
+                        args,
+                        25,
+                        torque_status("idle"),
+                    )
+
+            stop.assert_called_once()
+            self.assertIn("motor_cleanup_stop_request", loadcell.markers)
+            self.assertIn("motor_cleanup_stop_ack", loadcell.markers)
+            self.assertTrue(loadcell.closed)
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["capture"]["status"], "error")
+            self.assertIn("sequence gap", metadata["capture"]["error"])
+
+    def test_capture_arms_and_saves_current_trace_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = torque_capture_args(root)
+            args.trace_at_seconds = 0.0
+            arm = mock.Mock()
+            read = mock.Mock(return_value=[current_trace_sample()])
+            patches = self.common_patches(
+                [torque_status("holding"), torque_status("complete")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "arm_current_trace", arm),
+                mock.patch.object(console, "read_current_trace", read),
+            ):
+                result = console._run_torque_capture(
+                    self.torque_client(),
+                    args,
+                    25,
+                    torque_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            arm.assert_called_once()
+            read.assert_called_once()
+            run_directory = next(root.iterdir())
+            metadata = json.loads(
+                (run_directory / "metadata.json").read_text(encoding="utf-8")
+            )
+            with (run_directory / "current_trace.csv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertTrue(metadata["capture"]["trace_arm_sent"])
+            self.assertEqual(metadata["capture"]["trace_sample_count"], 1)
+            self.assertEqual(rows[0]["pwm_preload_margin_us"], "7.5")
+
+    def test_ambiguous_start_error_still_sends_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            client = self.torque_client(
+                console.ProtocolError("response timeout")
+            )
+            stop = mock.Mock()
+            patches = self.common_patches([torque_status("stopped")])
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "stop_drive", stop),
+            ):
+                with self.assertRaisesRegex(
+                    console.ProtocolError, "response timeout"
+                ):
+                    console._run_torque_capture(
+                        client,
+                        torque_capture_args(root),
+                        25,
+                        torque_status("idle"),
+                    )
+
+            stop.assert_called_once_with(client)
+            run_directory = next(root.iterdir())
+            metadata = json.loads(
+                (run_directory / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["capture"]["status"], "error")
+            self.assertEqual(metadata["capture"]["error"], "response timeout")
+
+    def test_scheduled_stop_uses_active_connection_and_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = torque_capture_args(root)
+            args.stop_after_seconds = 0.05
+            stop = mock.Mock()
+            patches = self.common_patches(
+                [torque_status("holding"), torque_status("stopped")]
+            )
+            with (
+                patches[0],
+                patches[1],
+                patches[2],
+                patches[3],
+                patches[4],
+                patches[5],
+                mock.patch.object(console, "stop_drive", stop),
+                mock.patch.object(
+                    console.time,
+                    "monotonic",
+                    side_effect=[
+                        100.0,
+                        100.1,
+                        100.1,
+                        100.1,
+                        100.2,
+                        100.2,
+                    ],
+                ),
+            ):
+                result = console._run_torque_capture(
+                    self.torque_client(),
+                    args,
+                    25,
+                    torque_status("idle"),
+                )
+
+            self.assertEqual(result, 0)
+            stop.assert_called_once()
+            metadata = json.loads(
+                (next(root.iterdir()) / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["final"]["torque"]["state"], "stopped")
+            self.assertEqual(
+                metadata["final"]["torque"]["result"], "stopped"
             )
             self.assertTrue(metadata["capture"]["scheduled_stop_sent"])
             self.assertEqual(metadata["capture"]["status"], "complete")

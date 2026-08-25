@@ -160,8 +160,49 @@ On firmware 0.23.2 and later / protocol 1.7, `torque-status` reads the complete 
 q-current state and firmware-owned policy without energizing the bridge.
 `torque` accepts signed counts or signed milliamperes, preflights the absolute
 current and duration against that reported policy, starts the supervisor-owned
-bounded operation, and streams state until deadline, STOP, or fault. Ctrl+C
-sends generic STOP. The evaluation policy permits ±495 counts (±2.999 A nominal)
+bounded operation, and captures state until deadline, STOP, or fault. By
+default each command creates a timestamped directory under
+`scratch/torque-runs/` containing `metadata.json` and `telemetry.csv`. Metadata
+retains the signed request, identity, configuration, firmware policy, initial
+and final snapshots, capture disposition, and aggregate maxima. The compact
+CSV retains q-current demand/application, rotating A/B references, controller
+and encoder motion, predictor age/rejection, measured current, voltage effort,
+PWM-update health, encoder timing, faults, and reset evidence. The terminal
+overwrites one concise live line at about 5 Hz regardless of capture interval.
+Use `--jsonl` to additionally retain complete nested snapshots, `--quiet` to
+suppress live refresh, or `--output-root PATH` to relocate captures. Ctrl+C
+sends generic STOP and finalizes the directory. `--stop-after-seconds SECONDS`
+sends a deterministic generic STOP over the same active connection, and
+`--trace-at-seconds SECONDS` re-arms the 256-sample one-shot during torque and
+writes normalized `current_trace.csv` after authority ends.
+
+Pass `--loadcell-port COM30` to coordinate the passive RP2040/NAU7802
+instrument with the same torque run. The CLI opens the second USB connection,
+recovers any abandoned instrument run, applies the requested sample rate and
+gain, completes tare, and starts force acquisition before motor START. Device-
+time markers bracket the motor START acknowledgement, scheduled or cleanup
+STOP, and terminal observation. The torque directory additionally receives
+`force_telemetry.csv` and `loadcell_metadata.json`; the latter records the tare,
+optional counts-per-newton/sign/lever-radius calibration, time-domain mapping,
+device summary, and data-integrity result. A load-cell failure before motor
+START prevents the motor command. A load-cell transport, sequence, timestamp,
+drop, saturation, I2C, or overrun failure during torque sends the existing
+generic motor STOP and marks the combined capture invalid. The instrument
+remains passive and never owns bridge authority. The CLI also bounds the motor
+poll interval to retain at least fourfold headroom against the instrument's
+256-record output queue at the selected sample rate.
+
+Once the load cell and lever are calibrated, a combined run is:
+
+```powershell
+py tools/mks57d_rs485.py --port COM14 torque --current-ma 151.5 --duration-ms 250 --trace-at-seconds 0.05 --loadcell-port COM30 --loadcell-counts-per-newton 12345 --loadcell-force-sign 1 --loadcell-lever-radius-m 0.20
+```
+
+Replace the example calibration values with known-load results. Omit the three
+calibration options during digital-path testing; raw force samples and tare are
+still retained.
+
+The evaluation policy permits ±495 counts (±2.999 A nominal)
 and accepts an explicit 3 ms through 2,147,483,647 ms finite deadline. The
 upper duration is the wrap-safe timer representation limit, not a motor-current
 or thermal rating. The current ceiling matches the attached motor's reported

@@ -239,6 +239,9 @@ material. In particular:
 - [the project plan](PLAN.md) contains active incomplete work only;
 - `DECISIONS.md` and `DEBUG_LOG.md` preserve structural and debugging history
   and are searched when relevant, not read routinely from cover to cover.
+- [the RP2040 load-cell instrument](instruments/rp2040_loadcell/README.md) is a
+  separate passive USB measurement project that the torque CLI can optionally
+  coordinate without transferring motor authority.
 
 Build, flash, and host-test instructions are in
 [the building guide](docs/BUILDING.md).
@@ -251,6 +254,7 @@ Build, flash, and host-test instructions are in
 | `tests/` | Native tests and deterministic host plants |
 | `docs/` | Routed architecture, hardware, bring-up, and protocol documentation |
 | `tools/` | Host control, analysis, build, programming, and reference helpers |
+| `instruments/` | Standalone measurement firmware and its host utilities |
 | `reference/` | External-document catalog and ignored local cache |
 | `vendor/` | Imported manufacturer-support manifest and required source subset |
 

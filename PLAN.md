@@ -51,6 +51,13 @@ and fault bounds.
 - The project-owned timer, ADC, modulation, current backend, drive supervisor,
   and direct-GPIO all-low `ZERO` mechanism remain the only bridge-authority
   path.
+- Torque, velocity, and position commands now use timestamped normalized host
+  captures with compact live status, metadata, telemetry CSV, deterministic
+  scheduled STOP coverage, and operation-appropriate optional trace evidence.
+- The optional RP2040/NAU7802 force stream is integrated into torque captures.
+  Firmware 0.2.0 and COM30 passed no-load digital acquisition, marker, drain,
+  and accounting smoke tests; the absent load cell and fixture leave physical
+  calibration and force evidence open.
 
 The exact numeric envelope and next evidence for each limit are maintained in
 [the operating-limit inventory](docs/OPERATING_LIMITS.md).
@@ -60,6 +67,10 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
+- [ ] Complete the torque-reaction fixture: select and connect a bidirectional
+  load cell, calibrate counts per newton and sign with known loads, measure the
+  effective lever radius, and confirm repeatable tare/load response without
+  saturation before treating synchronized force captures as evidence.
 - [ ] Finish firmware 0.37.0 aligned-q current qualification on a restrained or
   suitably loaded fixture, beginning with mirrored 151.5/303/606 mA direct-torque
   points and then 1.503 A. Require d-current rejection, tracking, timing margin,
