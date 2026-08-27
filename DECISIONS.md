@@ -998,3 +998,17 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Current qualification needs synchronized force, current, encoder, timing, and release evidence without duplicating the instrument protocol or creating another bridge-control path.
 - **Supersedes:** The MKS57D-integration deferral in “Add a passive RP2040 load-cell capture instrument”; physical force calibration and hardware synchronization remain deferred.
 - **Affects:** `tools/mks57d_rs485.py`, `instruments/rp2040_loadcell/host/loadcell_capture.py`, torque artifacts, and bench qualification workflow.
+
+## 2026-08-25 — Defer dyno and final tuning until the control path stabilizes
+
+- **Decision:** Torque-reaction fixture construction, calibrated force qualification, final current-gain selection, and low-speed position tuning no longer block firmware development. Preserve the firmware 0.37.0 captures as regression baselines and prioritize 20 kHz current-path, 4 kHz rotor-chain, high-frequency tracking, estimator, prediction, and outer-loop improvements. Resume the fixture-dependent gates after those tuning-sensitive changes settle.
+- **Why:** Current and position gains are motor/load-specific, and planned control-path optimizations would invalidate much of the tuning and force evidence collected now. Deferring that work avoids disposable qualification while keeping bounded electrical, motion, deadline, STOP, fault, and `ZERO` regression gates active for every firmware candidate.
+- **Supersedes:** The fixture-first priority order in the active project plan; it does not remove the force instrument or waive eventual current, thermal, mechanical, or loaded-control qualification.
+- **Affects:** `PLAN.md`, current/position tuning order, torque-reaction fixture work, and firmware performance/control development.
+
+## 2026-08-25 — Move aligned-reference reporting past the PWM deadline
+
+- **Decision:** Firmware 0.37.1 keeps d/q prediction, regulation, safety checks, and PWM staging in the ordinary 20 kHz aligned-current path but removes the duplicate A/B polar conversion used only for telemetry. Accepted 4 kHz observations refresh ordinary status; an explicitly armed trace reconstructs the exact per-event A/B reference after the PWM-stage timestamp.
+- **Why:** The fixed-point rotating controller consumes d/q references directly, so reconstructing A/B before PWM staging spent hard-deadline time without affecting control output or fault containment. Moving trace-only work after staging preserves capture fidelity while making the ordinary path smaller.
+- **Supersedes:** Only continuous pre-PWM A/B reference reporting in the aligned-current backend; predictor age, d/q transforms, current/voltage/duty checks, guardian, authority, deadlines, STOP, faults, and `ZERO` are unchanged.
+- **Affects:** `current_loop_backend`, aligned-current status/trace publication cadence, real-time documentation, and firmware version 0.37.1.

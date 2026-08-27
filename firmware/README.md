@@ -56,6 +56,12 @@ direct-velocity command. New host requests and legacy requests default to the
 bench-proven 16 rev/s² launch; explicit requests retain access through the
 256 rev/s² controller capability. Position profiles and both PI loops are
 unchanged.
+Firmware 0.37.1 retains protocol 1.18 and removes reporting-only A/B polar
+conversion from the ordinary aligned-current path before PWM staging. Accepted
+4 kHz observations refresh status, and an armed trace reconstructs exact
+per-event references after the PWM-stage timestamp. Control output and all
+authority, electrical, timing, deadline, fault, and `ZERO` contracts are
+unchanged.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -155,7 +161,7 @@ expanded-current hardware gates remain pending.
   DMA event and is consumed by foreground telemetry.
 - All eight passive inputs are sampled every 10 ms with independent three-sample debounce. The OLED shows the PA0/PA8/PB7 raw levels as `S D E`; this validates static pin/polarity mapping and does not count step pulses.
 - Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-1,000 electrical Hz, then request an optional frequency ramp followed by a 0.003-2,147,483.647 second hold, with ramp plus hold constrained to the same signed-deadline maximum; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
-- DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, maps bounded q-current into fresh A/B references, runs the fixed-point A/B PI controllers, and stages low-zero sign-magnitude TIM3 preloads. Controllers reject feedback timestamp intervals over 2 ms; the fast predictor permits age through 3 ms to cover bounded PendSV dispatch, never beyond the independent encoder-production deadline, and includes the measured 55 us lead to the following PWM application boundary. Stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
+- DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, runs fixed-point rotating d/q PI for aligned motion or stationary A/B PI for static operation, and stages low-zero sign-magnitude TIM3 preloads. Controllers reject feedback timestamp intervals over 2 ms; the fast predictor permits age through 3 ms to cover bounded PendSV dispatch, never beyond the independent encoder-production deadline, and includes the measured 55 us lead to the following PWM application boundary. Stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
 - Firmware 0.18.2 established `Kp=2`, `Ki=1/64` per 20 kHz step, and the first 256-sample tuning trace. Matched firmware 0.30.1-0.30.3 +8 rev/s bursts subsequently staged Kp through 2, 3, and 4; Kp=4 is the compiled 0.31.0 default while the current product configuration permits bounded inactive trials from Kp 0-16 and Ki 0-4. Active control consumes one immutable copied configuration; only explicit safe-state save persists volatile gains.
 - The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.
@@ -188,8 +194,10 @@ expanded-current hardware gates remain pending.
 - Aligned q-current enters `RUN` motion authority only from a healthy `READY`
   state with valid calibration. It starts the 20 kHz backend at zero, then each
   accepted 4 kHz encoder sample slews signed q-current and publishes measured
-  phase/velocity to the backend. Every 20 kHz current event extrapolates phase,
-  adds the q-axis 90 degrees, and regenerates A/B references. Current, slew,
+  phase/velocity to the backend. Every 20 kHz current event extrapolates sample
+  and PWM-application phase and runs the rotating d/q current controller.
+  Equivalent A/B reporting updates at 4 kHz normally and after PWM staging for
+  each sample of an armed trace. Current, slew,
   velocity, acceleration, prediction age, feedback
   age, duration, STOP, backend, and reference limits are independently enforced
   and reported; violations converge on the existing fault/`ZERO` path.

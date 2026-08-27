@@ -171,8 +171,8 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.37.0 / protocol 1.18 is the current source candidate; firmware
-0.36.1 / protocol 1.17 is the flashed evaluation build. The current
+Firmware 0.37.1 / protocol 1.18 is the current source candidate; firmware
+0.37.0 / protocol 1.18 is the flashed evaluation build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -263,9 +263,11 @@ position-cascade headroom without changing the wire layout. It:
     waits for a newly accepted encoder sample, starts the existing 20 kHz
     backend at zero demand from that sample, and publishes bounded q-current plus
     calibrated phase/velocity/timestamp seeds at 4 kHz. Every 20 kHz current
-    event predicts phase to the measured PWM application boundary and regenerates signed
-    A/B references under independent current, slew, velocity, acceleration,
-    prediction-age, feedback-age, duration, and fault contracts.
+    event predicts sample/application phase and runs bounded rotating d/q
+    control under independent current, slew, velocity, acceleration,
+    prediction-age, feedback-age, duration, and fault contracts. Equivalent A/B
+    reference telemetry is 4 kHz normally and exact per-event after PWM staging
+    when a trace is armed.
 20. Starts a valid velocity request at zero q-current from newly accepted
     feedback, runs an acceleration-limited PI at the 4 kHz rotor release, and
     updates only the bounded aligned-q-current actuator. Target speed, observed
@@ -466,3 +468,11 @@ flash and positive direct-velocity confirmation pass at the new 16 rev/s²
 default: +4 rev/s completed smoothly and quietly with clean timing, normal
 release, and no fault, missed update, reset, or panic. Negative-sign confirmation
 remains open.
+
+Firmware 0.37.1 / protocol 1.18 passes the native suite and all 65 Python tests
+with two optional skips. Clean Debug/Release Arm post-link builds use
+63,940/58,848 bytes Flash and 11,696 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Generated
+code places telemetry-only aligned A/B reconstruction after the PWM-stage
+timestamp and only on the armed-trace branch. Hardware flash and motion/timing
+regression remain open.

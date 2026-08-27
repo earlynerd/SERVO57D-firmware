@@ -1,7 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.18 is implemented in the firmware 0.37.0 source
-candidate; firmware 0.36.1 / protocol 1.17 is the flashed baseline.
+Status: native protocol 1.18 is implemented in the firmware 0.37.1 source
+candidate; firmware 0.37.0 / protocol 1.18 is the flashed baseline.
 Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -310,9 +310,10 @@ pending drive operation. It enters `RUN` with motion authority and starts the
 and slews signed q-current, then publishes measured electrical phase, filtered
 mechanical velocity, direction, and the CS-assertion timestamp marking the start
 of the coherent four-byte acquisition window to the backend. Every 20 kHz
-current event extrapolates phase to the measured PWM application boundary and
-regenerates the A/B phase references through the same bounded current PI and
-bridge shutdown path used by alignment and the production diagnostic. The outer
+current event extrapolates sample/application phase and runs the bounded d/q PI
+plus bridge shutdown path. Equivalent A/B reference telemetry is refreshed at
+the accepted 4 kHz observation boundary, or reconstructed per event after PWM
+staging when a high-resolution trace is armed. The outer
 controllers still accept at most 2,000 us between feedback timestamps. The 20 kHz predictor
 allows age through 3,000 us, leaving four nominal 250 us accepted-sample
 releases of predictor dispatch headroom beyond the controllers' 2,000 us
@@ -355,7 +356,7 @@ all multi-byte fields are big-endian.
 | 4 | `u32` | Aligned-torque fault flags |
 | 8 | `i16` | Requested q-current counts |
 | 10 | `i16` | Applied, slew-limited q-current counts |
-| 12 | `i16,i16` | Latest A/B phase-current references actually applied by the 20 kHz backend; zero after release |
+| 12 | `i16,i16` | Latest equivalent A/B phase-current reference reconstructed from the active d/q demand; 4 kHz status cadence, zero after release |
 | 16 | `u32` | Latest calibrated electrical phase, Q0.32 turns |
 | 20 | `i32` | Mechanical velocity, Q16.16 rev/s |
 | 24 | `i32` | Absolute mechanical acceleration, Q16.16 rev/s² |

@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.37.0 is the current source candidate and firmware 0.36.1 is
+Status: firmware 0.37.1 is the current source candidate and firmware 0.37.0 is
 the flashed baseline. The source
 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
@@ -19,8 +19,9 @@ relative position on the same accepted-sample release, and firmware
 0.26.1 adds an independent foreground encoder-production deadline. This
 document defines those boundaries and the route to faster outer loops. Firmware
 0.27.1 turns each accepted encoder phase/velocity observation into a bounded
-predictor seed and regenerates aligned-q A/B references on every 20 kHz current
-event.
+predictor seed for every 20 kHz current event. Firmware 0.37.1 leaves equivalent
+A/B reference reconstruction at the 4 kHz status boundary unless an armed trace
+requests exact per-event values after PWM staging.
 Firmware 0.28.0 also follows each regular current pair with an automatic-
 injected PA3 VBUS conversion. Regular DMA completion and current-loop release
 remain first; foreground alone consumes the later VBUS result.
@@ -269,7 +270,8 @@ initial targets.
 | Fast current loop | 20 kHz | ADC DMA sequence completion | Validated voltage/duty request for the next update |
 | Encoder acquisition | 4 kHz | TIM6/TIM7 plus 8 MHz SPI1 DMA channels 2/3 | CS-assertion-timestamped mechanical-angle snapshot and interval telemetry |
 | Aligned q-current demand/seed | 4 kHz | PendSV-deferred accepted encoder sample | Slew-limited q-current plus timestamped phase/velocity observation |
-| Electrical-phase advance and A/B mapping | 20 kHz | ADC DMA completion | Phase predicted to the measured PWM application boundary and fresh A/B current references |
+| Electrical-phase advance and rotating d/q control | 20 kHz | ADC DMA completion | Sample/application phase prediction, bounded d/q regulation, and staged PWM output |
+| Equivalent A/B reference reporting | 4 kHz normally; 20 kHz while traced | Accepted observation; armed trace after PWM staging | Coherent status or exact per-event trace values without ordinary pre-PWM work |
 | Velocity control | 4 kHz | PendSV-deferred accepted encoder sample | Acceleration-limited reference and bounded q-current target for the aligned actuator |
 | Position control | 4 kHz | PendSV-deferred accepted encoder sample | Bounded dynamic velocity target |
 | Trajectory generation | 4 kHz | Same accepted-sample position update | Bounded position and velocity references |

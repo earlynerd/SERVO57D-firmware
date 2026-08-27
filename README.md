@@ -5,7 +5,7 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.37.0 / native protocol 1.18 is the current source and flashed
+Firmware 0.37.1 / native protocol 1.18 is the current source and flashed
 baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
@@ -108,6 +108,25 @@ New host commands default to the bench-proven 16 rev/s² launch, and legacy
 positive value through the retained 256 rev/s² controller capability. Position
 profiles and their inner-loop slew headroom are unchanged.
 
+Firmware 0.37.1 retains protocol 1.18 and removes a reporting-only A/B polar
+conversion from the ordinary aligned-current path before PWM staging. The
+accepted 4 kHz observation still refreshes status, while an armed 20 kHz trace
+reconstructs the exact per-event A/B reference after the PWM-stage timestamp.
+Control output, trace fidelity, authority, electrical limits, deadlines,
+guardian behavior, faults, and `ZERO` are unchanged. Native/Python tests and
+Debug/Release Arm builds pass.
+
+Firmware 0.37.1 is flashed and accepted on the COM14 controller. Signed
+30.3 mA, 100 ms torque pulses completed normally. Matched +4 rev/s for 2 s and
+-4 rev/s for 3 s at 16 rev/s2 with a 606 mA permission measured 0.1015 and
+0.1437 rev/s RMS velocity error without current limiting or faults. Five
+sequential trace arms captured 1,280 consecutive 20 kHz samples: trigger-to-DMA
+was 4.25-6.00 us, DMA-to-PWM staging was 20.72-21.66 us, minimum preload margin
+was 31.09 us, and prediction age was 174-456 us with zero missed updates. A
+separate 0.1 rev/s run accepted scheduled generic STOP. The controller ended
+inactive with stored Kp=4/Ki=1/64 restored, valid generation-3 alignment, zero
+references/duties, and no fault, watchdog-reset, or retained-panic evidence.
+
 The first flashed 0.37.0 direct-velocity gate reached +4 rev/s through a
 16 rev/s² launch smoothly and quietly with 0.073 rev/s RMS velocity error,
 only 26 counts peak q-current request, clean 20 kHz timing, no faults or missed
@@ -140,16 +159,15 @@ without predictor, encoder, backend, current-loop, supervisor, reset, or panic
 faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
-The next current-control work is finishing promoted aligned-q current
-qualification on a restrained or suitably loaded fixture. A +151.5 mA,
-100 ms open-torque pulse already accelerated the unloaded shaft to about
-5.25 rev/s, so higher direct-torque points are fixture-gated even though they
-remain below the motor's reported current rating. That runs alongside formal
-8 MHz / 4 kHz encoder timing and acquisition evidence, outer-loop
-numerical/timing health, volatile gain apply/revert and explicit persistence
-across a power cycle, the fixed-condition sweep, remaining signed speed staging,
-position tuning, physical Right-button STOP, and a mechanically loaded
-following-error gate.
+The next work is firmware control-path performance rather than final
+motor/load tuning. The accepted 0.37.0 and 0.37.1 current, timing, and motion captures are
+regression baselines for reducing ordinary 20 kHz fixed-point current-path and
+4 kHz rotor/control overhead, then improving high-electrical-frequency current
+tracking and estimator/phase/outer-loop scheduling without weakening authority,
+deadline, electrical, motion, or fault contracts. Torque-reaction fixture
+construction, higher-current force qualification, final current-gain selection,
+and low-speed position tuning are deferred until those tuning-sensitive
+firmware changes settle.
 Exact live, validated, evaluation, and hard limits are owned by
 [the operating-limit inventory](docs/OPERATING_LIMITS.md); active work is owned
 by [the project plan](PLAN.md).

@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.37.0 is the current source candidate and firmware 0.36.1 is
+Status: firmware 0.37.1 is the current source candidate and firmware 0.37.0 is
 the flashed baseline. The source
 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
@@ -52,6 +52,9 @@ Firmware 0.36.0 promotes the fixed-point d/q PI into the aligned-q actuator:
 torque, velocity, and position command `d=0` plus signed q current through the
 existing 20 kHz predictor/backend, while static references and alignment retain
 stationary A/B PI. No outer controller or bridge-authority owner changes.
+Firmware 0.37.1 removes telemetry-only A/B reconstruction from the ordinary
+pre-PWM deadline and retains exact per-event reconstruction after staging only
+when a trace is armed.
 
 ## Design priorities
 
@@ -132,9 +135,10 @@ The current image implements:
 - A fixed-point electrical-phase predictor owned by the current backend. Each
   accepted 4 kHz observation supplies measured phase, filtered mechanical
   velocity, direction, and acquisition-start timestamp; each 20 kHz current
-  event extrapolates to the measured PWM application boundary, regenerates the
-  q-axis A/B references, and faults through the common `ZERO` path if
-  observation age exceeds 3 ms.
+  event extrapolates sample and PWM-application phases for rotating d/q control
+  and faults through the common `ZERO` path if observation age exceeds 3 ms.
+  Equivalent A/B reference telemetry is refreshed at 4 kHz or reconstructed
+  after PWM staging for an explicitly armed per-event trace.
 - An authoritative drive supervisor with native tests. It owns readiness,
   `RESET_SAFE`/`DIAGNOSTIC`/`READY`/`ALIGN`/`RUN`/`FAULT` transitions, separate
   diagnostic and motion authority, and bridge deauthorization on faults.

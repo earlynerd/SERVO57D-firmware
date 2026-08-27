@@ -15,25 +15,31 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.37.0 / protocol 1.18 is the current source and flashed baseline.
+- Firmware 0.37.1 / protocol 1.18 is the current source and flashed baseline.
   It runs the fixed-point rotating d/q controller in the production aligned-q
   torque, velocity, and position path, retains stationary A/B control for
   alignment and static vectors, and preserves the project-owned 20 kHz current
   backend, deterministic 4 kHz rotor service, supervisor authority, finite
   deadlines, independent electrical/motion limits, and common `ZERO` release.
-- The active bench configuration retains generation-3 alignment and uses
-  volatile Kp=9/Ki=0.5 current gains. Stored gains remain Kp=4/Ki=1/64, so the
-  configuration is intentionally dirty and persistence across a power cycle
-  remains an explicit open gate.
-- Firmware 0.37.0 has clean initial signed production-motion evidence. Signed
-  30.3 mA, 100 ms torque pulses reversed q demand and released normally. Paired
-  ±4 rev/s launches at 16 rev/s² and a 606 mA permission measured 0.073 and
-  0.132 rev/s RMS error. The negative run's armed trace retained 256 consecutive
-  20 kHz samples, 4.25-4.31 us trigger-to-DMA time, 22.47-22.97 us
-  DMA-to-PWM time, at least 29.78 us preload margin, and zero missed updates or
-  faults. A +151.5 mA open-torque pulse reached about 5.25 rev/s within 80 ms
-  on the unloaded shaft, so higher direct-torque points require restraint or a
-  suitable load rather than current-rating permission alone.
+- Firmware 0.37.1 moves telemetry-only aligned A/B reference reconstruction
+  out of the ordinary pre-PWM 20 kHz deadline path. Status remains refreshed by
+  each accepted 4 kHz observation, and an armed trace reconstructs its exact
+  per-event reference after PWM staging. Native/Python tests, clean Arm builds,
+  generated instruction ordering, and bounded hardware regression pass. Five
+  sequential arms retained 1,280 consecutive 20 kHz samples, 20.72-21.66 us
+  DMA-to-PWM time, at least 31.09 us preload margin, and zero missed updates or
+  faults. Scheduled generic STOP also released normally.
+- The bench configuration retains generation-3 alignment and ended with its
+  stored Kp=4/Ki=1/64 current gains active and no dirty state. Kp=9/Ki=0.5
+  remains a volatile development profile used only for same-condition captures;
+  final gain selection and persistence remain deferred.
+- Firmware 0.37.1 has clean signed production-motion evidence. Signed 30.3 mA,
+  100 ms torque pulses released normally. Matched +4 rev/s for 2 s and -4 rev/s
+  for 3 s at 16 rev/s² and a 606 mA permission measured 0.1015 and 0.1437 rev/s
+  RMS error without current limiting or faults. A +151.5 mA open-torque pulse
+  on 0.37.0 reached about 5.25 rev/s within 80 ms, so higher direct-torque points
+  require restraint or a suitable load rather than current-rating permission
+  alone.
 - Mirrored 0.25-revolution moves at 0.5 rev/s, 1 rev/s², and a 606 mA
   permission settled at +0.00067/-0.00085 revolution; one earlier positive move
   ended safely at deadline with -0.00482 revolution error and did not reproduce.
@@ -55,9 +61,11 @@ and fault bounds.
   captures with compact live status, metadata, telemetry CSV, deterministic
   scheduled STOP coverage, and operation-appropriate optional trace evidence.
 - The optional RP2040/NAU7802 force stream is integrated into torque captures.
-  Firmware 0.2.0 and COM30 passed no-load digital acquisition, marker, drain,
-  and accounting smoke tests; the absent load cell and fixture leave physical
-  calibration and force evidence open.
+  Firmware 0.2.0 on COM30 passed standalone no-load acquisition and a combined
+  COM14 1-count/10 ms torque-capture smoke with contiguous samples, all motor
+  timeline markers, clean drain/accounting, and safe motor deadline release.
+  The pulse did not produce a reportable applied-q sample, and the absent load
+  cell and fixture leave physical calibration and force evidence open.
 
 The exact numeric envelope and next evidence for each limit are maintained in
 [the operating-limit inventory](docs/OPERATING_LIMITS.md).
@@ -67,51 +75,31 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Complete the torque-reaction fixture: select and connect a bidirectional
-  load cell, calibrate counts per newton and sign with known loads, measure the
-  effective lever radius, and confirm repeatable tare/load response without
-  saturation before treating synchronized force captures as evidence.
-- [ ] Finish firmware 0.37.0 aligned-q current qualification on a restrained or
-  suitably loaded fixture, beginning with mirrored 151.5/303/606 mA direct-torque
-  points and then 1.503 A. Require d-current rejection, tracking, timing margin,
-  STOP/release, predictor, encoder, supply, thermal, mechanical, and fault
-  evidence before expanding current or speed.
-- [ ] Capture the remaining formal firmware 0.37.0 evidence and bench-validate 8 MHz SPI
-  integrity, 4 kHz sample/acquisition timing and noise, PendSV/current-ISR preemption and stack margin, controller
-  numerical behavior, current-gain status, idle-only volatile apply/revert,
-  sweep-abort restoration, explicit save, schema-2 generation advance, and
-  power-cycle restoration without disturbing alignment or authority.
-- [ ] Run the guided fixed-current/frequency sweep across conservative staged
-  amplitudes and the live diagnostic frequency range; accept a current-loop
-  profile from tracking, phase, overshoot, voltage headroom, timing, motion, and
-  fault evidence rather than velocity RMS alone.
-- [ ] Improve high-electrical-frequency current tracking from those measurements,
-  then stage the remaining signed velocity envelope through ±5, ±8, ±12,
-  and ±16 rev/s, retaining the accepted ±4 rev/s / 16 rev/s² comparison, with
-  current, voltage, prediction, supply, thermal, mechanical, and release
-  evidence at each retained point.
-- [ ] Validate the production current path at 1.503 A, 2.25 A, and the enabled
-  2.999 A motor-rated evaluation point, including tracking error, phase-voltage
-  effort, supply behavior, winding/power-stage temperature, STOP, and fault
-  health.
-- [ ] After the attached motor's 3 A gate, characterize the board-level 5.2 A
-  claim with an appropriate motor/load and thermal fixture; quantify
-  current-sense settling, clipping, temperature drift, and unit-to-unit
-  tolerance.
+- [ ] Continue profiling and optimizing the ordinary 20 kHz fixed-point
+  rotating-current path and 4 kHz rotor/control chain before selecting permanent
+  gains. Examine remaining redundant prediction, transform, publication, and
+  snapshot work; require bounded numerical equivalence plus unchanged raw-current,
+  voltage, duty, timing, authority, deadline, fault, and `ZERO` enforcement.
+- [ ] Establish repeatable firmware-performance acceptance for each candidate:
+  clean native/Python/Arm builds, 8 MHz SPI integrity, 4 kHz acquisition timing
+  and noise, PendSV/current-ISR preemption and stack margin, armed and disarmed
+  current-loop timing, foreground load, bounded motion, and clean STOP/deadline
+  release without reset or panic evidence.
+- [ ] Improve the high-electrical-frequency current-control architecture using
+  the accepted 200 electrical-Hz diagnostic and ±4/+8/+12 rev/s captures as
+  regression baselines. Prioritize algorithm, dataflow, phase prediction, and
+  model/feedforward work before a final gain sweep, then stage the remaining
+  signed velocity envelope through ±5, ±8, ±12, and ±16 rev/s.
+- [ ] Extend estimator, phase prediction, and outer-loop scheduling toward the
+  advertised 3000+ RPM and 20 kHz velocity/position claims, preserving
+  independently enforced motion and timing bounds.
 - [ ] Characterize bus protection, bootstrap refresh, minimum/maximum duty,
   power-on/reset/debugger-halt/watchdog bridge waveforms, and injectable
   current/bus-voltage trip behavior before expanding the qualified electrical
   envelope.
-- [ ] Tune low-speed position to remove the occasional approximately
-  0.005-revolution deadline outlier, then complete the physical Right-button
-  position stop and a mechanically loaded following-error event with bounded
-  current, common `ZERO` convergence, and clean post-fault evidence.
 - [ ] Define and implement product policy for mechanical stall, partial encoder
   degradation, protection-grade overcurrent, and runaway detection beyond the
   existing total encoder-production, raw-current, and observed-speed guards.
-- [ ] Extend estimator, phase prediction, and outer-loop scheduling toward the
-  advertised 3000+ RPM and 20 kHz velocity/position claims, preserving
-  independently enforced motion and timing bounds.
 - [ ] Replace remaining alignment-policy constants that lack a defensible
   product basis with measured or configured motor/application values.
 - [ ] Complete actual-board pin/revision evidence and map step/direction/enable
@@ -132,6 +120,17 @@ list only when measurements or a newly discovered prerequisite justify it.
 
 ## Explicit deferrals
 
+- Torque-reaction dyno construction, physical load-cell calibration, restrained
+  direct-torque qualification, the 1.503/2.25/2.999 A production-current gates,
+  and the later 5.2 A board characterization are deferred until the current,
+  estimator, prediction, and outer-loop architecture is stable enough that the
+  resulting force and thermal evidence will remain useful. The passive force
+  instrument and synchronized capture path remain available.
+- Final current-gain selection, its guided sweep/save/power-cycle acceptance,
+  low-speed position tuning, and mechanically loaded following-error testing
+  are deferred for the same reason. Volatile Kp=9/Ki=0.5 remains a development
+  profile rather than a persisted product setting. Physical Right-button STOP
+  coverage does not require the dyno and remains eligible for bounded testing.
 - Physical encoder/no-magnet injection is deferred indefinitely on the current
   board/motor assembly because the sensor cannot be disturbed non-destructively.
   Automated invalid/stale/total-silence fault convergence remains required.

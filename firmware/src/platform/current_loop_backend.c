@@ -99,15 +99,12 @@ static void fault_from_interrupt(uint32_t fault)
     board_bridge_force_low_zero();
 }
 
-static bool predict_aligned_reference(
+static bool predict_aligned_phases(
     const electrical_phase_predictor_t* predictor,
-    int16_t q_current_reference_counts,
     uint32_t now_us,
     uint32_t* sample_electrical_phase_q32,
     uint32_t* pwm_application_phase_q32,
     uint32_t* prediction_age_us,
-    int16_t* current_a_reference_counts,
-    int16_t* current_b_reference_counts,
     current_loop_phase_prediction_reject_t* rejection_reason)
 {
     if (rejection_reason != NULL)
@@ -128,19 +125,6 @@ static bool predict_aligned_reference(
                  predictor->observation_valid) ?
                     CURRENT_LOOP_PHASE_PREDICTION_REJECT_STALE :
                     CURRENT_LOOP_PHASE_PREDICTION_REJECT_OBSERVATION_INVALID;
-        }
-        return false;
-    }
-    if (!phase_current_reference_from_polar(
-            q_current_reference_counts,
-            *pwm_application_phase_q32 + QUARTER_CYCLE_PHASE_Q32,
-            current_a_reference_counts,
-            current_b_reference_counts))
-    {
-        if (rejection_reason != NULL)
-        {
-            *rejection_reason =
-                CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING;
         }
         return false;
     }
@@ -182,6 +166,7 @@ static void adc_current_event(adc1_status_t status,
     uint16_t pwm_preload_margin_ticks = 0u;
     uint32_t pwm_stage_cycle_count = 0u;
     bool trace_armed;
+    bool report_aligned_reference = false;
     bool use_rotating_frame_controller = false;
     (void)context;
     if (status != ADC1_STATUS_OK)
@@ -248,15 +233,12 @@ static void adc_current_event(adc1_status_t status,
     }
     else if (s_phase_prediction_active)
     {
-        if (!predict_aligned_reference(
+        if (!predict_aligned_phases(
                 &s_phase_predictor,
-                s_aligned_q_reference_counts,
                 timebase_micros(),
                 &sample_phase_q32,
                 &pwm_application_phase_q32,
                 &prediction_age_us,
-                &current_a_reference_counts,
-                &current_b_reference_counts,
                 &rejection_reason))
         {
             record_prediction_rejection(
@@ -265,10 +247,9 @@ static void adc_current_event(adc1_status_t status,
                 CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION);
             return;
         }
+        report_aligned_reference = true;
         use_rotating_frame_controller = true;
         current_q_reference_counts = s_aligned_q_reference_counts;
-        s_last_reference_a_counts = current_a_reference_counts;
-        s_last_reference_b_counts = current_b_reference_counts;
         s_predicted_electrical_phase_q32 = pwm_application_phase_q32;
         record_prediction_age(prediction_age_us);
     }
@@ -318,6 +299,29 @@ static void adc_current_event(adc1_status_t status,
             fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
             return;
         }
+    }
+    /* The aligned A/B reference is reporting-only: rotating control consumes
+       d/q references directly. Keep the ordinary 20 kHz deadline path free of
+       this duplicate polar mapping. A newly accepted 4 kHz observation keeps
+       status coherent, while an armed trace regenerates the exact per-event
+       reference after PWM staging so trace fidelity is unchanged. */
+    if (trace_armed && report_aligned_reference)
+    {
+        if (!phase_current_reference_from_polar(
+                s_aligned_q_reference_counts,
+                pwm_application_phase_q32 + QUARTER_CYCLE_PHASE_Q32,
+                &current_a_reference_counts,
+                &current_b_reference_counts))
+        {
+            record_prediction_rejection(
+                CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING,
+                prediction_age_us);
+            fault_from_interrupt(
+                CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION);
+            return;
+        }
+        s_last_reference_a_counts = current_a_reference_counts;
+        s_last_reference_b_counts = current_b_reference_counts;
     }
     if (trace_armed &&
         (s_trace_count < CURRENT_LOOP_BACKEND_TRACE_CAPACITY) &&
@@ -608,18 +612,25 @@ bool current_loop_backend_set_aligned_q_reference(
         rejection_reason =
             CURRENT_LOOP_PHASE_PREDICTION_REJECT_OBSERVATION_INVALID;
     }
-    else if (!predict_aligned_reference(
+    else if (!predict_aligned_phases(
                  &candidate,
-                 q_current_reference_counts,
                  now_us,
                  &sample_phase_q32,
                  &pwm_application_phase_q32,
                  &prediction_age_us,
-                 &current_a_reference_counts,
-                 &current_b_reference_counts,
                  &rejection_reason))
     {
         candidate_valid = false;
+    }
+    else if (!phase_current_reference_from_polar(
+                 q_current_reference_counts,
+                 pwm_application_phase_q32 + QUARTER_CYCLE_PHASE_Q32,
+                 &current_a_reference_counts,
+                 &current_b_reference_counts))
+    {
+        candidate_valid = false;
+        rejection_reason =
+            CURRENT_LOOP_PHASE_PREDICTION_REJECT_REFERENCE_MAPPING;
     }
 
     previous = control_critical_enter();
