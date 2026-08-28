@@ -19,6 +19,7 @@
 #include "mks57d/configuration_store.h"
 #include "mks57d/control_math.h"
 #include "mks57d/current_loop_backend.h"
+#include "mks57d/cycle_counter.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/encoder_liveness.h"
 #include "mks57d/i2c1.h"
@@ -31,6 +32,7 @@
 #include "mks57d/position_controller.h"
 #include "mks57d/rs485.h"
 #include "mks57d/rotor_control_runtime.h"
+#include "mks57d/runtime_profile.h"
 #include "mks57d/spi1.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/timebase.h"
@@ -54,6 +56,9 @@ _Static_assert((unsigned int)ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ ==
 _Static_assert((unsigned int)TIM2_CURRENT_TRIGGER_FREQUENCY_HZ ==
                    (unsigned int)TIM3_BRIDGE_PWM_FREQUENCY_HZ,
                "current trigger rate must match the PWM carrier rate");
+_Static_assert((unsigned int)RUNTIME_PROFILE_METRIC_COUNT ==
+                   (unsigned int)COMMAND_RUNTIME_PROFILE_METRIC_COUNT,
+               "runtime profile metrics must match the command schema");
 
 enum
 {
@@ -2067,6 +2072,56 @@ static command_status_t commissioning_arm_current_trace(void* context)
         COMMAND_STATUS_OK : COMMAND_STATUS_UNAVAILABLE;
 }
 
+static command_status_t commissioning_get_runtime_profile(
+    void* context,
+    command_runtime_profile_t* profile)
+{
+    runtime_profile_snapshot_t snapshot;
+    size_t index;
+
+    if ((context == NULL) || (profile == NULL))
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!runtime_profile_get_snapshot(&snapshot))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+
+    memset(profile, 0, sizeof(*profile));
+    profile->schema_version = snapshot.schema_version;
+    profile->state = snapshot.state;
+    profile->captured_release_count = snapshot.captured_release_count;
+    profile->incomplete_release_count = snapshot.incomplete_release_count;
+    profile->foreground_sample_count = snapshot.foreground_sample_count;
+    profile->current_loop_completion_count =
+        snapshot.current_loop_completion_count;
+    profile->maximum_current_loop_completions_per_release =
+        snapshot.maximum_current_loop_completions_per_release;
+    for (index = 0u; index < RUNTIME_PROFILE_METRIC_COUNT; ++index)
+    {
+        profile->metrics[index].total_cycles =
+            snapshot.metrics[index].total_cycles;
+        profile->metrics[index].maximum_cycles =
+            snapshot.metrics[index].maximum_cycles;
+    }
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_arm_runtime_profile(void* context)
+{
+    if (context == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if (!cycle_counter_init())
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    return runtime_profile_arm() ?
+        COMMAND_STATUS_OK : COMMAND_STATUS_UNAVAILABLE;
+}
+
 static void wait_milliseconds(uint32_t duration)
 {
     const uint32_t start = timebase_millis();
@@ -2686,6 +2741,8 @@ int main(void)
             .get_encoder_status = commissioning_get_encoder_status,
             .get_current_trace = commissioning_get_current_trace,
             .arm_current_trace = commissioning_arm_current_trace,
+            .get_runtime_profile = commissioning_get_runtime_profile,
+            .arm_runtime_profile = commissioning_arm_runtime_profile,
         },
         .alignment = {
             .context = &commissioning_context,
@@ -3017,6 +3074,10 @@ int main(void)
         const uint32_t now = timebase_millis();
         const bool safety_housekeeping_due =
             (int32_t)(now - next_safety_housekeeping) >= 0;
+        const bool runtime_profile_foreground_active =
+            safety_housekeeping_due && runtime_profile_is_armed();
+        const uint32_t runtime_profile_foreground_start_cycle_count =
+            runtime_profile_foreground_active ? cycle_counter_read() : 0u;
         const uint32_t rotor_events =
             safety_housekeeping_due ?
                 rotor_control_runtime_take_events(
@@ -3885,6 +3946,13 @@ int main(void)
                 display_ready = false;
             }
             next_display_refresh = now + DISPLAY_REFRESH_PERIOD_MS;
+        }
+
+        if (runtime_profile_foreground_active)
+        {
+            runtime_profile_foreground_complete(
+                runtime_profile_foreground_start_cycle_count,
+                cycle_counter_read());
         }
 
         __WFI();

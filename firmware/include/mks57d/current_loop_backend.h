@@ -106,6 +106,7 @@ bool current_loop_backend_reconfigure_gains(
 bool current_loop_backend_recover(uint32_t* cleared_fault_flags);
 void current_loop_backend_get_snapshot(
     current_loop_backend_snapshot_t* snapshot);
+uint32_t current_loop_backend_sample_count(void);
 uint16_t current_loop_backend_trace_count(void);
 bool current_loop_backend_trace_arm(void);
 bool current_loop_backend_trace_get(

@@ -62,6 +62,13 @@ conversion from the ordinary aligned-current path before PWM staging. Accepted
 per-event references after the PWM-stage timestamp. Control output and all
 authority, electrical, timing, deadline, fault, and `ZERO` contracts are
 unchanged.
+Firmware 0.38.0 / protocol 1.19 adds a bufferless, explicitly armed aggregate
+profile for 256 nominal 4 kHz releases. It measures pend latency, deferred
+dispatch/copy, encoder decode, estimation, active control, publication, total
+PendSV, foreground housekeeping, and higher-priority current-loop completions.
+DWT reads and accumulation are confined to the armed window, the existing
+8,192-byte current trace may run simultaneously, and neither diagnostic gains
+bridge authority or changes fault/`ZERO` behavior.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and

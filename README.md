@@ -5,7 +5,7 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.37.1 / native protocol 1.18 is the current source and flashed
+Firmware 0.38.0 / native protocol 1.19 is the current source and flashed
 baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
@@ -116,7 +116,24 @@ Control output, trace fidelity, authority, electrical limits, deadlines,
 guardian behavior, faults, and `ZERO` are unchanged. Native/Python tests and
 Debug/Release Arm builds pass.
 
-Firmware 0.37.1 is flashed and accepted on the COM14 controller. Signed
+Firmware 0.38.0 / protocol 1.19 adds an explicitly armed, aggregate 256-release
+runtime profile for the 4 kHz deferred-control chain. It records total and
+maximum DWT cycles for pend latency, dispatch/copy, encoder decode, estimator,
+active control, publication, complete PendSV work, and 1 kHz foreground work,
+plus higher-priority current-loop completions. The profiler is dormant unless
+armed, consumes no trace buffer, and can run alongside the existing 20 kHz
+current trace.
+
+Firmware 0.38.0 is flashed and accepted on the COM14 controller. A +4 rev/s,
+16 rev/s², 606 mA, two-second run armed both profilers at steady state and
+completed with 0.0967 rev/s RMS error, zero faults, and normal `ZERO` release.
+All 256 deferred releases were complete: pend latency averaged 2.89 us and
+peaked at 99.77 us; PendSV work averaged 144.09 us and peaked at 336.61 us,
+including 20 kHz preemption. The simultaneous current trace retained 256
+consecutive samples, 29.59 us minimum PWM-preload margin, and zero missed
+updates. Generation-3 alignment and stored Kp=4/Ki=1/64 remained intact.
+
+Firmware 0.37.1 was flashed and accepted on the COM14 controller. Signed
 30.3 mA, 100 ms torque pulses completed normally. Matched +4 rev/s for 2 s and
 -4 rev/s for 3 s at 16 rev/s2 with a 606 mA permission measured 0.1015 and
 0.1437 rev/s RMS velocity error without current limiting or faults. Five
@@ -160,7 +177,7 @@ faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
 The next work is firmware control-path performance rather than final
-motor/load tuning. The accepted 0.37.0 and 0.37.1 current, timing, and motion captures are
+motor/load tuning. The accepted 0.37.0 through 0.38.0 current, timing, and motion captures are
 regression baselines for reducing ordinary 20 kHz fixed-point current-path and
 4 kHz rotor/control overhead, then improving high-electrical-frequency current
 tracking and estimator/phase/outer-loop scheduling without weakening authority,
@@ -200,7 +217,7 @@ For production motion status and a conservative relative move:
 
 ```powershell
 py tools/mks57d_rs485.py --port COM14 velocity-status
-py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --trace-at-seconds 1
+py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --trace-at-seconds 1 --profile-at-seconds 1
 py tools/mks57d_rs485.py --port COM14 position-status
 py tools/mks57d_rs485.py --port COM14 position --revolutions 0.25 --max-rpm 30 --acceleration-rps2 1 --current-limit-ma 606 --duration-ms 3000
 ```

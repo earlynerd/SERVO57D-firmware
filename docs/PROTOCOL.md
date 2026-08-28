@@ -1,7 +1,7 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.18 is implemented in the firmware 0.37.1 source
-candidate; firmware 0.37.0 / protocol 1.18 is the flashed baseline.
+Status: native protocol 1.19 is implemented in the flashed firmware 0.38.0
+baseline.
 Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -116,6 +116,8 @@ from causing reply storms.
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
 | `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema-2 current, prediction, carrier-timer, DWT, and PWM-preload sample described below |
 | `0x0107` | `ARM_CURRENT_TRACE` | Empty | Empty |
+| `0x0108` | `GET_RUNTIME_PROFILE` | Empty | Completed schema-1 aggregate runtime profile described below |
+| `0x0109` | `ARM_RUNTIME_PROFILE` | Empty | Empty |
 | `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
 | `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
 | `0x0202` | `STOP_DRIVE` | Empty | Empty |
@@ -208,6 +210,31 @@ Firmware 0.37.0 / protocol 1.18 adds a backward-compatible 14-byte
 `START_VELOCITY` request by appending positive Q16.16 reference acceleration to
 the legacy 10-byte request. The legacy form selects 16 rev/s². No command ID,
 response, status schema, authority rule, or independent safety bound changes.
+
+Firmware 0.38.0 / protocol 1.19 adds the read-only aggregate runtime profiler.
+`ARM_RUNTIME_PROFILE` explicitly starts one 256-release window and is
+unavailable while a window is already armed. `GET_RUNTIME_PROFILE` is
+unavailable until that window completes, then returns the stable 78-byte body
+below after the normal response-status byte:
+
+```text
+schema:u8 | state:u8 | captured_release_count:u16 |
+incomplete_release_count:u16 | foreground_sample_count:u16 |
+current_loop_completion_count:u32 |
+maximum_current_loop_completions_per_release:u16 |
+8 * { total_cycles:u32 | maximum_cycles:u32 }
+```
+
+Schema 1 uses state `0=idle`, `1=armed`, and `2=complete`. Metric order is
+pend-to-PendSV-entry latency, PendSV dispatch/copy, encoder decode, estimator,
+active control/request work, publication, total PendSV work, and foreground
+housekeeping. All cycle fields use the 64 MHz DWT counter. The first seven
+metrics share `captured_release_count - incomplete_release_count` valid
+samples; foreground uses its separate count. The current-loop count is the
+number of higher-priority current-loop completions observed during profiled
+PendSV executions. Arming this aggregate profile does not allocate a sample
+buffer and may be combined with `ARM_CURRENT_TRACE`; enabling either profiler
+does not reset an already-running DWT counter.
 
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while

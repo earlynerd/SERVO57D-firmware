@@ -1,13 +1,11 @@
 # Firmware Architecture
 
-Status: firmware 0.37.1 is the current source candidate and firmware 0.37.0 is
-the flashed baseline. The source
+Status: firmware 0.38.0 is the current source and flashed baseline. The source
 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
 fixed-point A/B current loop. TIM6/TIM7, SPI1 DMA, and PendSV own the
-deterministic encoder/rotor service; the 0.32.2 source stages it at 8 MHz SPI and
-4 kHz while the flashed 1 kHz baseline remains the formally proven point. Each
+deterministic encoder/rotor service at 8 MHz SPI and 4 kHz. Each
 candidate acquisition is timestamped when CS asserts at the start of its
 coherent four-byte window, rather than when post-hold publication completes. A
 606 mA five-second baseline run completed with zero encoder, DMA, estimator,
@@ -55,6 +53,10 @@ stationary A/B PI. No outer controller or bridge-authority owner changes.
 Firmware 0.37.1 removes telemetry-only A/B reconstruction from the ordinary
 pre-PWM deadline and retains exact per-event reconstruction after staging only
 when a trace is armed.
+Firmware 0.38.0 adds a trace-gated, bufferless aggregate profiler across that
+existing SPI/PendSV/rotor path and foreground housekeeping. It adds diagnostic
+observation only; timer, estimator, controller, supervisor, bridge, fault, and
+`ZERO` ownership remain unchanged.
 
 ## Design priorities
 

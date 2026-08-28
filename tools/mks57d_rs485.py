@@ -39,6 +39,8 @@ COMMAND_GET_BOOT_STATUS = 0x0104
 COMMAND_GET_ENCODER_STATUS = 0x0105
 COMMAND_GET_CURRENT_TRACE = 0x0106
 COMMAND_ARM_CURRENT_TRACE = 0x0107
+COMMAND_GET_RUNTIME_PROFILE = 0x0108
+COMMAND_ARM_RUNTIME_PROFILE = 0x0109
 COMMAND_START_ALIGNMENT = 0x0200
 COMMAND_GET_ALIGNMENT_STATUS = 0x0201
 COMMAND_STOP_DRIVE = 0x0202
@@ -373,8 +375,29 @@ STATUS_V4_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHIII")
 STATUS_V5_BODY = struct.Struct(">BIBBBBIIHHHHhhhhhhHHHHHHHHIIBBHIIIB")
 CURRENT_TRACE_V1_BODY = struct.Struct(">BHHIhhhhhh")
 CURRENT_TRACE_V2_BODY = struct.Struct(">BHHIhhhhhhIHHHHHH")
+RUNTIME_PROFILE_BODY = struct.Struct(">BBHHHIH" + "II" * 8)
 TRACE_CYCLE_COUNTER_HZ = 64_000_000
 TRACE_PWM_TIMER_HZ = 32_000_000
+DEFERRED_CONTROL_RATE_HZ = 4_000
+RUNTIME_PROFILE_RELEASE_COUNT = 256
+RUNTIME_PROFILE_DURATION_SECONDS = (
+    RUNTIME_PROFILE_RELEASE_COUNT / DEFERRED_CONTROL_RATE_HZ
+)
+RUNTIME_PROFILE_STATE_NAMES = {
+    0: "idle",
+    1: "armed",
+    2: "complete",
+}
+RUNTIME_PROFILE_METRIC_NAMES = (
+    "pend_to_entry",
+    "dispatch",
+    "encoder_decode",
+    "estimator",
+    "control",
+    "publication",
+    "pendsv_total",
+    "foreground",
+)
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
@@ -1172,6 +1195,127 @@ def query_current_trace_sample(client: Client, index: int) -> dict[str, Any]:
 
 def arm_current_trace(client: Client) -> None:
     client.transact(COMMAND_ARM_CURRENT_TRACE)
+
+
+def query_runtime_profile(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_RUNTIME_PROFILE)
+    if len(body) != RUNTIME_PROFILE_BODY.size:
+        raise ProtocolError(
+            "runtime-profile response has an unexpected length"
+        )
+    unpacked = RUNTIME_PROFILE_BODY.unpack(body)
+    (
+        schema,
+        state_code,
+        captured_release_count,
+        incomplete_release_count,
+        foreground_sample_count,
+        current_loop_completion_count,
+        maximum_current_loop_completions_per_release,
+        *metric_values,
+    ) = unpacked
+    if schema != 1:
+        raise ProtocolError("unsupported runtime-profile schema")
+
+    complete_release_count = max(
+        0, captured_release_count - incomplete_release_count
+    )
+    metrics: dict[str, Any] = {}
+    for index, name in enumerate(RUNTIME_PROFILE_METRIC_NAMES):
+        total_cycles = metric_values[index * 2]
+        maximum_cycles = metric_values[index * 2 + 1]
+        sample_count = (
+            foreground_sample_count
+            if name == "foreground"
+            else complete_release_count
+        )
+        average_cycles = (
+            total_cycles / sample_count if sample_count else None
+        )
+        metrics[name] = {
+            "sample_count": sample_count,
+            "total_cycles": total_cycles,
+            "maximum_cycles": maximum_cycles,
+            "average_cycles": (
+                round(average_cycles, 3)
+                if average_cycles is not None
+                else None
+            ),
+            "maximum_microseconds": round(
+                maximum_cycles * 1_000_000.0 / TRACE_CYCLE_COUNTER_HZ,
+                3,
+            ),
+            "average_microseconds": (
+                round(
+                    average_cycles
+                    * 1_000_000.0
+                    / TRACE_CYCLE_COUNTER_HZ,
+                    3,
+                )
+                if average_cycles is not None
+                else None
+            ),
+        }
+
+    deferred_period_cycles = (
+        TRACE_CYCLE_COUNTER_HZ // DEFERRED_CONTROL_RATE_HZ
+    )
+    pendsv_total = metrics["pendsv_total"]
+    average_pendsv_cycles = pendsv_total["average_cycles"]
+    return {
+        "schema": schema,
+        "state_code": state_code,
+        "state": RUNTIME_PROFILE_STATE_NAMES.get(
+            state_code, f"unknown_{state_code}"
+        ),
+        "cycle_counter_hz": TRACE_CYCLE_COUNTER_HZ,
+        "deferred_control_rate_hz": DEFERRED_CONTROL_RATE_HZ,
+        "captured_release_count": captured_release_count,
+        "complete_release_count": complete_release_count,
+        "capture_duration_seconds": round(
+            captured_release_count / DEFERRED_CONTROL_RATE_HZ, 6
+        ),
+        "incomplete_release_count": incomplete_release_count,
+        "foreground_sample_count": foreground_sample_count,
+        "current_loop": {
+            "completion_count": current_loop_completion_count,
+            "average_completions_per_release": (
+                round(
+                    current_loop_completion_count
+                    / captured_release_count,
+                    6,
+                )
+                if captured_release_count
+                else None
+            ),
+            "maximum_completions_per_release": (
+                maximum_current_loop_completions_per_release
+            ),
+        },
+        "pendsv_utilization_percent": {
+            "average": (
+                round(
+                    average_pendsv_cycles
+                    * 100.0
+                    / deferred_period_cycles,
+                    3,
+                )
+                if average_pendsv_cycles is not None
+                else None
+            ),
+            "maximum": round(
+                pendsv_total["maximum_cycles"]
+                * 100.0
+                / deferred_period_cycles,
+                3,
+            ),
+        },
+        "metrics": metrics,
+    }
+
+
+def arm_runtime_profile(client: Client) -> None:
+    client.transact(COMMAND_ARM_RUNTIME_PROFILE)
 
 
 def _query_current_trace_sample_with_retry(
@@ -2582,6 +2726,7 @@ def _run_torque_capture(
     telemetry_path = run_directory / "telemetry.csv"
     full_jsonl_path = run_directory / "telemetry.jsonl"
     current_trace_path = run_directory / "current_trace.csv"
+    runtime_profile_path = run_directory / "runtime_profile.json"
     initial_drive = query_status(client)
     initial_encoder = query_encoder(client)
     metadata: dict[str, Any] = {
@@ -2598,6 +2743,7 @@ def _run_torque_capture(
             "capture_interval_seconds": args.interval,
             "scheduled_stop_after_seconds": args.stop_after_seconds,
             "trace_at_seconds": args.trace_at_seconds,
+            "profile_at_seconds": args.profile_at_seconds,
             "loadcell": (
                 None
                 if args.loadcell_port is None
@@ -2632,6 +2778,11 @@ def _run_torque_capture(
             "current_trace_csv": (
                 current_trace_path.name
                 if args.trace_at_seconds is not None
+                else None
+            ),
+            "runtime_profile_json": (
+                runtime_profile_path.name
+                if args.profile_at_seconds is not None
                 else None
             ),
             "force_telemetry_csv": (
@@ -2669,6 +2820,8 @@ def _run_torque_capture(
     scheduled_stop_sent = False
     trace_arm_sent = False
     trace_arm_host_elapsed_seconds: float | None = None
+    profile_arm_sent = False
+    profile_arm_host_elapsed_seconds: float | None = None
     loadcell: TorqueLoadCellCapture | None = None
     loadcell_metadata: dict[str, Any] | None = None
     terminal_marker_sent = False
@@ -2739,6 +2892,17 @@ def _run_torque_capture(
                         arm_current_trace(client)
                         trace_arm_sent = True
                         trace_arm_host_elapsed_seconds = round(
+                            now - capture_start, 6
+                        )
+                    if (
+                        not terminal
+                        and args.profile_at_seconds is not None
+                        and not profile_arm_sent
+                        and now - capture_start >= args.profile_at_seconds
+                    ):
+                        arm_runtime_profile(client)
+                        profile_arm_sent = True
+                        profile_arm_host_elapsed_seconds = round(
                             now - capture_start, 6
                         )
                     if not args.quiet and (
@@ -2892,6 +3056,15 @@ def _run_torque_capture(
             if capture_error is None:
                 capture_error = error
                 exit_code = 2
+    runtime_profile: dict[str, Any] | None = None
+    if profile_arm_sent:
+        try:
+            runtime_profile = query_runtime_profile(client)
+            _write_json(runtime_profile_path, runtime_profile)
+        except (ProtocolError, OSError, ValueError) as error:
+            if capture_error is None:
+                capture_error = error
+                exit_code = 2
     final_analysis = _finalize_torque_capture_analysis(analysis)
     metadata["completed_at"] = datetime.now().astimezone().isoformat(
         timespec="seconds"
@@ -2929,6 +3102,20 @@ def _run_torque_capture(
                 trace_samples[-1]["time_seconds"]
                 if trace_samples
                 else None
+            ),
+            "profile_arm_sent": profile_arm_sent,
+            "profile_arm_host_elapsed_seconds": (
+                profile_arm_host_elapsed_seconds
+            ),
+            "runtime_profile_captured_release_count": (
+                None
+                if runtime_profile is None
+                else runtime_profile["captured_release_count"]
+            ),
+            "runtime_profile_incomplete_release_count": (
+                None
+                if runtime_profile is None
+                else runtime_profile["incomplete_release_count"]
             ),
             "error": str(capture_error) if capture_error is not None else None,
             "loadcell_status": (
@@ -3229,6 +3416,7 @@ def _run_velocity_capture(
     telemetry_path = run_directory / "telemetry.csv"
     full_jsonl_path = run_directory / "telemetry.jsonl"
     current_trace_path = run_directory / "current_trace.csv"
+    runtime_profile_path = run_directory / "runtime_profile.json"
     initial_drive = query_status(client)
     initial_encoder = query_encoder(client)
     metadata: dict[str, Any] = {
@@ -3248,6 +3436,7 @@ def _run_velocity_capture(
             "capture_interval_seconds": args.interval,
             "scheduled_stop_after_seconds": args.stop_after_seconds,
             "trace_at_seconds": args.trace_at_seconds,
+            "profile_at_seconds": args.profile_at_seconds,
         },
         "transport": {
             "port": args.port,
@@ -3269,6 +3458,11 @@ def _run_velocity_capture(
             "current_trace_csv": (
                 current_trace_path.name
                 if args.trace_at_seconds is not None
+                else None
+            ),
+            "runtime_profile_json": (
+                runtime_profile_path.name
+                if args.profile_at_seconds is not None
                 else None
             ),
             "terminal_update_interval_seconds": (
@@ -3296,6 +3490,8 @@ def _run_velocity_capture(
     scheduled_stop_sent = False
     trace_arm_sent = False
     trace_arm_host_elapsed_seconds: float | None = None
+    profile_arm_sent = False
+    profile_arm_host_elapsed_seconds: float | None = None
     exit_code = 2
 
     with telemetry_path.open("w", encoding="utf-8", newline="") as csv_stream:
@@ -3343,6 +3539,17 @@ def _run_velocity_capture(
                         arm_current_trace(client)
                         trace_arm_sent = True
                         trace_arm_host_elapsed_seconds = round(
+                            now - capture_start, 6
+                        )
+                    if (
+                        not terminal
+                        and args.profile_at_seconds is not None
+                        and not profile_arm_sent
+                        and now - capture_start >= args.profile_at_seconds
+                    ):
+                        arm_runtime_profile(client)
+                        profile_arm_sent = True
+                        profile_arm_host_elapsed_seconds = round(
                             now - capture_start, 6
                         )
                     if not args.quiet and (
@@ -3428,6 +3635,15 @@ def _run_velocity_capture(
             if capture_error is None:
                 capture_error = error
                 exit_code = 2
+    runtime_profile: dict[str, Any] | None = None
+    if profile_arm_sent:
+        try:
+            runtime_profile = query_runtime_profile(client)
+            _write_json(runtime_profile_path, runtime_profile)
+        except (ProtocolError, OSError, ValueError) as error:
+            if capture_error is None:
+                capture_error = error
+                exit_code = 2
     final_analysis = _finalize_velocity_capture_analysis(analysis)
     metadata["completed_at"] = datetime.now().astimezone().isoformat(
         timespec="seconds"
@@ -3464,6 +3680,20 @@ def _run_velocity_capture(
                 trace_samples[-1]["time_seconds"]
                 if trace_samples
                 else None
+            ),
+            "profile_arm_sent": profile_arm_sent,
+            "profile_arm_host_elapsed_seconds": (
+                profile_arm_host_elapsed_seconds
+            ),
+            "runtime_profile_captured_release_count": (
+                None
+                if runtime_profile is None
+                else runtime_profile["captured_release_count"]
+            ),
+            "runtime_profile_incomplete_release_count": (
+                None
+                if runtime_profile is None
+                else runtime_profile["incomplete_release_count"]
             ),
             "error": str(capture_error) if capture_error is not None else None,
         }
@@ -4106,6 +4336,15 @@ def make_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "arm-trace", help="re-arm the one-shot trace during active motion"
     )
+    runtime_profile = commands.add_parser(
+        "runtime-profile",
+        help="read the completed aggregate deferred-control timing profile",
+    )
+    runtime_profile.add_argument("--output", help="write JSON to this path")
+    commands.add_parser(
+        "arm-runtime-profile",
+        help="arm a 256-release aggregate deferred-control timing profile",
+    )
 
     configure = commands.add_parser("configure", help="set test demand")
     configure_current = configure.add_mutually_exclusive_group(required=True)
@@ -4164,6 +4403,14 @@ def make_parser() -> argparse.ArgumentParser:
         type=float,
         help=(
             "re-arm the 256-sample timing/current burst this many seconds "
+            "after the torque command starts"
+        ),
+    )
+    torque.add_argument(
+        "--profile-at-seconds",
+        type=float,
+        help=(
+            "arm the 256-release aggregate runtime profile this many seconds "
             "after the torque command starts"
         ),
     )
@@ -4246,6 +4493,14 @@ def make_parser() -> argparse.ArgumentParser:
         type=float,
         help=(
             "re-arm the 256-sample timing/current burst this many seconds "
+            "after the velocity command starts"
+        ),
+    )
+    velocity.add_argument(
+        "--profile-at-seconds",
+        type=float,
+        help=(
+            "arm the 256-release aggregate runtime profile this many seconds "
             "after the velocity command starts"
         ),
     )
@@ -4441,6 +4696,16 @@ def main() -> int:
         elif args.command == "arm-trace":
             arm_current_trace(client)
             print("current trace armed")
+        elif args.command == "runtime-profile":
+            profile = query_runtime_profile(client)
+            if args.output:
+                _write_json(Path(args.output), profile)
+                print_json({"output": args.output, **profile})
+            else:
+                print_json(profile)
+        elif args.command == "arm-runtime-profile":
+            arm_runtime_profile(client)
+            print("runtime profile armed")
         elif args.command == "configure":
             if args.counts is not None:
                 amplitude_counts = args.counts
@@ -4592,6 +4857,16 @@ def main() -> int:
                 raise ProtocolError(
                     "--trace-at-seconds must be nonnegative and earlier than "
                     "the scheduled STOP or firmware deadline"
+                )
+            if args.profile_at_seconds is not None and (
+                not math.isfinite(args.profile_at_seconds)
+                or args.profile_at_seconds < 0.0
+                or args.profile_at_seconds + RUNTIME_PROFILE_DURATION_SECONDS
+                >= trace_deadline_seconds
+            ):
+                raise ProtocolError(
+                    "--profile-at-seconds must leave a complete 64 ms window "
+                    "before the scheduled STOP or firmware deadline"
                 )
             if args.loadcell_port is None and (
                 args.loadcell_counts_per_newton is not None
@@ -4745,6 +5020,16 @@ def main() -> int:
                 raise ProtocolError(
                     "--trace-at-seconds must be nonnegative and earlier than "
                     "the scheduled STOP or firmware deadline"
+                )
+            if args.profile_at_seconds is not None and (
+                not math.isfinite(args.profile_at_seconds)
+                or args.profile_at_seconds < 0.0
+                or args.profile_at_seconds + RUNTIME_PROFILE_DURATION_SECONDS
+                >= trace_deadline_seconds
+            ):
+                raise ProtocolError(
+                    "--profile-at-seconds must leave a complete 64 ms window "
+                    "before the scheduled STOP or firmware deadline"
                 )
             velocity_status = query_velocity(client)
             policy = velocity_status["policy"]

@@ -1,5 +1,8 @@
 #include "mks57d/native_protocol.h"
 
+_Static_assert(79u <= NATIVE_PROTOCOL_MAX_PAYLOAD_SIZE,
+               "runtime profile must fit one native response");
+
 enum
 {
     FRAME_VERSION_OFFSET = 0u,
@@ -347,6 +350,12 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_ARM_CURRENT_TRACE:
             *operation = COMMAND_OPERATION_ARM_CURRENT_TRACE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_GET_RUNTIME_PROFILE:
+            *operation = COMMAND_OPERATION_GET_RUNTIME_PROFILE;
+            return true;
+        case NATIVE_PROTOCOL_COMMAND_ARM_RUNTIME_PROFILE:
+            *operation = COMMAND_OPERATION_ARM_RUNTIME_PROFILE;
+            return true;
         case NATIVE_PROTOCOL_COMMAND_START_ALIGNMENT:
             *operation = COMMAND_OPERATION_START_ALIGNMENT;
             return true;
@@ -674,6 +683,42 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u16_be(&response_frame->payload[36],
                              trace->pwm_preload_margin_ticks);
                 payload_length = 38u;
+                break;
+            }
+
+            case COMMAND_RESPONSE_RUNTIME_PROFILE:
+            {
+                const command_runtime_profile_t* profile =
+                    &command_response->data.runtime_profile;
+                size_t metric_index;
+                size_t offset = 15u;
+
+                response_frame->payload[1] = profile->schema_version;
+                response_frame->payload[2] = profile->state;
+                write_u16_be(&response_frame->payload[3],
+                             profile->captured_release_count);
+                write_u16_be(&response_frame->payload[5],
+                             profile->incomplete_release_count);
+                write_u16_be(&response_frame->payload[7],
+                             profile->foreground_sample_count);
+                write_u32_be(&response_frame->payload[9],
+                             profile->current_loop_completion_count);
+                write_u16_be(
+                    &response_frame->payload[13],
+                    profile->maximum_current_loop_completions_per_release);
+                for (metric_index = 0u;
+                     metric_index < COMMAND_RUNTIME_PROFILE_METRIC_COUNT;
+                     ++metric_index)
+                {
+                    write_u32_be(
+                        &response_frame->payload[offset],
+                        profile->metrics[metric_index].total_cycles);
+                    write_u32_be(
+                        &response_frame->payload[offset + 4u],
+                        profile->metrics[metric_index].maximum_cycles);
+                    offset += 8u;
+                }
+                payload_length = 79u;
                 break;
             }
 

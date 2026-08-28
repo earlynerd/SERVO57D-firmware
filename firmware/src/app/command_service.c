@@ -543,6 +543,41 @@ void command_service_dispatch(const command_service_context_t* context,
                 context->commissioning.context);
             return;
 
+        case COMMAND_OPERATION_GET_RUNTIME_PROFILE:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->commissioning.get_runtime_profile == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->commissioning.get_runtime_profile(
+                context->commissioning.context,
+                &response->data.runtime_profile);
+            if (response->status == COMMAND_STATUS_OK)
+            {
+                response->kind = COMMAND_RESPONSE_RUNTIME_PROFILE;
+            }
+            return;
+
+        case COMMAND_OPERATION_ARM_RUNTIME_PROFILE:
+            if (request->payload_length != 0u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            if (context->commissioning.arm_runtime_profile == NULL)
+            {
+                response->status = COMMAND_STATUS_UNAVAILABLE;
+                return;
+            }
+            response->status = context->commissioning.arm_runtime_profile(
+                context->commissioning.context);
+            return;
+
         default:
             response->status = COMMAND_STATUS_UNKNOWN_COMMAND;
             return;

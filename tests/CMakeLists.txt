@@ -23,6 +23,7 @@ add_executable(host_unit_tests
     ../firmware/src/drivers/ssd1306.c
     ../firmware/src/drivers/user_inputs.c
     ../firmware/src/protocol/native_protocol.c
+    ../firmware/src/platform/runtime_profile.c
     ../firmware/src/safety/boot_self_test.c
     ../firmware/src/safety/encoder_liveness.c
     ../firmware/src/safety/watchdog_policy.c

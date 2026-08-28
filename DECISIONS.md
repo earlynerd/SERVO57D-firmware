@@ -1012,3 +1012,11 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** The fixed-point rotating controller consumes d/q references directly, so reconstructing A/B before PWM staging spent hard-deadline time without affecting control output or fault containment. Moving trace-only work after staging preserves capture fidelity while making the ordinary path smaller.
 - **Supersedes:** Only continuous pre-PWM A/B reference reporting in the aligned-current backend; predictor age, d/q transforms, current/voltage/duty checks, guardian, authority, deadlines, STOP, faults, and `ZERO` are unchanged.
 - **Affects:** `current_loop_backend`, aligned-current status/trace publication cadence, real-time documentation, and firmware version 0.37.1.
+
+## 2026-08-27 — Profile the deferred-control chain only on explicit arm
+
+- **Decision:** Firmware 0.38.0 / protocol 1.19 adds a bufferless aggregate profile for 256 nominal 4 kHz releases. It measures pend latency, dispatch/copy, decode, estimator, active control, publication, total PendSV, foreground work, and current-loop completions. DWT reads and accumulation occur only while armed; raced/incomplete release markers are counted and excluded from stage averages.
+- **Why:** The existing current trace proved the 20 kHz PWM deadline but could not attribute time within PendSV or expose foreground long tails.
+- **Supersedes:** The deferred-chain/foreground measurement gap in the 4 kHz acceptance plan. It does not replace stack high-water, scope, or repeated worst-case testing.
+- **Affects:** SPI-to-PendSV handoff, rotor-runtime stage markers, foreground housekeeping, native commands `0x0108`/`0x0109`, and torque/velocity capture artifacts. Supervisor authority, deadlines, electrical/motion limits, faults, and `ZERO` are unchanged.
+- **Validation:** Native/Python tests, Debug/Release Arm builds, J-Link verify, and a simultaneous +4 rev/s profile/current-trace gate pass.

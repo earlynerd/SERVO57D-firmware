@@ -15,7 +15,7 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.37.1 / protocol 1.18 is the current source and flashed baseline.
+- Firmware 0.38.0 / protocol 1.19 is the current source and flashed baseline.
   It runs the fixed-point rotating d/q controller in the production aligned-q
   torque, velocity, and position path, retains stationary A/B control for
   alignment and static vectors, and preserves the project-owned 20 kHz current
@@ -29,6 +29,13 @@ and fault bounds.
   sequential arms retained 1,280 consecutive 20 kHz samples, 20.72-21.66 us
   DMA-to-PWM time, at least 31.09 us preload margin, and zero missed updates or
   faults. Scheduled generic STOP also released normally.
+- Firmware 0.38.0 adds a trace-gated 256-release aggregate profile for pend
+  latency, deferred dispatch/copy, encoder decode, estimation, active control,
+  publication, total PendSV work, foreground work, and intervening 20 kHz
+  current completions. A simultaneous profile/current-trace +4 rev/s gate
+  completed all 256 releases with 2.89/99.77 us average/maximum pend latency,
+  144.09/336.61 us average/maximum PendSV work, 29.59 us minimum PWM-preload
+  margin, zero missed updates/faults, normal `ZERO`, and preserved calibration.
 - The bench configuration retains generation-3 alignment and ended with its
   stored Kp=4/Ki=1/64 current gains active and no dirty state. Kp=9/Ki=0.5
   remains a volatile development profile used only for same-condition captures;
@@ -75,16 +82,18 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Continue profiling and optimizing the ordinary 20 kHz fixed-point
+- [ ] Use the firmware 0.38.0 stage breakdown to continue optimizing the
+  ordinary 20 kHz fixed-point
   rotating-current path and 4 kHz rotor/control chain before selecting permanent
   gains. Examine remaining redundant prediction, transform, publication, and
   snapshot work; require bounded numerical equivalence plus unchanged raw-current,
   voltage, duty, timing, authority, deadline, fault, and `ZERO` enforcement.
-- [ ] Establish repeatable firmware-performance acceptance for each candidate:
+- [ ] Extend repeatable firmware-performance acceptance for each candidate:
   clean native/Python/Arm builds, 8 MHz SPI integrity, 4 kHz acquisition timing
-  and noise, PendSV/current-ISR preemption and stack margin, armed and disarmed
-  current-loop timing, foreground load, bounded motion, and clean STOP/deadline
-  release without reset or panic evidence.
+  and noise, aggregate PendSV/current-ISR preemption under representative
+  command/telemetry/display loads, stack high-water margin, armed and disarmed
+  current-loop timing, bounded motion, and clean STOP/deadline release without
+  reset or panic evidence.
 - [ ] Improve the high-electrical-frequency current-control architecture using
   the accepted 200 electrical-Hz diagnostic and ±4/+8/+12 rev/s captures as
   regression baselines. Prioritize algorithm, dataflow, phase prediction, and

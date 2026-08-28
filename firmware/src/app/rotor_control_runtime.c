@@ -7,8 +7,10 @@
 #include "mks57d/board.h"
 #include "mks57d/control_math.h"
 #include "mks57d/current_loop_backend.h"
+#include "mks57d/cycle_counter.h"
 #include "mks57d/interrupt_priority.h"
 #include "mks57d/mt6816.h"
+#include "mks57d/runtime_profile.h"
 #include "mks57d/timebase.h"
 #include "n32l40x.h"
 
@@ -1248,6 +1250,7 @@ void rotor_control_runtime_spi_callback(
     uint32_t requests;
     uint32_t events_before;
     uint32_t now_millis;
+    bool estimator_valid;
     bool started = false;
 
     if ((runtime == NULL) || !runtime->initialized)
@@ -1270,15 +1273,31 @@ void rotor_control_runtime_spi_callback(
             receive[1], receive[2], receive[3], &sample);
     }
     runtime->encoder_diagnostics.status = encoder_status;
+    if (runtime_profile_release_active())
+    {
+        runtime_profile_encoder_decode_complete(cycle_counter_read());
+    }
     if (encoder_status != MT6816_STATUS_OK)
     {
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_estimator_complete(cycle_counter_read());
+        }
         ++runtime->encoder_diagnostics.error_count;
         reject_requests_without_feedback(
             runtime, now_millis, timestamp_us);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_control_complete(cycle_counter_read());
+        }
         publish_callback_state(
             runtime,
             timestamp_us,
             runtime->event_flags != events_before);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_callback_complete(cycle_counter_read());
+        }
         return;
     }
 
@@ -1302,18 +1321,32 @@ void rotor_control_runtime_spi_callback(
             }
         }
     }
-    if ((sample.flags != 0u) ||
-        !angle_tracker_push(
-            &runtime->angle_tracker, sample.angle_raw, timestamp_us))
+    estimator_valid =
+        (sample.flags == 0u) &&
+        angle_tracker_push(
+            &runtime->angle_tracker, sample.angle_raw, timestamp_us);
+    if (runtime_profile_release_active())
+    {
+        runtime_profile_estimator_complete(cycle_counter_read());
+    }
+    if (!estimator_valid)
     {
         runtime->estimator_fault_flags |=
             ROTOR_CONTROL_ESTIMATOR_FAULT_INVALID_SAMPLE;
         reject_requests_without_feedback(
             runtime, now_millis, timestamp_us);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_control_complete(cycle_counter_read());
+        }
         publish_callback_state(
             runtime,
             timestamp_us,
             runtime->event_flags != events_before);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_callback_complete(cycle_counter_read());
+        }
         return;
     }
 
@@ -1322,7 +1355,15 @@ void rotor_control_runtime_spi_callback(
     if ((requests & ROTOR_CONTROL_REQUEST_STOP) != 0u)
     {
         process_stop_request(runtime, now_millis);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_control_complete(cycle_counter_read());
+        }
         publish_callback_state(runtime, timestamp_us, true);
+        if (runtime_profile_release_active())
+        {
+            runtime_profile_callback_complete(cycle_counter_read());
+        }
         return;
     }
     if ((requests & ROTOR_CONTROL_REQUEST_ALIGNMENT) != 0u)
@@ -1367,8 +1408,16 @@ void rotor_control_runtime_spi_callback(
             update_torque(runtime, &sample, now_millis, timestamp_us);
         }
     }
+    if (runtime_profile_release_active())
+    {
+        runtime_profile_control_complete(cycle_counter_read());
+    }
     publish_callback_state(
         runtime,
         timestamp_us,
         (requests != 0u) || (runtime->event_flags != events_before));
+    if (runtime_profile_release_active())
+    {
+        runtime_profile_callback_complete(cycle_counter_read());
+    }
 }

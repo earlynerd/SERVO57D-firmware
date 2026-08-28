@@ -255,6 +255,7 @@ def capture_args(root: Path) -> SimpleNamespace:
         quiet=True,
         stop_after_seconds=None,
         trace_at_seconds=None,
+        profile_at_seconds=None,
     )
 
 
@@ -271,6 +272,7 @@ def torque_capture_args(root: Path) -> SimpleNamespace:
         quiet=True,
         stop_after_seconds=None,
         trace_at_seconds=None,
+        profile_at_seconds=None,
         loadcell_port=None,
         loadcell_baudrate=115200,
         loadcell_sample_rate_sps=320,
@@ -318,6 +320,31 @@ def current_trace_sample() -> dict:
         },
         "bus_voltage_volts": 24.0,
         "phase_voltage_limit_volts": 16.8,
+    }
+
+
+def runtime_profile_sample() -> dict:
+    return {
+        "schema": 1,
+        "state_code": 2,
+        "state": "complete",
+        "cycle_counter_hz": 64_000_000,
+        "deferred_control_rate_hz": 4_000,
+        "captured_release_count": 256,
+        "complete_release_count": 256,
+        "capture_duration_seconds": 0.064,
+        "incomplete_release_count": 0,
+        "foreground_sample_count": 64,
+        "current_loop": {
+            "completion_count": 1280,
+            "average_completions_per_release": 5.0,
+            "maximum_completions_per_release": 6,
+        },
+        "pendsv_utilization_percent": {
+            "average": 6.25,
+            "maximum": 12.5,
+        },
+        "metrics": {},
     }
 
 
@@ -713,6 +740,60 @@ class VelocityCaptureTests(unittest.TestCase):
             console.COMMAND_ARM_CURRENT_TRACE
         )
 
+    def test_runtime_profile_decodes_aggregate_metrics(self) -> None:
+        metric_values = [
+            2560, 20,
+            5120, 30,
+            7680, 40,
+            10240, 50,
+            12800, 60,
+            15360, 70,
+            256000, 2000,
+            6400, 200,
+        ]
+        client = mock.Mock()
+        client.transact.return_value = console.RUNTIME_PROFILE_BODY.pack(
+            1, 2, 256, 2, 64, 1280, 6, *metric_values
+        )
+
+        profile = console.query_runtime_profile(client)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_GET_RUNTIME_PROFILE
+        )
+        self.assertEqual(profile["state"], "complete")
+        self.assertEqual(profile["capture_duration_seconds"], 0.064)
+        self.assertEqual(
+            profile["current_loop"]["average_completions_per_release"],
+            5.0,
+        )
+        self.assertEqual(profile["complete_release_count"], 254)
+        self.assertEqual(
+            profile["metrics"]["encoder_decode"]["sample_count"],
+            254,
+        )
+        self.assertEqual(
+            profile["metrics"]["encoder_decode"]["average_cycles"],
+            round(7680 / 254, 3),
+        )
+        self.assertEqual(
+            profile["pendsv_utilization_percent"]["average"],
+            round((256000 / 254) * 100 / 16000, 3),
+        )
+        self.assertEqual(profile["pendsv_utilization_percent"]["maximum"], 12.5)
+
+    def test_arm_runtime_profile_is_a_first_class_command(self) -> None:
+        parser = console.make_parser()
+        client = mock.Mock()
+
+        args = parser.parse_args(["arm-runtime-profile"])
+        console.arm_runtime_profile(client)
+
+        self.assertEqual(args.command, "arm-runtime-profile")
+        client.transact.assert_called_once_with(
+            console.COMMAND_ARM_RUNTIME_PROFILE
+        )
+
     def test_commissioning_status_reports_physical_voltage(self) -> None:
         body = console.STATUS_V3_BODY.pack(
             3,
@@ -1013,6 +1094,8 @@ class VelocityCaptureTests(unittest.TestCase):
                 "0.1",
                 "--trace-at-seconds",
                 "0.05",
+                "--profile-at-seconds",
+                "0.1",
                 "--loadcell-port",
                 "COM30",
                 "--loadcell-tare-samples",
@@ -1049,6 +1132,7 @@ class VelocityCaptureTests(unittest.TestCase):
         self.assertFalse(hasattr(align, "stop_after_seconds"))
         self.assertEqual(torque.stop_after_seconds, 0.1)
         self.assertEqual(torque.trace_at_seconds, 0.05)
+        self.assertEqual(torque.profile_at_seconds, 0.1)
         self.assertEqual(torque.loadcell_port, "COM30")
         self.assertEqual(torque.loadcell_tare_samples, 64)
         self.assertEqual(velocity.stop_after_seconds, 2.0)
@@ -1212,8 +1296,11 @@ class VelocityCaptureTests(unittest.TestCase):
             root = Path(temporary)
             args = capture_args(root)
             args.trace_at_seconds = 0.0
+            args.profile_at_seconds = 0.0
             arm = mock.Mock()
             read = mock.Mock(return_value=[current_trace_sample()])
+            arm_profile = mock.Mock()
+            read_profile = mock.Mock(return_value=runtime_profile_sample())
             patches = self.common_patches(
                 [
                     velocity_status("tracking"),
@@ -1229,6 +1316,12 @@ class VelocityCaptureTests(unittest.TestCase):
                 patches[5],
                 mock.patch.object(console, "arm_current_trace", arm),
                 mock.patch.object(console, "read_current_trace", read),
+                mock.patch.object(
+                    console, "arm_runtime_profile", arm_profile
+                ),
+                mock.patch.object(
+                    console, "query_runtime_profile", read_profile
+                ),
             ):
                 result = console._run_velocity_capture(
                     FakeClient(),
@@ -1241,6 +1334,8 @@ class VelocityCaptureTests(unittest.TestCase):
             self.assertEqual(result, 0)
             arm.assert_called_once()
             read.assert_called_once()
+            arm_profile.assert_called_once()
+            read_profile.assert_called_once()
             run_directory = next(root.iterdir())
             metadata = json.loads(
                 (run_directory / "metadata.json").read_text(encoding="utf-8")
@@ -1251,7 +1346,15 @@ class VelocityCaptureTests(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
             self.assertTrue(metadata["capture"]["trace_arm_sent"])
             self.assertEqual(metadata["capture"]["trace_sample_count"], 1)
+            self.assertTrue(metadata["capture"]["profile_arm_sent"])
+            self.assertEqual(
+                metadata["capture"][
+                    "runtime_profile_captured_release_count"
+                ],
+                256,
+            )
             self.assertEqual(rows[0]["pwm_preload_margin_us"], "7.5")
+            self.assertTrue((run_directory / "runtime_profile.json").exists())
 
     def test_ambiguous_start_error_still_sends_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1655,8 +1758,11 @@ class TorqueCaptureTests(unittest.TestCase):
             root = Path(temporary)
             args = torque_capture_args(root)
             args.trace_at_seconds = 0.0
+            args.profile_at_seconds = 0.0
             arm = mock.Mock()
             read = mock.Mock(return_value=[current_trace_sample()])
+            arm_profile = mock.Mock()
+            read_profile = mock.Mock(return_value=runtime_profile_sample())
             patches = self.common_patches(
                 [torque_status("holding"), torque_status("complete")]
             )
@@ -1669,6 +1775,12 @@ class TorqueCaptureTests(unittest.TestCase):
                 patches[5],
                 mock.patch.object(console, "arm_current_trace", arm),
                 mock.patch.object(console, "read_current_trace", read),
+                mock.patch.object(
+                    console, "arm_runtime_profile", arm_profile
+                ),
+                mock.patch.object(
+                    console, "query_runtime_profile", read_profile
+                ),
             ):
                 result = console._run_torque_capture(
                     self.torque_client(),
@@ -1680,6 +1792,8 @@ class TorqueCaptureTests(unittest.TestCase):
             self.assertEqual(result, 0)
             arm.assert_called_once()
             read.assert_called_once()
+            arm_profile.assert_called_once()
+            read_profile.assert_called_once()
             run_directory = next(root.iterdir())
             metadata = json.loads(
                 (run_directory / "metadata.json").read_text(encoding="utf-8")
@@ -1690,7 +1804,15 @@ class TorqueCaptureTests(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
             self.assertTrue(metadata["capture"]["trace_arm_sent"])
             self.assertEqual(metadata["capture"]["trace_sample_count"], 1)
+            self.assertTrue(metadata["capture"]["profile_arm_sent"])
+            self.assertEqual(
+                metadata["capture"][
+                    "runtime_profile_captured_release_count"
+                ],
+                256,
+            )
             self.assertEqual(rows[0]["pwm_preload_margin_us"], "7.5")
+            self.assertTrue((run_directory / "runtime_profile.json").exists())
 
     def test_ambiguous_start_error_still_sends_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

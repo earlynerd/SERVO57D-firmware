@@ -1,7 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.37.1 is the current source candidate and firmware 0.37.0 is
-the flashed baseline. The source
+Status: firmware 0.38.0 is the current source and flashed baseline. The source
 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
@@ -39,7 +38,7 @@ velocity, and torque deadline ordering.
 Firmware 0.31.0 adds an inactive-only current-gain rebuild: foreground
 establishes `ZERO`, validates a complete candidate, resets controller state,
 and publishes it before any later authority can start. Active fast control
-remains immutable. The current source candidate releases the four-byte MT6816
+remains immutable. The current source baseline releases the four-byte MT6816
 exchange every 250 us at an 8 MHz SPI clock with the established chip-select
 guards retained, optimizes the complete deferred estimator/control chain at
 `-O2` even in Debug, and uses the Cortex-M4F single-precision hardware through
@@ -50,6 +49,10 @@ validated in the fast step, leaves timing instrumentation dormant until an
 explicit trace arm, publishes compact rotor progress at 4 kHz and full
 controller state at 100 Hz or on transitions, and schedules foreground safety
 housekeeping at 1 ms. Immediate ISR/runtime fault shutdown is unchanged.
+Firmware 0.38.0 adds an explicitly armed 256-release aggregate profile around
+the 4 kHz PendSV chain and foreground housekeeping. Normal operation retains
+only profile-state checks; DWT reads and aggregate updates occur only inside
+the finite armed window.
 
 ## Goals
 
@@ -122,6 +125,28 @@ reference/measurement/output are stored in the same sample. No encoding,
 transport, allocation, or waiting occurs in either interrupt; the trace is read
 only after authority ends. The armed interval is 256 samples/12.8 ms and the
 fixed buffer occupies 8,192 bytes of SRAM1.
+
+Firmware 0.38.0 adds a separate bufferless aggregate profiler for 256 nominal
+4 kHz releases. It snapshots the pend marker at each PendSV entry, then totals
+and maximizes DWT cycles for pend latency, dispatch/copy, encoder decode,
+estimation, active controller/request work, publication, and complete PendSV
+execution. A separate foreground metric spans each due 1 kHz safety-
+housekeeping pass, and the PendSV record counts priority-2 current-loop
+completions that preempt it. A release with an incomplete or raced marker is
+counted and excluded from the stage denominators; the next valid pend marker is
+retained for its own release. The aggregate profile and 8,192-byte current
+trace may be armed together without resetting DWT or allocating another trace
+buffer.
+
+The accepted simultaneous +4 rev/s capture completed 256/256 releases. At
+64 MHz, pend-to-entry measured 185/6,385 average/maximum cycles
+(2.89/99.77 us), and complete PendSV measured 9,222/21,543 cycles
+(144.09/336.61 us), including an average 3.17 and maximum 7 higher-priority
+current-loop completions per PendSV execution. The same window measured
+94.95 us average active-control work and a 2.70 ms maximum foreground pass.
+This establishes one representative loaded timing baseline; stack high-water,
+other command/display/communications loads, and broader worst-case repetition
+remain acceptance work.
 
 Firmware 0.34.0 also makes the retained rotating-current diagnostic a native
 fast-loop reference source. Its phase accumulator and divide-free ramp DDA
@@ -291,7 +316,7 @@ added software-floating-point PI and reference-slew work to that PendSV release,
 and firmware 0.26.0 added position/profile work and passed mirrored
 ±0.25-revolution moves with captured 1000 us encoder intervals.
 
-The current source candidate replaces that operating point with a 4 kHz,
+The current source baseline replaces that operating point with a 4 kHz,
 250 us release and an 8 MHz four-byte SPI transaction while retaining the
 timer-owned chip-select guards and DMA/PendSV ownership. The complete deferred
 transport, decode, estimation, alignment, torque, velocity, position, PI, and
@@ -299,9 +324,10 @@ profile chain is optimized at `-O2` in Debug, and its floating-point outer
 control uses the hardware single-precision FPU through the `softfp` ABI. The
 4 kHz estimator uses a `0.03283179` velocity-filter alpha, and position requires
 200 settled observations to retain the existing 50 ms settle duration. The
-legacy 1 kHz results do not validate this candidate: worst-case PendSV duration,
-20 kHz current-ISR preemption, SPI/sample integrity, stack high-water use, and
-numerical equivalence remain hardware acceptance gates.
+legacy 1 kHz results do not validate this baseline. Firmware 0.38.0 now
+provides loaded PendSV duration and 20 kHz preemption evidence for one accepted
++4 rev/s condition; SPI signal correlation, repeated worst-case loads, stack
+high-water use, and numerical equivalence remain hardware acceptance gates.
 
 The 0.32.2 hot path skips repeated scans of the backend-owned configuration
 after start or reconfiguration has validated and frozen it. It still checks
@@ -311,10 +337,10 @@ deadline on every applicable pass. Disarmed operation also skips TIM2
 trigger/entry reads, DWT timing reads, and preload-margin acquisition; an
 explicit trace arm restores the complete timing record transaction-coherently.
 
-The user's initial 4 kHz observation is informal bench evidence only. Without a
-captured timing/fault record it does not qualify the new release rate, SPI
-integrity, deferred-chain WCET, preemption margin, estimator noise, or numerical
-behavior.
+The initial informal 4 kHz observation is superseded by the retained 0.38.0
+profile/current-trace capture for timing and preemption at one loaded condition.
+It still does not qualify SPI signal integrity, stack margin, every foreground
+load, estimator noise, or numerical behavior across the full operating range.
 
 ## Processor and cycle budget
 
@@ -631,7 +657,7 @@ and should be used only when that interruption is part of the test.
 
 The active 20 kHz phase-current loop remains fixed-point, with defined
 saturation and overflow behavior, and continues to pass its host vectors. The
-current source candidate enables the Cortex-M4F single-precision hardware for
+current source baseline enables the Cortex-M4F single-precision hardware for
 the deferred estimator, trajectory, and outer-control path while retaining the
 `softfp` calling convention. Higher-priority current, fault, and deadline
 handlers do not use floating point. Hardware acceptance must preserve the

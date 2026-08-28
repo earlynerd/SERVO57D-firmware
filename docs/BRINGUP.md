@@ -732,9 +732,18 @@ downloads the 256 samples to `current_trace.csv` beside the ordinary compact
 telemetry and metadata:
 
 ```powershell
-py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1
-py tools/mks57d_rs485.py --port COM14 velocity --rps 12 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1
+py tools/mks57d_rs485.py --port COM14 velocity --rps 8 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1 --profile-at-seconds 1
+py tools/mks57d_rs485.py --port COM14 velocity --rps 12 --current-limit-ma 3000 --duration-ms 3000 --interval 0.02 --trace-at-seconds 1 --profile-at-seconds 1
 ```
+
+Firmware 0.38.0 and newer accepts the optional profile arm shown above and
+writes `runtime_profile.json` beside the trace. Require 256 captured releases,
+zero incomplete releases, plausible pend-to-entry ordering, and retain each
+stage's average/maximum cycles plus current-loop preemption and foreground
+maxima. A maximum total PendSV duration above the nominal 250 us period is
+evidence of catch-up pressure, not by itself a guardian fault; correlate it
+with encoder intervals, consecutive current samples, missed PWM updates, and
+the terminal fault/`ZERO` state.
 
 Stop on any abnormal tracking, supply, mechanical, thermal, reset, panic, or
 fault evidence. For each accepted burst record the minimum/maximum TIM2 ADC

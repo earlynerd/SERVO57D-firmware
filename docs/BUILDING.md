@@ -171,8 +171,8 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.37.1 / protocol 1.18 is the current source candidate; firmware
-0.37.0 / protocol 1.18 is the flashed evaluation build. The current
+Firmware 0.38.0 / protocol 1.19 is the current source and flashed evaluation
+build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -476,3 +476,12 @@ SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Generated
 code places telemetry-only aligned A/B reconstruction after the PWM-stage
 timestamp and only on the armed-trace branch. Hardware flash and motion/timing
 regression remain open.
+
+Firmware 0.38.0 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+65,716/60,428 bytes Flash and 11,824 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. J-Link
+independently verified the Debug image. A simultaneous aggregate profile and
+current trace completed a bounded +4 rev/s / 606 mA run with all 256 deferred
+releases complete, 256 consecutive current samples, zero missed updates or
+faults, and normal `ZERO` release.

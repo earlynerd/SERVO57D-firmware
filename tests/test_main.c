@@ -34,6 +34,7 @@
 #include "mks57d/phase_current_reference.h"
 #include "mks57d/position_controller.h"
 #include "mks57d/rotating_current_test.h"
+#include "mks57d/runtime_profile.h"
 #include "mks57d/ssd1306.h"
 #include "mks57d/step_direction.h"
 #include "mks57d/timebase_reconcile.h"
@@ -84,6 +85,7 @@ typedef struct
     command_commissioning_status_t status;
     command_encoder_status_t encoder_status;
     command_current_trace_sample_t current_trace;
+    command_runtime_profile_t runtime_profile;
     command_alignment_status_t alignment_status;
     command_configuration_status_t configuration_status;
     command_aligned_torque_status_t aligned_torque_status;
@@ -102,6 +104,8 @@ typedef struct
     size_t encoder_status_calls;
     size_t current_trace_calls;
     size_t current_trace_arm_calls;
+    size_t runtime_profile_calls;
+    size_t runtime_profile_arm_calls;
     size_t alignment_start_calls;
     size_t alignment_status_calls;
     size_t drive_stop_calls;
@@ -495,6 +499,25 @@ static command_status_t mock_commissioning_arm_current_trace(void* context)
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_commissioning_get_runtime_profile(
+    void* context,
+    command_runtime_profile_t* profile)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->runtime_profile_calls;
+    *profile = mock->runtime_profile;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t mock_commissioning_arm_runtime_profile(void* context)
+{
+    mock_commissioning_t* mock = context;
+
+    ++mock->runtime_profile_arm_calls;
+    return COMMAND_STATUS_OK;
+}
+
 static command_status_t mock_alignment_start(
     void* context,
     uint16_t alignment_current_counts)
@@ -713,6 +736,8 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_encoder_status = mock_commissioning_get_encoder_status,
             .get_current_trace = mock_commissioning_get_current_trace,
             .arm_current_trace = mock_commissioning_arm_current_trace,
+            .get_runtime_profile = mock_commissioning_get_runtime_profile,
+            .arm_runtime_profile = mock_commissioning_arm_runtime_profile,
         },
         .alignment = {
             .context = commissioning,
@@ -1753,7 +1778,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
-    EXPECT_TRUE(protocol_minor == 18u);
+    EXPECT_TRUE(protocol_minor == 19u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -1880,6 +1905,25 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .dma_to_pwm_stage_cycles = 0x0456u,
             .dma_to_trace_record_cycles = 0x0567u,
             .pwm_preload_margin_ticks = 0x0678u,
+        },
+        .runtime_profile = {
+            .schema_version = 1u,
+            .state = RUNTIME_PROFILE_STATE_COMPLETE,
+            .captured_release_count = 256u,
+            .incomplete_release_count = 2u,
+            .foreground_sample_count = 64u,
+            .current_loop_completion_count = 0x01020304u,
+            .maximum_current_loop_completions_per_release = 2u,
+            .metrics = {
+                {0x11121314u, 0x21222324u},
+                {0x31323334u, 0x41424344u},
+                {0x51525354u, 0x61626364u},
+                {0x71727374u, 0x81828384u},
+                {0x91929394u, 0xA1A2A3A4u},
+                {0xB1B2B3B4u, 0xC1C2C3C4u},
+                {0xD1D2D3D4u, 0xE1E2E3E4u},
+                {0xF1F2F3F4u, 0x01020304u},
+            },
         },
         .alignment_status = {
             .schema_version = 1u,
@@ -2361,6 +2405,55 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.current_trace_arm_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 1u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        28u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_GET_RUNTIME_PROFILE,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.runtime_profile_calls == 1u);
+    EXPECT_TRUE(response.payload_length == 79u);
+    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(response.payload[1] == 1u);
+    EXPECT_TRUE(response.payload[2] == RUNTIME_PROFILE_STATE_COMPLETE);
+    EXPECT_TRUE(response.payload[3] == 0x01u);
+    EXPECT_TRUE(response.payload[4] == 0x00u);
+    EXPECT_TRUE(response.payload[6] == 2u);
+    EXPECT_TRUE(response.payload[8] == 64u);
+    EXPECT_TRUE(response.payload[9] == 0x01u);
+    EXPECT_TRUE(response.payload[12] == 0x04u);
+    EXPECT_TRUE(response.payload[14] == 2u);
+    EXPECT_TRUE(response.payload[15] == 0x11u);
+    EXPECT_TRUE(response.payload[22] == 0x24u);
+    EXPECT_TRUE(response.payload[71] == 0xF1u);
+    EXPECT_TRUE(response.payload[78] == 0x04u);
+
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
+        29u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_ARM_RUNTIME_PROFILE,
+        NULL,
+        0u,
+        wire,
+        sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes,
+                    transmit.length,
+                    &response) == NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(commissioning.runtime_profile_arm_calls == 1u);
     EXPECT_TRUE(response.payload_length == 1u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
 
@@ -5415,6 +5508,126 @@ static void test_aligned_torque_tracking_target_reuses_bounded_actuator(void)
     EXPECT_TRUE(!aligned_torque_controller_set_target(&controller, 1));
 }
 
+static void test_runtime_profile_aggregates_explicit_window(void)
+{
+    runtime_profile_snapshot_t snapshot;
+    uint32_t release;
+
+    EXPECT_TRUE(runtime_profile_arm());
+    EXPECT_TRUE(runtime_profile_is_armed());
+    EXPECT_TRUE(!runtime_profile_arm());
+    EXPECT_TRUE(!runtime_profile_get_snapshot(&snapshot));
+
+    for (release = 0u;
+         release < RUNTIME_PROFILE_TARGET_RELEASE_COUNT;
+         ++release)
+    {
+        const uint32_t base = 1000u + release * 1000u;
+        const uint32_t current_start = release * 4u;
+
+        runtime_profile_deferred_pended(base);
+        EXPECT_TRUE(runtime_profile_pendsv_begin(
+            base + 10u, current_start));
+        if (release == 0u)
+        {
+            runtime_profile_deferred_pended(base + 1000u);
+        }
+        EXPECT_TRUE(runtime_profile_release_active());
+        runtime_profile_callback_begin(base + 30u);
+        runtime_profile_encoder_decode_complete(base + 60u);
+        runtime_profile_estimator_complete(base + 100u);
+        runtime_profile_control_complete(base + 150u);
+        runtime_profile_callback_complete(base + 210u);
+        if ((release % 4u) == 0u)
+        {
+            runtime_profile_foreground_complete(base, base + 80u);
+        }
+        runtime_profile_pendsv_complete(
+            base + 280u, current_start + 1u);
+    }
+
+    EXPECT_TRUE(!runtime_profile_is_armed());
+    EXPECT_TRUE(runtime_profile_get_snapshot(&snapshot));
+    EXPECT_TRUE(snapshot.schema_version == RUNTIME_PROFILE_SCHEMA_VERSION);
+    EXPECT_TRUE(snapshot.state == RUNTIME_PROFILE_STATE_COMPLETE);
+    EXPECT_TRUE(snapshot.captured_release_count ==
+                RUNTIME_PROFILE_TARGET_RELEASE_COUNT);
+    EXPECT_TRUE(snapshot.incomplete_release_count == 0u);
+    EXPECT_TRUE(snapshot.foreground_sample_count == 64u);
+    EXPECT_TRUE(snapshot.current_loop_completion_count ==
+                RUNTIME_PROFILE_TARGET_RELEASE_COUNT);
+    EXPECT_TRUE(snapshot.maximum_current_loop_completions_per_release == 1u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PEND_TO_ENTRY].
+                    total_cycles == 2560u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PEND_TO_ENTRY].
+                    maximum_cycles == 10u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_DISPATCH].
+                    total_cycles == 5120u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_ENCODER_DECODE].
+                    total_cycles == 7680u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_ESTIMATOR].
+                    total_cycles == 10240u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_CONTROL].
+                    total_cycles == 12800u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PUBLICATION].
+                    total_cycles == 15360u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PENDSV_TOTAL].
+                    total_cycles == 69120u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_FOREGROUND].
+                    total_cycles == 5120u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_FOREGROUND].
+                    maximum_cycles == 80u);
+}
+
+static void test_runtime_profile_rejects_future_pend_marker_race(void)
+{
+    runtime_profile_snapshot_t snapshot;
+    uint16_t release;
+
+    EXPECT_TRUE(runtime_profile_arm());
+    runtime_profile_deferred_pended(200u);
+    EXPECT_TRUE(runtime_profile_pendsv_begin(100u, 0u));
+    runtime_profile_callback_begin(110u);
+    runtime_profile_encoder_decode_complete(120u);
+    runtime_profile_estimator_complete(130u);
+    runtime_profile_control_complete(140u);
+    runtime_profile_callback_complete(150u);
+    runtime_profile_pendsv_complete(170u, 1u);
+
+    EXPECT_TRUE(runtime_profile_pendsv_begin(210u, 1u));
+    runtime_profile_callback_begin(230u);
+    runtime_profile_encoder_decode_complete(260u);
+    runtime_profile_estimator_complete(300u);
+    runtime_profile_control_complete(350u);
+    runtime_profile_callback_complete(410u);
+    runtime_profile_pendsv_complete(490u, 2u);
+
+    for (release = 2u;
+         release < RUNTIME_PROFILE_TARGET_RELEASE_COUNT;
+         ++release)
+    {
+        const uint32_t base = 1000u + (uint32_t)release * 1000u;
+
+        runtime_profile_deferred_pended(base);
+        EXPECT_TRUE(runtime_profile_pendsv_begin(base + 10u, release));
+        runtime_profile_callback_begin(base + 30u);
+        runtime_profile_encoder_decode_complete(base + 60u);
+        runtime_profile_estimator_complete(base + 100u);
+        runtime_profile_control_complete(base + 150u);
+        runtime_profile_callback_complete(base + 210u);
+        runtime_profile_pendsv_complete(base + 280u, release + 1u);
+    }
+
+    EXPECT_TRUE(runtime_profile_get_snapshot(&snapshot));
+    EXPECT_TRUE(snapshot.captured_release_count ==
+                RUNTIME_PROFILE_TARGET_RELEASE_COUNT);
+    EXPECT_TRUE(snapshot.incomplete_release_count == 1u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PEND_TO_ENTRY].
+                    total_cycles == 2550u);
+    EXPECT_TRUE(snapshot.metrics[RUNTIME_PROFILE_METRIC_PEND_TO_ENTRY].
+                    maximum_cycles == 10u);
+}
+
 int main(void)
 {
     test_control_math_shared_saturation_semantics();
@@ -5465,6 +5678,8 @@ int main(void)
     test_native_protocol_suppresses_foreign_broadcast_and_response();
     test_native_protocol_returns_bounded_command_errors();
     test_native_protocol_counts_transport_rejection();
+    test_runtime_profile_aggregates_explicit_window();
+    test_runtime_profile_rejects_future_pend_marker_race();
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_encoder_liveness_requires_fresh_progress();

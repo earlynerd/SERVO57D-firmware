@@ -63,6 +63,7 @@ set(PROJECT_SOURCES
     src/platform/tim3_bridge_pwm.c
     src/platform/interrupt_priority.c
     src/platform/panic.c
+    src/platform/runtime_profile.c
     src/platform/runtime.c
     src/platform/system.c
     src/platform/timebase.c

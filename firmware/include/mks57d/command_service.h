@@ -24,6 +24,8 @@ typedef enum
     COMMAND_OPERATION_GET_ENCODER_STATUS,
     COMMAND_OPERATION_GET_CURRENT_TRACE,
     COMMAND_OPERATION_ARM_CURRENT_TRACE,
+    COMMAND_OPERATION_GET_RUNTIME_PROFILE,
+    COMMAND_OPERATION_ARM_RUNTIME_PROFILE,
     COMMAND_OPERATION_START_ALIGNMENT,
     COMMAND_OPERATION_GET_ALIGNMENT_STATUS,
     COMMAND_OPERATION_STOP_DRIVE,
@@ -212,6 +214,30 @@ typedef struct
     uint16_t dma_to_trace_record_cycles;
     uint16_t pwm_preload_margin_ticks;
 } command_current_trace_sample_t;
+
+enum
+{
+    COMMAND_RUNTIME_PROFILE_METRIC_COUNT = 8u
+};
+
+typedef struct
+{
+    uint32_t total_cycles;
+    uint32_t maximum_cycles;
+} command_runtime_profile_metric_t;
+
+typedef struct
+{
+    uint8_t schema_version;
+    uint8_t state;
+    uint16_t captured_release_count;
+    uint16_t incomplete_release_count;
+    uint16_t foreground_sample_count;
+    uint32_t current_loop_completion_count;
+    uint16_t maximum_current_loop_completions_per_release;
+    command_runtime_profile_metric_t
+        metrics[COMMAND_RUNTIME_PROFILE_METRIC_COUNT];
+} command_runtime_profile_t;
 
 enum
 {
@@ -430,6 +456,11 @@ typedef command_status_t (*command_commissioning_get_current_trace_fn)(
     command_current_trace_sample_t* sample);
 typedef command_status_t (*command_commissioning_arm_current_trace_fn)(
     void* context);
+typedef command_status_t (*command_commissioning_get_runtime_profile_fn)(
+    void* context,
+    command_runtime_profile_t* profile);
+typedef command_status_t (*command_commissioning_arm_runtime_profile_fn)(
+    void* context);
 typedef command_status_t (*command_alignment_start_fn)(
     void* context,
     uint16_t alignment_current_counts);
@@ -486,6 +517,8 @@ typedef struct
     command_commissioning_get_encoder_status_fn get_encoder_status;
     command_commissioning_get_current_trace_fn get_current_trace;
     command_commissioning_arm_current_trace_fn arm_current_trace;
+    command_commissioning_get_runtime_profile_fn get_runtime_profile;
+    command_commissioning_arm_runtime_profile_fn arm_runtime_profile;
 } command_commissioning_api_t;
 
 typedef struct
@@ -569,6 +602,7 @@ typedef enum
     COMMAND_RESPONSE_BOOT_STATUS,
     COMMAND_RESPONSE_ENCODER_STATUS,
     COMMAND_RESPONSE_CURRENT_TRACE,
+    COMMAND_RESPONSE_RUNTIME_PROFILE,
     COMMAND_RESPONSE_ALIGNMENT_STATUS,
     COMMAND_RESPONSE_CONFIGURATION_STATUS,
     COMMAND_RESPONSE_ALIGNED_TORQUE_STATUS,
@@ -607,6 +641,7 @@ typedef struct
         command_boot_status_t boot_status;
         command_encoder_status_t encoder_status;
         command_current_trace_sample_t current_trace;
+        command_runtime_profile_t runtime_profile;
         command_alignment_status_t alignment_status;
         command_configuration_status_t configuration_status;
         command_aligned_torque_status_t aligned_torque_status;

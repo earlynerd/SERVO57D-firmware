@@ -9,7 +9,7 @@ Manufacturer executables and archives belong under ignored `vendor/local/`, not 
 The motor tools below are product service and engineering-diagnostic tools, not
 an alternate commissioning firmware stack. `motor_test.py`, the identity/status/
 encoder/alignment/torque/velocity/position/STOP portions of `mks57d_rs485.py`, the
-current trace, and both analyzers
+current trace, aggregate runtime profile, and both analyzers
 are retained because they provide repeatable acceptance, tuning, and fault
 evidence. Current-test wire names from native protocol 1.3 remain compatibility
 labels; START is now a diagnostic request to the product drive supervisor and
@@ -128,6 +128,8 @@ py tools/mks57d_rs485.py --port COM14 status
 py tools/mks57d_rs485.py --port COM14 configure --current-ma 303 --frequency-hz 5
 py tools/mks57d_rs485.py --port COM14 run --leg A1 --ramp-duration-ms 1000 --duration-ms 3000 --interval 0.1
 py tools/mks57d_rs485.py --port COM14 trace --output scratch/current-trace.jsonl
+py tools/mks57d_rs485.py --port COM14 arm-runtime-profile
+py tools/mks57d_rs485.py --port COM14 runtime-profile --output scratch/runtime-profile.json
 py tools/mks57d_rs485.py --port COM14 stop
 py tools/mks57d_rs485.py --port COM14 clear-faults
 ```
@@ -175,6 +177,11 @@ sends generic STOP and finalizes the directory. `--stop-after-seconds SECONDS`
 sends a deterministic generic STOP over the same active connection, and
 `--trace-at-seconds SECONDS` re-arms the 256-sample one-shot during torque and
 writes normalized `current_trace.csv` after authority ends.
+On firmware 0.38.0 / protocol 1.19, `--profile-at-seconds SECONDS` also arms a
+256-release aggregate profile and writes `runtime_profile.json`. The profile
+reports average/maximum pend latency, deferred dispatch/copy, encoder decode,
+estimator, active-control, publication, total PendSV, foreground work, and
+higher-priority current-loop completions. It may run beside the current trace.
 
 Pass `--loadcell-port COM30` to coordinate the passive RP2040/NAU7802
 instrument with the same torque run. The CLI opens the second USB connection,
@@ -249,7 +256,13 @@ motion and writes normalized `current_trace.csv` after authority ends. It
 contains A/B tracking, predicted phase/age, 32 MHz carrier-timer trigger and
 ADC/DMA timing, 64 MHz DWT ISR timing, and PWM preload margin. No trace bytes
 are transported while the backend is active; `arm-trace` exposes the same
-active-only operation for specialized clients. The evaluation envelope is ±16 rev/s (±960 RPM), a caller-selected
+active-only operation for specialized clients.
+On firmware 0.38.0 / protocol 1.19, `--profile-at-seconds SECONDS` arms the
+bufferless 256-release aggregate profile during motion and retains
+`runtime_profile.json` in the same run directory. Standalone clients can use
+`arm-runtime-profile`, wait at least 64 ms of healthy 4 kHz releases, then use
+`runtime-profile`; GET remains unavailable until the finite window completes.
+The evaluation envelope is ±16 rev/s (±960 RPM), a caller-selected
 positive reference slew through 256 rev/s², and at most 495 counts (about
 2.999 A nominal). The host and legacy-request default is 16 rev/s². The independent
 observed-speed shutdown remains 20 rev/s. Positive-direction 0.27.1 captures

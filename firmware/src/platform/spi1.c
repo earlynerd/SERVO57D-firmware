@@ -5,7 +5,10 @@
 #include <stdint.h>
 
 #include "mks57d/dma_channels.h"
+#include "mks57d/current_loop_backend.h"
+#include "mks57d/cycle_counter.h"
 #include "mks57d/interrupt_priority.h"
+#include "mks57d/runtime_profile.h"
 #include "mks57d/timebase.h"
 #include "n32l40x.h"
 
@@ -215,6 +218,10 @@ static void periodic_publish(spi_status_t status, uint32_t timestamp_us)
     s_deferred_timestamp_us = timestamp_us;
     __DMB();
     s_deferred_pending = 1u;
+    if (runtime_profile_is_armed())
+    {
+        runtime_profile_deferred_pended(cycle_counter_read());
+    }
     SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 
 }
@@ -570,10 +577,17 @@ void PendSV_Handler(void)
     spi_status_t status;
     uint32_t timestamp_us;
     size_t index;
+    bool profile_active = false;
 
     if (s_deferred_pending == 0u)
     {
         return;
+    }
+    if (runtime_profile_is_armed())
+    {
+        profile_active = runtime_profile_pendsv_begin(
+            cycle_counter_read(),
+            current_loop_backend_sample_count());
     }
     status = s_deferred_status;
     timestamp_us = s_deferred_timestamp_us;
@@ -587,10 +601,20 @@ void PendSV_Handler(void)
     s_deferred_pending = 0u;
     if (callback != NULL)
     {
+        if (profile_active)
+        {
+            runtime_profile_callback_begin(cycle_counter_read());
+        }
         callback(callback_context,
                  status,
                  receive,
                  s_periodic_length,
                  timestamp_us);
+    }
+    if (profile_active)
+    {
+        runtime_profile_pendsv_complete(
+            cycle_counter_read(),
+            current_loop_backend_sample_count());
     }
 }

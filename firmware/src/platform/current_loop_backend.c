@@ -969,6 +969,11 @@ void current_loop_backend_get_snapshot(
     control_critical_exit(previous);
 }
 
+uint32_t current_loop_backend_sample_count(void)
+{
+    return s_sample_count;
+}
+
 uint16_t current_loop_backend_trace_count(void)
 {
     uint32_t previous = control_critical_enter();

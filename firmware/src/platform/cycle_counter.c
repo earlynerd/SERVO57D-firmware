@@ -12,6 +12,11 @@ bool cycle_counter_init(void)
         return false;
     }
 
+    if ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0u)
+    {
+        return true;
+    }
+
     DWT->CYCCNT = 0u;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     __DSB();
