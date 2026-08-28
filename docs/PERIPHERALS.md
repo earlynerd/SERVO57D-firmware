@@ -32,8 +32,17 @@ Firmware holds PB2 low from passive initialization, then performs
 a bounded reset and initialization at address `0x3C`. The original 4 MHz PCLK
 and current 16 MHz PCLK both select dividers producing approximately 333.3 kHz.
 The fitted panel has drawn the expected pixels successfully. The transport has
-sustained 50 Hz two-page updates; firmware 0.19.0 uses a 5 Hz current-loop
-display. A display failure is non-fatal and stops further updates until reset.
+sustained 50 Hz two-page updates. Firmware 0.38.6 normally shows the coherent
+boot-session unwrapped mechanical position and filtered velocity as
+`P+123.456` revolutions and `V-012.345` rev/s. Foreground alternates one
+72-byte page every 100 ms, including during motion, so each row updates at
+5 Hz and each nominal 333.3 kHz wire burst is about 2.3 ms. Current-loop and
+ADC failures retain display priority. A runtime transport error closes only
+the failed I2C sub-transaction: remaining chunks and the next scheduled page
+are still attempted, while `s_display_health` retains status/error counters.
+Runtime errors never suspend traffic or reset the panel. Bounded idle-only
+reinitialization remains available only after boot initialization failure.
+Display failure remains non-fatal and never gates drive readiness.
 
 Display refresh belongs in foreground housekeeping. It must not run from
 SysTick, a control ISR, or any safety path.

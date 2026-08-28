@@ -509,3 +509,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** hot-loop-code-generation
 - **Recently-touched?** no — the full publication predates the raw LED; firmware 0.38.1 made the timing state directly visible.
 - **Status:** Resolved on hardware. After flashing 0.38.2, the user reports no blue light during motion, where 0.38.1 had emitted rapid low-duty deadline pulses. A retained numerical before/after profile remains useful but no longer blocks the visual timing gate.
+
+## 2026-08-27 — One OLED write error permanently froze live motion display
+
+- **Observation:** Firmware 0.38.4 displayed live unwrapped position/velocity for one or two moves, then froze and never updated again while later moves still ran.
+- **Root cause:** `firmware/src/main.c:3950-3959` in firmware 0.38.4 set `display_ready=false` after any single non-OK page write, while the only update block was guarded by that same one-way flag and provided no retry or reinitialization path. The initiating I2C status was discarded and remains unmeasured.
+- **Fix:** Firmware 0.38.5 retains the failed page for one transient retry; two consecutive errors suspend traffic, retain error/status counters in `s_display_health`, and permit bounded I2C/panel reinitialization only after bridge authority is absent, retrying persistent failures at one-second intervals.
+- **Class:** one-way-peripheral-error-latch
+- **Recently-touched?** yes — firmware 0.38.4 newly exercised the pre-existing terminal error branch during motion.
+- **Status:** Native/Python tests and Debug/Release Arm builds pass; flash and repeated-motion bench confirmation remain open.
+
+## 2026-08-28 — Runtime OLED errors were over-managed as display state failures
+
+- **Observation:** The live display should tolerate a missing ACK or other bounded runtime transport error as a dropped frame and continue sending later data, rather than suspend or reinitialize the panel.
+- **Root cause:** Firmware 0.38.5 `display_health_record_write_failure()` converted two runtime errors into `ready=false`, while `ssd1306_write_pages()` returned after the first failed sub-transaction and foreground advanced the page only on success. The initiating hardware error remains unmeasured.
+- **Fix:** Firmware 0.38.6 closes the failed bus transaction, attempts every remaining page chunk, retains the first status/counters, advances the alternating page after each attempted render, and reserves idle-only recovery for boot initialization failure.
+- **Class:** over-eager-peripheral-error-state
+- **Recently-touched?** yes — the recovery/suspension policy was introduced while correcting the 0.38.4 terminal latch.
+- **Status:** Native/Python tests and Debug/Release Arm builds pass; repeated-motion hardware confirmation remains open.

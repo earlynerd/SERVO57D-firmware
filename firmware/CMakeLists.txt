@@ -49,8 +49,10 @@ set(PROJECT_SOURCES
     src/control/velocity_controller.c
     src/drivers/adc_calibration.c
     src/drivers/adc_display.c
+    src/drivers/display_health.c
     src/drivers/dma_ring.c
     src/drivers/mt6816.c
+    src/drivers/rotor_display.c
     src/drivers/ssd1306.c
     src/drivers/user_inputs.c
     src/platform/adc1.c

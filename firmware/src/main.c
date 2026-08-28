@@ -20,6 +20,7 @@
 #include "mks57d/control_math.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/cycle_counter.h"
+#include "mks57d/display_health.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/encoder_liveness.h"
 #include "mks57d/i2c1.h"
@@ -32,6 +33,7 @@
 #include "mks57d/position_controller.h"
 #include "mks57d/rs485.h"
 #include "mks57d/rotor_control_runtime.h"
+#include "mks57d/rotor_display.h"
 #include "mks57d/runtime_profile.h"
 #include "mks57d/spi1.h"
 #include "mks57d/ssd1306.h"
@@ -68,6 +70,12 @@ enum
 };
 
 static uint8_t s_display_frame[DISPLAY_FRAME_BYTES];
+static display_health_t s_display_health;
+_Static_assert((uint32_t)ROTOR_DISPLAY_WIDTH == (uint32_t)DISPLAY_WIDTH,
+               "rotor display width must match panel width");
+_Static_assert((uint32_t)ROTOR_DISPLAY_FRAME_BYTES <=
+                   (uint32_t)DISPLAY_FRAME_BYTES,
+               "rotor display frame must fit the panel buffer");
 static rotor_control_runtime_t rotor_control_runtime;
 static rotor_control_snapshot_t rotor_control_snapshot;
 static rotor_control_progress_snapshot_t rotor_control_progress_snapshot;
@@ -2132,45 +2140,45 @@ static void wait_milliseconds(uint32_t duration)
     }
 }
 
-static bool display_initialize(i2c_bus_t* bus)
+static i2c_status_t display_initialize(i2c_bus_t* bus)
 {
     enum
     {
         DISPLAY_RESET_LOW_MS = 1u,
         DISPLAY_RESET_RECOVERY_MS = 10u
     };
-    bool i2c_ready;
+    i2c_status_t status;
 
     if (bus == NULL)
     {
-        return false;
+        return I2C_STATUS_INVALID_ARGUMENT;
     }
 
     board_display_reset_assert();
-    i2c_ready = i2c1_init(platform_apb1_clock_hz());
+    status = i2c1_init(platform_apb1_clock_hz()) ? I2C_STATUS_OK :
+                                                   I2C_STATUS_NOT_READY;
     wait_milliseconds(DISPLAY_RESET_LOW_MS);
     board_display_reset_release();
     wait_milliseconds(DISPLAY_RESET_RECOVERY_MS);
 
-    if (!i2c_ready)
+    if (status != I2C_STATUS_OK)
     {
-        return false;
+        return status;
     }
 
     *bus = i2c1_bus();
     memset(s_display_frame, 0, sizeof(s_display_frame));
-    if (ssd1306_initialize(
-            bus,
-            &SSD1306_PANEL_SERVO57D) != I2C_STATUS_OK)
+    status = ssd1306_initialize(bus, &SSD1306_PANEL_SERVO57D);
+    if (status != I2C_STATUS_OK)
     {
-        return false;
+        return status;
     }
 
     return ssd1306_write_frame(
-               bus,
-               &SSD1306_PANEL_SERVO57D,
-               s_display_frame,
-               sizeof(s_display_frame)) == I2C_STATUS_OK;
+        bus,
+        &SSD1306_PANEL_SERVO57D,
+        s_display_frame,
+        sizeof(s_display_frame));
 }
 
 static void update_rs485_diagnostics(diagnostics_rs485_t* diagnostics)
@@ -2305,7 +2313,12 @@ int main(void)
         INPUT_SAMPLE_PERIOD_MS = 10u,
         /* Bound safety-service latency without following every ADC wakeup. */
         FOREGROUND_SAFETY_PERIOD_MS = 1u,
-        DISPLAY_REFRESH_PERIOD_MS = 200u,
+        /* Alternate one 72-byte OLED page every 100 ms. Each P/V row updates
+         * at 5 Hz while an individual polling burst remains bounded to half
+         * of the former two-page foreground transaction. */
+        DISPLAY_PAGE_REFRESH_PERIOD_MS = 100u,
+        DISPLAY_ERROR_REFRESH_PERIOD_MS = 200u,
+        DISPLAY_RECOVERY_RETRY_PERIOD_MS = 1000u,
         RS485_FOREGROUND_DRAIN_BYTES = 64u,
         /*
          * Rated-envelope evaluation point for the attached 3 A motor:
@@ -2617,15 +2630,13 @@ int main(void)
     };
     current_loop_backend_snapshot_t current_loop_snapshot = {0};
     i2c_bus_t display_bus = {0};
-    bool display_ready = false;
+    i2c_status_t display_status = I2C_STATUS_NOT_READY;
     bool adc_ready = false;
     bool adc_snapshot_valid = false;
     bool vbus_snapshot_valid = false;
     bool adc_calibration_ready = false;
     bool current_loop_initialized = false;
     uint16_t current_loop_fault_code = 0u;
-    int32_t current_a_milliamperes = 0;
-    int32_t current_b_milliamperes = 0;
     adc1_status_t adc_status = ADC1_STATUS_NOT_READY;
     bool bridge_ready = false;
     bool encoder_spi_ready = false;
@@ -2645,6 +2656,7 @@ int main(void)
     uint32_t next_adc_sample;
     uint32_t next_input_sample;
     uint32_t next_display_refresh;
+    uint8_t next_rotor_display_page = 0u;
     uint32_t input_levels = USER_INPUT_MASK;
     uint32_t raw_input_levels = USER_INPUT_MASK;
     user_inputs_debouncer_t input_debouncer = {0};
@@ -2925,7 +2937,16 @@ int main(void)
                         (uint32_t)watchdog_status,
                         &self_test);
 
-    display_ready = display_initialize(&display_bus);
+    display_status = display_initialize(&display_bus);
+    if (!display_health_init(
+            &s_display_health,
+            display_status == I2C_STATUS_OK,
+            (uint32_t)display_status,
+            timebase_millis(),
+            DISPLAY_RECOVERY_RETRY_PERIOD_MS))
+    {
+        platform_panic(PANIC_INTERNAL_INVARIANT);
+    }
     adc_status = adc1_init_passive(SystemCoreClock);
     adc_ready = adc_status == ADC1_STATUS_OK;
     if (!adc_zero_calibrator_init(&adc_zero_calibrator,
@@ -3692,16 +3713,6 @@ int main(void)
                     current_loop_initialized = true;
                     bridge_ready = true;
                 }
-                if (adc_calibration_ready &&
-                    !adc_current_pair_convert_milliamperes(
-                        adc_snapshot.current_b_raw,
-                        adc_snapshot.current_a_raw,
-                        &adc_calibration,
-                        &current_b_milliamperes,
-                        &current_a_milliamperes))
-                {
-                    platform_panic(PANIC_INTERNAL_INVARIANT);
-                }
             }
             else if ((adc_status != ADC1_STATUS_NO_SAMPLE) &&
                      (adc_status != ADC1_STATUS_BUSY))
@@ -3899,11 +3910,37 @@ int main(void)
                                 &self_test);
         }
 
-        if (display_ready &&
-            !app_supervisor_bridge_authorized(&drive_supervisor) &&
+        if (display_health_recovery_due(
+                &s_display_health,
+                app_supervisor_bridge_authorized(&drive_supervisor),
+                now))
+        {
+            uint32_t recovery_now;
+
+            display_status = display_initialize(&display_bus);
+            recovery_now = timebase_millis();
+            display_health_record_recovery_result(
+                &s_display_health,
+                display_status == I2C_STATUS_OK,
+                (uint32_t)display_status,
+                recovery_now,
+                DISPLAY_RECOVERY_RETRY_PERIOD_MS);
+            if (display_status == I2C_STATUS_OK)
+            {
+                next_rotor_display_page = 0u;
+                next_display_refresh = recovery_now;
+            }
+        }
+
+        if (display_health_is_ready(&s_display_health) &&
             ((int32_t)(now - next_display_refresh) >= 0))
         {
             bool rendered;
+            bool rotor_view = false;
+            uint8_t first_page = ADC_DISPLAY_START_PAGE;
+            uint8_t page_count = ADC_DISPLAY_PAGE_COUNT;
+            const uint8_t* frame = s_display_frame;
+            size_t frame_length = ADC_DISPLAY_FRAME_BYTES;
 
             if (current_loop_fault_code != 0u)
             {
@@ -3925,26 +3962,56 @@ int main(void)
             }
             else
             {
-                rendered = adc_display_render_currents_milliamperes(
+                rendered = rotor_display_render(
                     s_display_frame,
-                    ADC_DISPLAY_FRAME_BYTES,
-                    current_a_milliamperes,
-                    current_b_milliamperes,
-                    adc_snapshot_valid && adc_calibration_ready);
+                    ROTOR_DISPLAY_FRAME_BYTES,
+                    angle_tracker.position_revolutions,
+                    angle_tracker.velocity_revolutions_per_second,
+                    encoder_control_ready(
+                        &encoder_diagnostics,
+                        &angle_tracker,
+                        encoder_feedback_live,
+                        estimator_fault_flags));
+                rotor_view = true;
+                first_page = (uint8_t)(ROTOR_DISPLAY_START_PAGE +
+                                       next_rotor_display_page);
+                page_count = 1u;
+                frame = &s_display_frame[
+                    next_rotor_display_page * ROTOR_DISPLAY_WIDTH];
+                frame_length = ROTOR_DISPLAY_WIDTH;
             }
 
-            if (!rendered ||
-                (ssd1306_write_pages(
-                     &display_bus,
-                     &SSD1306_PANEL_SERVO57D,
-                     ADC_DISPLAY_START_PAGE,
-                     ADC_DISPLAY_PAGE_COUNT,
-                     s_display_frame,
-                     ADC_DISPLAY_FRAME_BYTES) != I2C_STATUS_OK))
+            display_status = rendered ?
+                ssd1306_write_pages(
+                    &display_bus,
+                    &SSD1306_PANEL_SERVO57D,
+                    first_page,
+                    page_count,
+                    frame,
+                    frame_length) :
+                I2C_STATUS_INVALID_ARGUMENT;
+            if (display_status != I2C_STATUS_OK)
             {
-                display_ready = false;
+                display_health_record_write_failure(
+                    &s_display_health,
+                    (uint32_t)display_status);
             }
-            next_display_refresh = now + DISPLAY_REFRESH_PERIOD_MS;
+            else
+            {
+                display_health_record_write_success(&s_display_health);
+            }
+            /* A failed OLED transaction is a dropped page, not a display
+             * state transition. Continue the alternating schedule so the
+             * next page and the next complete frame each get a fresh chance. */
+            if (rotor_view && rendered)
+            {
+                next_rotor_display_page =
+                    (uint8_t)((next_rotor_display_page + 1u) %
+                              ROTOR_DISPLAY_PAGE_COUNT);
+            }
+            next_display_refresh = now +
+                (rotor_view ? DISPLAY_PAGE_REFRESH_PERIOD_MS :
+                              DISPLAY_ERROR_REFRESH_PERIOD_MS);
         }
 
         if (runtime_profile_foreground_active)

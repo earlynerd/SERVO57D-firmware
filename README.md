@@ -5,8 +5,9 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.38.3 / native protocol 1.19 is the current source and flashed
-baseline. Firmware 0.30.1 corrected the fast
+Firmware 0.38.6 / native protocol 1.19 is the current source candidate;
+firmware 0.38.4 is currently flashed for the OLED test, while firmware 0.38.3
+remains the accepted motion/timing baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -148,6 +149,25 @@ and interpolation-fraction work. The 55 us horizon remains the measured timing
 contract, while its cached phase is recomputed from every observed phase rate.
 Control outputs, numerical rounding, publication/protocol layouts, trace timing,
 authority, limits, faults, STOP, and `ZERO` are unchanged.
+
+Firmware 0.38.4 retains protocol 1.19 and replaces the normal local A/B-current
+view with live boot-session unwrapped mechanical position (`P`, revolutions)
+and filtered velocity (`V`, rev/s), each shown to 0.001. The foreground reads
+the existing coherent rotor publication and alternates one 72-byte OLED page
+every 100 ms, so each row updates at 5 Hz during both idle and motion. Encoder,
+control, PWM, deadline, authority, fault, STOP, and `ZERO` ownership are
+unchanged. On hardware the view worked for one or two moves, then one discarded
+I2C error triggered the inherited terminal display latch and froze all later
+updates until reset.
+
+Firmware 0.38.6 treats every runtime OLED transport error as a dropped page.
+The failed I2C sub-transaction is closed, all remaining page chunks are still
+attempted, the first status and error counters are retained, and foreground
+advances to the next alternating page on schedule. Runtime errors never suspend
+traffic or reset the panel; only a panel that fails its initial boot setup uses
+the bounded idle-only initialization retry. Native/Python tests and clean
+Debug/Release Arm builds pass; flash, repeated-motion OLED behavior, and active
+foreground/Right-button timing remain hardware gates.
 
 Firmware 0.38.3 is flashed on the COM14 controller. On 0.38.1, PD0 was dark
 while idle but rapidly emitted individually very-low-duty pulses during motion;

@@ -1041,3 +1041,24 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** Full coherent backend copies, repeated phase-rate multiplication, duplicate quadrature indexing, and reporting stores consumed deadline time without changing the control result. The cached value is a velocity- and direction-derived phase advance, not a hardcoded angle.
 - **Supersedes:** Refines “Move aligned-reference reporting past the PWM deadline” and “Inline fixed rotor-publication copies”; full snapshots remain authoritative for multi-field consumers.
 - **Affects:** 4 kHz rotor/control timing, 20 kHz aligned-current timing, phase prediction, trace ordering, and firmware version 0.38.3.
+
+## 2026-08-27 — Show live unwrapped rotor motion with page-sliced OLED writes
+
+- **Decision:** Firmware 0.38.4 / protocol 1.19 renders the coherent estimator's boot-session unwrapped mechanical position and filtered velocity as `P+123.456` revolutions and `V-012.345` rev/s. Foreground alternates one 72-byte page every 100 ms, including during motion, while current-loop/ADC failures retain display priority and any OLED failure remains non-fatal.
+- **Why:** Authority releases only after measured velocity returns near zero, so an idle-only velocity view is not useful. Single-page polling bounds each nominal 333.3 kHz wire transfer to about 2.3 ms while encoder acquisition, estimation, motion control, current control, deadlines, and `ZERO` remain in their existing interrupt/deferred owners.
+- **Supersedes:** The normal A/B-current OLED view in “Accept synchronous acquisition and zero-calibrate each phase independently”; its current sensing and calibration contracts remain unchanged.
+- **Affects:** `rotor_display`, foreground I2C/display scheduling, runtime-profile display-load evidence, firmware 0.38.4, and OLED/real-time documentation.
+
+## 2026-08-27 — Recover the non-essential OLED only outside bridge authority
+
+- **Decision:** Firmware 0.38.5 tolerates one transient OLED page-write error without advancing the page, suspends traffic after two consecutive errors, and performs bounded I2C/panel reinitialization only while bridge authority is absent. Failed idle recovery attempts repeat no faster than once per second; display health retains the last status plus error/recovery counts without affecting drive readiness.
+- **Why:** The 0.38.4 live display exposed a one-way error latch: any transient transport failure disabled all future updates until reset. Immediate panel reset during motion would add the 11 ms reset/recovery wait to energized foreground service.
+- **Supersedes:** The stop-until-reset failure clause inherited from “Activate bounded passive display bring-up” and refines “Show live unwrapped rotor motion with page-sliced OLED writes.”
+- **Affects:** `display_health`, foreground display scheduling, OLED error semantics, and firmware 0.38.5; bridge authority, control timing, faults, and `ZERO` remain unchanged.
+
+## 2026-08-28 — Treat runtime OLED transport errors as dropped pages
+
+- **Decision:** Firmware 0.38.6 closes a failed OLED I2C sub-transaction, attempts the remaining page chunks, records the first status/counters, and advances the alternating page schedule. Runtime errors never suspend traffic or reset the panel. Only boot initialization failure retains bounded idle-only retry.
+- **Why:** The OLED is an eventually consistent, non-essential observer; a missing ACK should lose display data rather than create display lifecycle state or constrain live motion updates.
+- **Supersedes:** “Recover the non-essential OLED only outside bridge authority” for runtime failures; its idle-only boot-recovery and non-interference clauses remain.
+- **Affects:** `i2c1`, `ssd1306`, `display_health`, foreground display scheduling, firmware 0.38.6, and OLED/real-time documentation; drive authority, control timing, faults, and `ZERO` are unchanged.

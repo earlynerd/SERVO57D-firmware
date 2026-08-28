@@ -18,8 +18,10 @@ add_executable(host_unit_tests
     ../firmware/src/control/velocity_controller.c
     ../firmware/src/drivers/adc_calibration.c
     ../firmware/src/drivers/adc_display.c
+    ../firmware/src/drivers/display_health.c
     ../firmware/src/drivers/dma_ring.c
     ../firmware/src/drivers/mt6816.c
+    ../firmware/src/drivers/rotor_display.c
     ../firmware/src/drivers/ssd1306.c
     ../firmware/src/drivers/user_inputs.c
     ../firmware/src/protocol/native_protocol.c

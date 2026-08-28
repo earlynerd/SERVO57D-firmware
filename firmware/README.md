@@ -88,6 +88,20 @@ observation caches the phase advance across the configured 55 us output horizon;
 prediction reporting occurs after PWM staging and the immediate trace timestamp;
 and sine/cosine interpolation shares index/fraction decoding. The cached phase
 advance remains velocity- and direction-dependent, not a fixed angle.
+Firmware 0.38.4 retains protocol 1.19 and replaces the ordinary A/B-current
+OLED view with live boot-session unwrapped mechanical position and filtered
+velocity from the coherent rotor progress publication. Foreground alternates
+one 72-byte page every 100 ms, including during motion, so each row updates at
+5 Hz without moving I2C into an ISR or using DMA. The obsolete 10 ms
+display-only current conversion is removed; fault and acquisition-error views
+retain priority and display failure remains non-fatal.
+Firmware 0.38.6 fixes the 0.38.4 one-way display error latch observed after one
+or two hardware moves by treating runtime transport errors as dropped pages.
+The low-level bus closes the failed transaction, the SSD1306 writer attempts
+the remaining chunks, and foreground advances to the next page while retaining
+the first status and error count. Runtime failures never suspend traffic or
+reset the panel. The bounded 11 ms idle-only initialization retry remains only
+for a panel that failed its boot setup. Display health never gates readiness.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -178,12 +192,16 @@ expanded-current hardware gates remain pending.
   completion. A foreground COBS/CRC parser replies only to valid address-1
   discovery, telemetry, and current-loop requests; no bytes are transmitted
   automatically. Status, STOP, and explicit fault recovery remain available.
-- A bounded 333.3 kHz I2C1 PA4/PA5 transport updates the fitted SSD1306-compatible 72-by-40 panel. The current-loop display refreshes its two-page view at 5 Hz.
+- A bounded 333.3 kHz I2C1 PA4/PA5 transport updates the fitted
+  SSD1306-compatible 72-by-40 panel. The normal view shows boot-session
+  unwrapped position as `P+123.456` revolutions and filtered velocity as
+  `V-012.345` rev/s. Foreground alternates one 72-byte page every 100 ms,
+  including during motion, so each row updates at 5 Hz; I2C remains polling,
+  non-DMA, and outside every ISR.
 - TIM2 resets from each TIM3 update and raises a compare interrupt at 80% of
   the carrier; that bounded ISR software-starts a 16 MHz, 7.5-cycle PA1/PA2
   `currentB`/`currentA` ADC sequence captured as one complete DMA pair. After
-  independent startup zero calibration, the OLED shows both signed currents
-  in milliamperes. Acquisition failure appears as numeric status `A####`; a
+  independent startup zero calibration, acquisition failure appears as numeric status `A####`; a
   current-loop shutdown latches `F####`, where the number is the one-based
   position of the first set fault bit. A 55.5-cycle PA3 `vBus` injected
   conversion follows every regular pair; it completes after the current-loop

@@ -110,6 +110,7 @@ static i2c_status_t write_pages(const i2c_bus_t* bus,
     uint8_t packet[SSD1306_DATA_CHUNK_BYTES + 1u];
     size_t offset = 0u;
     i2c_status_t result;
+    i2c_status_t first_error = I2C_STATUS_OK;
 
     const uint8_t window[] = {
         SSD1306_COMMAND_CONTROL,
@@ -127,7 +128,7 @@ static i2c_status_t write_pages(const i2c_bus_t* bus,
                         sizeof(window));
     if (result != I2C_STATUS_OK)
     {
-        return result;
+        first_error = result;
     }
 
     packet[0] = SSD1306_DATA_CONTROL;
@@ -144,14 +145,15 @@ static i2c_status_t write_pages(const i2c_bus_t* bus,
                             config->address_7bit,
                             packet,
                             chunk + 1u);
-        if (result != I2C_STATUS_OK)
+        if ((result != I2C_STATUS_OK) &&
+            (first_error == I2C_STATUS_OK))
         {
-            return result;
+            first_error = result;
         }
         offset += chunk;
     }
 
-    return I2C_STATUS_OK;
+    return first_error;
 }
 
 i2c_status_t ssd1306_write_pages(const i2c_bus_t* bus,

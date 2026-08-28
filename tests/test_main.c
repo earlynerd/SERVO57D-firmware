@@ -20,6 +20,7 @@
 #include "mks57d/current_controller.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/deferred_deadline_indicator.h"
+#include "mks57d/display_health.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
@@ -34,6 +35,7 @@
 #include "mks57d/phase_current_loop.h"
 #include "mks57d/phase_current_reference.h"
 #include "mks57d/position_controller.h"
+#include "mks57d/rotor_display.h"
 #include "mks57d/rotating_current_test.h"
 #include "mks57d/runtime_profile.h"
 #include "mks57d/ssd1306.h"
@@ -1421,6 +1423,127 @@ static void test_adc_display_renders_both_signed_milliamp_values(void)
     EXPECT_TRUE(memcmp(values, invalid, sizeof(values)) != 0);
 }
 
+static void test_rotor_display_renders_unwrapped_position_and_velocity(void)
+{
+    uint8_t zero[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t positive[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t negative[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t position_changed[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t velocity_changed[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t invalid[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t nan_value[ROTOR_DISPLAY_FRAME_BYTES];
+    uint8_t out_of_range[ROTOR_DISPLAY_FRAME_BYTES];
+    bool top_row_has_pixels = false;
+    bool bottom_row_has_pixels = false;
+    size_t index;
+
+    EXPECT_TRUE(!rotor_display_render(
+        NULL, sizeof(zero), 0.0f, 0.0f, true));
+    EXPECT_TRUE(!rotor_display_render(
+        zero, sizeof(zero) - 1u, 0.0f, 0.0f, true));
+    EXPECT_TRUE(rotor_display_render(
+        zero, sizeof(zero), 0.0f, 0.0f, true));
+    EXPECT_TRUE(rotor_display_render(
+        positive, sizeof(positive), 123.456f, 12.345f, true));
+    EXPECT_TRUE(rotor_display_render(
+        negative, sizeof(negative), -123.456f, -12.345f, true));
+    EXPECT_TRUE(rotor_display_render(
+        position_changed, sizeof(position_changed), 123.457f, 12.345f, true));
+    EXPECT_TRUE(rotor_display_render(
+        velocity_changed, sizeof(velocity_changed), 123.456f, 12.346f, true));
+    EXPECT_TRUE(rotor_display_render(
+        invalid, sizeof(invalid), 0.0f, 0.0f, false));
+    EXPECT_TRUE(rotor_display_render(
+        nan_value, sizeof(nan_value), NAN, NAN, true));
+    EXPECT_TRUE(rotor_display_render(
+        out_of_range, sizeof(out_of_range), 1000.0f, -1000.0f, true));
+
+    EXPECT_TRUE(memcmp(zero, positive, sizeof(zero)) != 0);
+    EXPECT_TRUE(memcmp(positive, negative, sizeof(positive)) != 0);
+    EXPECT_TRUE(memcmp(positive, position_changed, sizeof(positive)) != 0);
+    EXPECT_TRUE(memcmp(positive, velocity_changed, sizeof(positive)) != 0);
+    EXPECT_TRUE(memcmp(invalid, nan_value, sizeof(invalid)) == 0);
+    EXPECT_TRUE(memcmp(invalid, out_of_range, sizeof(invalid)) == 0);
+    EXPECT_TRUE(memcmp(zero,
+                       &zero[ROTOR_DISPLAY_WIDTH],
+                       ROTOR_DISPLAY_WIDTH) != 0);
+
+    for (index = 0u; index < ROTOR_DISPLAY_WIDTH; ++index)
+    {
+        top_row_has_pixels = top_row_has_pixels || (zero[index] != 0u);
+        bottom_row_has_pixels = bottom_row_has_pixels ||
+                                (zero[ROTOR_DISPLAY_WIDTH + index] != 0u);
+    }
+    EXPECT_TRUE(top_row_has_pixels);
+    EXPECT_TRUE(bottom_row_has_pixels);
+}
+
+static void test_display_health_drops_runtime_errors_and_recovers_boot_failure(void)
+{
+    display_health_t health;
+
+    EXPECT_TRUE(!display_health_init(
+        NULL, true, I2C_STATUS_OK, 0u, 1000u));
+    EXPECT_TRUE(!display_health_init(
+        &health, true, I2C_STATUS_OK, 0u, 0u));
+    EXPECT_TRUE(display_health_init(
+        &health, true, I2C_STATUS_OK, 100u, 1000u));
+    EXPECT_TRUE(display_health_is_ready(&health));
+
+    display_health_record_write_failure(
+        &health, I2C_STATUS_DATA_NACK);
+    EXPECT_TRUE(display_health_is_ready(&health));
+    EXPECT_TRUE(health.error_count == 1u);
+    EXPECT_TRUE(health.consecutive_errors == 1u);
+    EXPECT_TRUE(health.last_error_status == I2C_STATUS_DATA_NACK);
+    EXPECT_TRUE(!display_health_recovery_due(&health, false, 200u));
+
+    display_health_record_write_success(&health);
+    EXPECT_TRUE(health.consecutive_errors == 0u);
+    display_health_record_write_failure(
+        &health, I2C_STATUS_BUS_BUSY);
+    display_health_record_write_failure(
+        &health, I2C_STATUS_BUS_BUSY);
+    EXPECT_TRUE(display_health_is_ready(&health));
+    EXPECT_TRUE(!health.recovery_pending);
+    EXPECT_TRUE(health.error_count == 3u);
+    EXPECT_TRUE(!display_health_recovery_due(&health, true, 400u));
+    EXPECT_TRUE(!display_health_recovery_due(&health, false, 400u));
+    EXPECT_TRUE(health.consecutive_errors == 2u);
+    EXPECT_TRUE(health.last_error_status == I2C_STATUS_BUS_BUSY);
+
+    display_health_record_write_success(&health);
+    EXPECT_TRUE(health.consecutive_errors == 0u);
+
+    EXPECT_TRUE(display_health_init(
+        &health, false, I2C_STATUS_ADDRESS_NACK, 2000u, 1000u));
+    EXPECT_TRUE(!display_health_recovery_due(&health, false, 2999u));
+    EXPECT_TRUE(display_health_recovery_due(&health, false, 3000u));
+
+    display_health_record_recovery_result(
+        &health, false, I2C_STATUS_TIMEOUT, 3000u, 1000u);
+    EXPECT_TRUE(!display_health_recovery_due(&health, false, 3999u));
+    EXPECT_TRUE(display_health_recovery_due(&health, false, 4000u));
+    EXPECT_TRUE(health.error_count == 2u);
+    EXPECT_TRUE(health.last_error_status == I2C_STATUS_TIMEOUT);
+
+    display_health_record_recovery_result(
+        &health, true, I2C_STATUS_OK, 4000u, 1000u);
+    EXPECT_TRUE(display_health_is_ready(&health));
+    EXPECT_TRUE(!health.recovery_pending);
+    EXPECT_TRUE(health.consecutive_errors == 0u);
+    EXPECT_TRUE(health.recovery_count == 1u);
+
+    EXPECT_TRUE(display_health_init(
+        &health,
+        false,
+        I2C_STATUS_TIMEOUT,
+        UINT32_MAX - 499u,
+        1000u));
+    EXPECT_TRUE(!display_health_recovery_due(&health, false, 499u));
+    EXPECT_TRUE(display_health_recovery_due(&health, false, 500u));
+}
+
 static void test_user_inputs_debounce_each_active_low_signal_independently(void)
 {
     user_inputs_debouncer_t debouncer = {0};
@@ -1551,7 +1674,7 @@ static void test_ssd1306_partial_pages_use_requested_window(void)
                     sizeof(pixels)) == I2C_STATUS_INVALID_ARGUMENT);
 }
 
-static void test_ssd1306_stops_after_transport_failure(void)
+static void test_ssd1306_continues_after_transport_failure(void)
 {
     uint8_t pixels[72u * 5u] = {0};
     mock_i2c_t mock = {.fail_on_call = 2u};
@@ -1565,7 +1688,7 @@ static void test_ssd1306_stops_after_transport_failure(void)
                     &SSD1306_PANEL_SERVO57D,
                     pixels,
                     sizeof(pixels)) == I2C_STATUS_DATA_NACK);
-    EXPECT_TRUE(mock.call_count == 2u);
+    EXPECT_TRUE(mock.call_count == 13u);
 }
 
 static void test_native_protocol_crc_matches_standard_vector(void)
@@ -5732,11 +5855,13 @@ int main(void)
     test_servo57d_oled_profile_is_valid();
     test_adc_display_labels_channels_and_rejects_invalid_values();
     test_adc_display_renders_both_signed_milliamp_values();
+    test_rotor_display_renders_unwrapped_position_and_velocity();
+    test_display_health_drops_runtime_errors_and_recovers_boot_failure();
     test_user_inputs_debounce_each_active_low_signal_independently();
     test_ssd1306_init_uses_one_bounded_command_transaction();
     test_ssd1306_frame_uses_configured_visible_window();
     test_ssd1306_partial_pages_use_requested_window();
-    test_ssd1306_stops_after_transport_failure();
+    test_ssd1306_continues_after_transport_failure();
     test_native_protocol_crc_matches_standard_vector();
     test_native_protocol_codec_accepts_maximum_payload();
     test_command_service_rejects_invalid_identity_payload();

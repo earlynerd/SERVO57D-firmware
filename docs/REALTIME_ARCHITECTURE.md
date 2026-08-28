@@ -1,6 +1,8 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.38.3 is the current source and flashed baseline. The source
+Status: firmware 0.38.6 is the current source candidate; firmware 0.38.4 is
+currently flashed for OLED testing and firmware 0.38.3 remains the accepted
+motion/timing baseline. The source
 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
@@ -294,8 +296,15 @@ still requires a channel-budget and latency review.
 - **I2C1/display:** do not use I2C DMA in `RUN`. N32L40x Errata Sheet V2.1.0
   states that I2C communication can become abnormal when another peripheral is
   using the single DMA controller; its workaround disables other DMA traffic.
-  Display traffic remains bounded polling or interrupt work in foreground and
-  may be deferred while the bridge is active.
+  Display traffic remains bounded polling work in foreground. Firmware 0.38.6
+  alternates one 72-byte page every 100 ms during idle or `RUN`; the nominal
+  wire time is about 2.3 ms, and foreground long-tail/Right-button timing under
+  this load remains a bench acceptance gate. Encoder, PendSV, current-loop,
+  deadline, and immediate `ZERO` owners do not wait on I2C. A failed runtime
+  sub-transaction is closed, remaining chunks are attempted, and the next page
+  remains scheduled; no runtime error suspends traffic or resets the panel. The
+  11 ms reset/reinitialization sequence is reserved for boot initialization
+  failure and remains prohibited until bridge authority is absent.
 - **Memory copies:** do not use memory-to-memory DMA for small control or
   publication objects. Ownership handoff is preferable to copying, and DMA
   setup plus SRAM contention can exceed the cost of a few CPU loads and stores.

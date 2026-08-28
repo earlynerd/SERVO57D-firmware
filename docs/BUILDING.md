@@ -174,8 +174,9 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.38.3 / protocol 1.19 is the current source and flashed evaluation
-build. The current
+Firmware 0.38.6 / protocol 1.19 is the current source candidate; firmware
+0.38.4 is currently flashed for OLED testing and firmware 0.38.3 remains the
+accepted motion/timing baseline. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -285,7 +286,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.38.3`, authoritative drive state, reset cause,
+22. Publishes firmware `0.38.6`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -521,3 +522,29 @@ releases completed, the worst total PendSV time was 164.34 us against the
 250 us period, both 256-sample current traces reported zero missed PWM updates,
 and every accepted run ended fault-free in `ZERO` without reset or panic
 evidence.
+
+Firmware 0.38.4 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,448/61,116 bytes Flash and 11,856 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Native
+coverage includes the signed fixed-point position/velocity renderer and its
+invalid/range behavior. Flash, visual OLED confirmation, active display-load
+profiling, and Right-button response timing remain hardware gates.
+
+Firmware 0.38.5 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,808/61,436 bytes Flash and 11,880 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Native
+coverage reproduces the former terminal-error state and checks transient retry,
+persistent-error suspension, active-authority recovery inhibition, wrap-safe
+retry timing, and successful idle recovery. Flash and repeated-motion display
+confirmation remain open.
+
+Firmware 0.38.6 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,792/61,444 bytes Flash and 11,880 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Native
+coverage checks that runtime display failures remain ready, retain counters,
+attempt all SSD1306 chunks, and leave later pages scheduled; boot initialization
+failure retains wrap-safe idle-only retry. Flash and repeated-motion display
+confirmation remain open.

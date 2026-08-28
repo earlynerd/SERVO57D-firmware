@@ -1,6 +1,8 @@
 # Firmware Architecture
 
-Status: firmware 0.38.3 is the current source and flashed baseline. The source
+Status: firmware 0.38.6 is the current source candidate; firmware 0.38.4 is
+currently flashed for OLED testing and firmware 0.38.3 remains the accepted
+motion/timing baseline. The source
 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
@@ -112,7 +114,13 @@ The current image implements:
   full-snapshot generation. The 576-byte full controller snapshot publishes at
   100 Hz and on requests, faults, events, clears, and initialization.
 - A bounded 333.3 kHz I2C1 transport and SSD1306-compatible 72-by-40 display;
-  sustained 50 Hz two-page transactions are proven and the current-loop display uses 5 Hz.
+  sustained 50 Hz two-page transactions are proven. The normal local view
+  reads the coherent rotor publication and alternates one position/velocity
+  page every 100 ms in foreground, including during motion, for a 5 Hz rate per
+  row without I2C DMA or ISR ownership. Each runtime transport error drops one
+  page: remaining chunks and later pages are still attempted, status/counters
+  remain inspectable, and the error never affects display or drive readiness.
+  Only boot-time initialization failure receives bounded idle-only recovery.
 - A bounded polling PA1/PA2/PA3 ADC bring-up path plus a TIM2-compare-triggered
   20 kHz `currentB`/`currentA` sequence captured by circular DMA channel 1, with
   a following automatic-injected PA3 VBUS conversion and host-tested schematic-
