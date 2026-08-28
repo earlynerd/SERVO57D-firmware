@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-Status: firmware 0.38.0 is the current source and flashed baseline. The source
+Status: firmware 0.38.3 is the current source and flashed baseline. The source
 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
@@ -57,6 +57,16 @@ Firmware 0.38.0 adds a trace-gated, bufferless aggregate profiler across that
 existing SPI/PendSV/rotor path and foreground housekeeping. It adds diagnostic
 observation only; timer, estimator, controller, supervisor, bridge, fault, and
 `ZERO` ownership remain unchanged.
+Firmware 0.38.1 gives PD0 one raw timing meaning: TIM6 asserts it when a 4 kHz
+release remains incomplete at its next 250 us boundary, and completion clears
+it after the newest overdue release. The foreground no longer toggles PD0.
+Firmware 0.38.2 changes only rotor-publication code generation: fixed 100 Hz
+full-snapshot assignments use aligned word copies while layouts, cadence,
+sequence protection, readers, and all ownership remain unchanged.
+Firmware 0.38.3 narrows active 4 kHz backend reads to the atomic state actually
+consumed and caches observation-invariant 20 kHz phase work. Full snapshots,
+controller ownership, numerical behavior, and bridge/fault authority remain
+unchanged.
 
 ## Design priorities
 
@@ -89,7 +99,8 @@ The current image implements:
 - Startup initialization and readback of the four-preemption-bit NVIC grouping, with SysTick fixed at priority 15.
 - A 1 kHz SysTick timebase whose microsecond view uses bounded atomic
   reconciliation across nested interrupt priorities and normal uint32 wrap.
-- A safe board layer that drives the PD0 status LED and verifies bridge pins before and after GPIOB activation.
+- A safe board layer that leaves PD0 low except during a raw 4 kHz deferred-
+  deadline overrun and verifies bridge pins before and after GPIOB activation.
 - A bounded mode-3 SPI1 transport and host-tested MT6816 burst decoder on a
   4 kHz TIM6/TIM7/SPI-DMA schedule at an 8 MHz SPI target. The observation
   timestamp is captured at CS assertion, the start of the coherent four-byte

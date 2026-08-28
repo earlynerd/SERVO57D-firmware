@@ -50,7 +50,9 @@ Stage 6 within the measured operating envelope.
 
 ## Stage 3 — Minimal replacement image
 
-1. Flash a minimal vector table, clock setup, safe GPIO initialization, and LED heartbeat.
+1. For this dedicated first-image gate, flash a minimal vector table, clock
+   setup, safe GPIO initialization, and LED heartbeat; this is not the product
+   image's steady-state LED contract.
 2. Confirm the bridge command remains in its reset or all-low state before,
    during, and after programming.
 3. Exercise reset, power-cycle, watchdog, and debugger halt.
@@ -60,7 +62,8 @@ Stage 6 within the measured operating envelope.
 6. Confirm an unserviced running image resets near the measured IWDG interval and exposes `RCC_CTRLSTS_IWDGRSTF` in `g_platform_boot_diagnostics.reset_flags` after reboot.
 7. Confirm a debugger halt does not pause IWDG, TIM2, or TIM3 in firmware 0.19.0; capture PA6/PA7/PB0/PB1, gate outputs, and the watchdog reset transition.
 8. Load the matching ELF symbols and verify `g_diagnostics` has magic `0x4D4B5335`, schema `5`, size `240`, firmware version `0.19.0`, and an even stable sequence.
-9. Scope PD0 and confirm the active-high heartbeat without button contention on PB9.
+9. On that dedicated minimal image, scope PD0 and confirm the active-high
+   heartbeat without button contention on PB9.
 10. Scope PB3-PB6 and confirm the bounded MT6816 mode-3 burst described in [encoder bring-up](ENCODER.md), including non-fatal no-magnet behavior.
 11. Compare the diagnostic reset and retained-panic fields across power-on, NRST, software panic, and IWDG reset cases.
 12. Verify the required/passed self-test masks are both `0x7F`, the failed mask is zero, and the reported board-safety result agrees with scoped PA6/PA7/PB0/PB1/PB7 levels.
@@ -744,6 +747,13 @@ maxima. A maximum total PendSV duration above the nominal 250 us period is
 evidence of catch-up pressure, not by itself a guardian fault; correlate it
 with encoder intervals, consecutive current samples, missed PWM updates, and
 the terminal fault/`ZERO` state.
+
+Firmware 0.38.1 assigns PD0 only to the same complete 4 kHz release deadline.
+Do not expect a heartbeat. The LED rises at a 250 us TIM6 boundary only when
+the preceding acquisition-through-PendSV job has not completed and falls when
+the newest overdue job completes; there is no pulse stretching. Observe it
+directly for distribution and brightness, and use a scope or logic analyzer
+when exact duty or correlation with `runtime_profile.json` is required.
 
 Stop on any abnormal tracking, supply, mechanical, thermal, reset, panic, or
 fault evidence. For each accepted burst record the minimum/maximum TIM2 ADC

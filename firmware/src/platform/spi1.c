@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mks57d/board.h"
+#include "mks57d/deferred_deadline_indicator.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/current_loop_backend.h"
 #include "mks57d/cycle_counter.h"
@@ -71,7 +73,8 @@ enum
     SPI_PERIODIC_TIMER_TICK_HZ = 1000000u,
     SPI_PERIODIC_INTERVAL_US =
         SPI_PERIODIC_TIMER_TICK_HZ / SPI1_PERIODIC_FREQUENCY_HZ,
-    SPI_CHIP_SELECT_GUARD_US = 2u
+    SPI_CHIP_SELECT_GUARD_US = 2u,
+    NVIC_PRIORITY_SHIFT = 8u - __NVIC_PRIO_BITS
 };
 
 typedef enum
@@ -107,8 +110,48 @@ static volatile uint32_t s_periodic_acquisition_timestamp_us;
 static volatile bool s_periodic_acquisition_timestamp_valid;
 static bool s_periodic_first_release;
 static bool s_periodic_prime_pending;
+static volatile uint32_t s_periodic_release_sequence;
+static volatile uint32_t s_deferred_release_sequence;
+static volatile deferred_deadline_indicator_t s_deadline_indicator;
 
 static void periodic_exchange_stop(void);
+
+static uint32_t rotor_feedback_critical_enter(void)
+{
+    const uint32_t previous = __get_BASEPRI();
+    const uint32_t threshold =
+        (uint32_t)INTERRUPT_PRIORITY_ROTOR_FEEDBACK << NVIC_PRIORITY_SHIFT;
+
+    __set_BASEPRI_MAX(threshold);
+    __DSB();
+    __ISB();
+    return previous;
+}
+
+static void rotor_feedback_critical_exit(uint32_t previous)
+{
+    __set_BASEPRI(previous);
+    __DSB();
+    __ISB();
+}
+
+static void deferred_release_complete(uint32_t release_sequence)
+{
+    s_deadline_indicator.latest_completed_sequence = release_sequence;
+    __DMB();
+
+    if (s_deadline_indicator.active)
+    {
+        const uint32_t previous = rotor_feedback_critical_enter();
+
+        if (deferred_deadline_indicator_complete(
+                &s_deadline_indicator, release_sequence))
+        {
+            board_status_led_set(false);
+        }
+        rotor_feedback_critical_exit(previous);
+    }
+}
 
 static uint16_t baud_rate_bits(uint32_t peripheral_clock_hz)
 {
@@ -203,6 +246,7 @@ static void periodic_publish(spi_status_t status, uint32_t timestamp_us)
     if (s_periodic_prime_pending)
     {
         s_periodic_prime_pending = false;
+        deferred_release_complete(s_periodic_release_sequence);
         return;
     }
 
@@ -216,6 +260,7 @@ static void periodic_publish(spi_status_t status, uint32_t timestamp_us)
     }
     s_deferred_status = status;
     s_deferred_timestamp_us = timestamp_us;
+    s_deferred_release_sequence = s_periodic_release_sequence;
     __DMB();
     s_deferred_pending = 1u;
     if (runtime_profile_is_armed())
@@ -371,6 +416,10 @@ bool spi1_periodic_exchange_start(
     s_periodic_acquisition_timestamp_valid = false;
     s_periodic_first_release = true;
     s_periodic_prime_pending = true;
+    s_periodic_release_sequence = 0u;
+    s_deferred_release_sequence = 0u;
+    deferred_deadline_indicator_init(&s_deadline_indicator);
+    board_status_led_set(false);
 
     RCC->AHBPCLKEN |= RCC_AHBPCLKEN_DMAEN;
     RCC->APB1PCLKEN |= RCC_APB1PCLKEN_TIM6EN |
@@ -470,6 +519,8 @@ static void periodic_exchange_stop(void)
     s_periodic_acquisition_timestamp_us = 0u;
     s_periodic_acquisition_timestamp_valid = false;
     s_periodic_prime_pending = false;
+    deferred_deadline_indicator_init(&s_deadline_indicator);
+    board_status_led_set(false);
 }
 
 void TIM6_IRQHandler(void)
@@ -484,11 +535,19 @@ void TIM6_IRQHandler(void)
         TIM6->AR = SPI_PERIODIC_INTERVAL_US - 1u;
         s_periodic_first_release = false;
     }
+    if (deferred_deadline_indicator_deadline_elapsed(
+            &s_deadline_indicator))
+    {
+        board_status_led_set(true);
+    }
     if (s_periodic_state != SPI_PERIODIC_STATE_IDLE)
     {
         periodic_fail_transfer(SPI_STATUS_BUS_BUSY, timebase_micros());
         return;
     }
+
+    s_periodic_release_sequence =
+        deferred_deadline_indicator_start(&s_deadline_indicator);
 
     if (!periodic_receive_path_clear())
     {
@@ -576,6 +635,7 @@ void PendSV_Handler(void)
     void* callback_context;
     spi_status_t status;
     uint32_t timestamp_us;
+    uint32_t release_sequence;
     size_t index;
     bool profile_active = false;
 
@@ -591,6 +651,7 @@ void PendSV_Handler(void)
     }
     status = s_deferred_status;
     timestamp_us = s_deferred_timestamp_us;
+    release_sequence = s_deferred_release_sequence;
     callback = s_periodic_callback;
     callback_context = s_periodic_callback_context;
     for (index = 0u; index < s_periodic_length; ++index)
@@ -617,4 +678,5 @@ void PendSV_Handler(void)
             cycle_counter_read(),
             current_loop_backend_sample_count());
     }
+    deferred_release_complete(release_sequence);
 }

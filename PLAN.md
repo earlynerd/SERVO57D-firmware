@@ -15,7 +15,7 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.38.0 / protocol 1.19 is the current source and flashed baseline.
+- Firmware 0.38.3 / protocol 1.19 is the current source and flashed baseline.
   It runs the fixed-point rotating d/q controller in the production aligned-q
   torque, velocity, and position path, retains stationary A/B control for
   alignment and static vectors, and preserves the project-owned 20 kHz current
@@ -36,6 +36,28 @@ and fault bounds.
   completed all 256 releases with 2.89/99.77 us average/maximum pend latency,
   144.09/336.61 us average/maximum PendSV work, 29.59 us minimum PWM-preload
   margin, zero missed updates/faults, normal `ZERO`, and preserved calibration.
+- Firmware 0.38.1 makes PD0 an unstretched indication of the complete 4 kHz
+  release missing its next 250 us boundary. Host/Python tests and clean
+  Debug/Release Arm builds pass. On hardware it is dark while idle and emits
+  rapid, individually low-duty pulses only during rotor motion; exact
+  scope/profile correlation remains open.
+- Firmware 0.38.2 preserves the rotor publication contract but replaces four
+  byte-at-a-time library copies totaling 472 controller bytes per 100 Hz full
+  snapshot with compiler-expanded aligned 32-bit loops. Native/Python tests,
+  Debug/Release Arm builds, post-link checks, and generated-code inspection
+  pass. After flashing, PD0 remains visibly dark during motion instead of
+  emitting the rapid low-duty pulses seen on 0.38.1. The later 0.38.3 signed
+  profiles provide the retained numerical comparison against 0.38.0.
+- Firmware 0.38.3 replaces active-loop full backend snapshots with one atomic
+  status read, caches the observation-derived 55 us phase lead, moves prediction
+  reporting past PWM staging without delaying the trace timestamp, and shares
+  sine/cosine lookup setup. Tests, clean Arm builds, post-link checks, and
+  generated-code inspection pass. The flashed image completed simultaneous
+  current-trace/runtime-profile runs at both +4 and -4 rev/s plus a profiler-
+  disarmed +4 rev/s control run. All 512 profiled releases completed; PendSV
+  averaged 105.34/104.46 us and peaked at 164.34/164.11 us against the 250 us
+  period, both current traces retained at least 31.22 us PWM-preload margin and
+  zero missed updates, and every accepted run ended fault-free in `ZERO`.
 - The bench configuration retains generation-3 alignment and ended with its
   stored Kp=4/Ki=1/64 current gains active and no dirty state. Kp=9/Ki=0.5
   remains a volatile development profile used only for same-condition captures;
@@ -82,7 +104,8 @@ The exact numeric envelope and next evidence for each limit are maintained in
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.
 
-- [ ] Use the firmware 0.38.0 stage breakdown to continue optimizing the
+- [ ] Use the firmware 0.38.0 stage breakdown and 0.38.2 visual resolution to
+  continue optimizing the
   ordinary 20 kHz fixed-point
   rotating-current path and 4 kHz rotor/control chain before selecting permanent
   gains. Examine remaining redundant prediction, transform, publication, and
@@ -92,8 +115,12 @@ list only when measurements or a newly discovered prerequisite justify it.
   clean native/Python/Arm builds, 8 MHz SPI integrity, 4 kHz acquisition timing
   and noise, aggregate PendSV/current-ISR preemption under representative
   command/telemetry/display loads, stack high-water margin, armed and disarmed
-  current-loop timing, bounded motion, and clean STOP/deadline release without
-  reset or panic evidence.
+  current-loop timing, raw PD0 over-deadline indication, bounded motion, and
+  clean STOP/deadline release without reset or panic evidence. Firmware 0.38.3
+  now passes signed loaded profiles, a profiler-disarmed control run, and clean
+  deadline release. Next retain stack high-water evidence and repeat under
+  representative communications/display load while correlating any PD0
+  illumination with the captured release profile.
 - [ ] Improve the high-electrical-frequency current-control architecture using
   the accepted 200 electrical-Hz diagnostic and ±4/+8/+12 rev/s captures as
   regression baselines. Prioritize algorithm, dataflow, phase prediction, and

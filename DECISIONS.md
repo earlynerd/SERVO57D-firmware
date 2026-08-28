@@ -1020,3 +1020,24 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Supersedes:** The deferred-chain/foreground measurement gap in the 4 kHz acceptance plan. It does not replace stack high-water, scope, or repeated worst-case testing.
 - **Affects:** SPI-to-PendSV handoff, rotor-runtime stage markers, foreground housekeeping, native commands `0x0108`/`0x0109`, and torque/velocity capture artifacts. Supervisor authority, deadlines, electrical/motion limits, faults, and `ZERO` are unchanged.
 - **Validation:** Native/Python tests, Debug/Release Arm builds, J-Link verify, and a simultaneous +4 rev/s profile/current-trace gate pass.
+
+## 2026-08-27 — Expose raw deferred deadline state on PD0
+
+- **Decision:** Firmware 0.38.1 / protocol 1.19 removes the foreground PD0 heartbeat and drives the active-high LED only while the complete 4 kHz acquisition-through-PendSV chain is overdue. TIM6 asserts it when the preceding job remains incomplete at the next 250 us boundary; completion clears it after catching up through the newest overdue sequence. There is no pulse stretching or latch. The existing `heartbeat_count` remains a software-only 250 ms liveness counter.
+- **Why:** Direct LED duty and temporal pattern provide immediate correlation with commands and load without requiring the aggregate profiler to be armed or distorting individual overrun duration.
+- **Supersedes:** Only the physical LED meaning in “Correct the RS-485 V1.1 LED, encoder, enable, and key mapping”; the PD0 pin assignment remains.
+- **Affects:** PD0 board API, TIM6/PendSV release sequencing, debugger heartbeat semantics, real-time documentation, and firmware version 0.38.1.
+
+## 2026-08-27 — Inline fixed rotor-publication copies
+
+- **Decision:** Firmware 0.38.2 / protocol 1.19 applies GCC `-finline-stringops=memcpy` only to `rotor_control_runtime.c`, so fixed-size coherent publication assignments use aligned 32-bit loads/stores while sequence counters, publication rates, layouts, and readers remain unchanged.
+- **Why:** Arm disassembly showed the nano C library moving 472 controller bytes one byte at a time through four calls on every 100 Hz full snapshot, and raw PD0 correlated low-duty deadline misses only with active motion.
+- **Supersedes:** Refines “Gate fast-loop measurement and compact foreground publication”; memory-to-memory DMA remains deferred until the simpler code-generation fix is measured.
+- **Affects:** rotor publication timing, firmware CMake code-generation policy, 4 kHz qualification, and firmware version 0.38.2.
+
+## 2026-08-27 — Cache observation-invariant phase work and narrow active-loop reads
+
+- **Decision:** Firmware 0.38.3 / protocol 1.19 gives active 4 kHz controllers an atomic backend-active accessor, caches the phase advance across the configured 55 us output horizon whenever a new observation changes phase rate, shares sine/cosine lookup setup, and publishes prediction diagnostics only after PWM staging and the trace's immediate timestamp.
+- **Why:** Full coherent backend copies, repeated phase-rate multiplication, duplicate quadrature indexing, and reporting stores consumed deadline time without changing the control result. The cached value is a velocity- and direction-derived phase advance, not a hardcoded angle.
+- **Supersedes:** Refines “Move aligned-reference reporting past the PWM deadline” and “Inline fixed rotor-publication copies”; full snapshots remain authoritative for multi-field consumers.
+- **Affects:** 4 kHz rotor/control timing, 20 kHz aligned-current timing, phase prediction, trace ordering, and firmware version 0.38.3.

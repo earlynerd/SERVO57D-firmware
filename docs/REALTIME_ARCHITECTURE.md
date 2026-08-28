@@ -1,6 +1,6 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.38.0 is the current source and flashed baseline. The source
+Status: firmware 0.38.3 is the current source and flashed baseline. The source
 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
@@ -53,6 +53,27 @@ Firmware 0.38.0 adds an explicitly armed 256-release aggregate profile around
 the 4 kHz PendSV chain and foreground housekeeping. Normal operation retains
 only profile-state checks; DWT reads and aggregate updates occur only inside
 the finite armed window.
+Firmware 0.38.1 independently exposes the complete 4 kHz release deadline on
+PD0. TIM6 asserts the LED when the preceding acquisition-through-PendSV job is
+still incomplete at the next 250 us boundary. Completion clears it when the
+newest overdue release finishes; there is no stretch, latch, or foreground
+heartbeat.
+Firmware 0.38.2 leaves that timing contract and both publication layouts intact
+but expands the fixed 100 Hz full-snapshot structure copies as aligned 32-bit
+loads/stores instead of using the target nano library's byte-at-a-time `memcpy`.
+Firmware 0.38.3 keeps full coherent snapshots for telemetry, transitions, and
+multi-field checks, but the active 4 kHz torque/velocity/position updates read
+only the atomic backend-active byte they consume. Each 4 kHz observation also
+caches the phase advance across the configured 55 us application horizon for
+the following 20 kHz events. Reporting-only prediction state remains after PWM
+staging and after the trace's immediate post-stage timestamp; controller math,
+trace meaning, and safety checks are unchanged.
+Signed +4/-4 rev/s hardware profiles completed all 512 observed releases with
+zero incomplete releases. Total PendSV averaged 105.34/104.46 us and peaked at
+164.34/164.11 us against the 250 us release period. The simultaneous 20 kHz
+traces retained at least 31.22 us of preload margin and zero missed PWM updates;
+a profiler-disarmed +4 rev/s run had equivalent tracking and also released
+cleanly at its finite deadline.
 
 ## Goals
 
@@ -186,7 +207,7 @@ do not change.
 | Raw current sample and timestamp | ADC/DMA completion ISR | Fast current loop | ISR-local values or a sequence-numbered sample slot |
 | Raw VBUS sample | ADC automatic-injected completion | Foreground telemetry | Latest completed injected register plus validity and an accepted-sample count; never a current-loop prerequisite |
 | Encoder progress | TIM6 captures time at CS assertion; PendSV-deferred rotor runtime publishes after SPI DMA/hold | Foreground liveness, readiness, and state invariants | A sequence-protected 56-byte record publishes at 4 kHz with encoder production, coherent estimator position/velocity/timestamp/health, active-control flags, and full-snapshot generation |
-| Full rotor/controller status | PendSV-deferred rotor runtime | Commands, telemetry, and diagnostics | A sequence-protected 576-byte snapshot publishes at 100 Hz and on requests, faults, events, clears, and initialization; foreground consumes it at 100 Hz or when progress reports a new generation |
+| Full rotor/controller status | PendSV-deferred rotor runtime | Commands, telemetry, and diagnostics | A sequence-protected 576-byte snapshot publishes at 100 Hz and on requests, faults, events, clears, and initialization; fixed structure assignments expand as aligned word copies, and foreground consumes it at 100 Hz or when progress reports a new generation |
 | Motion command | Foreground command arbiter | Trajectory/slow loop | Validated double buffer swapped at a slow-loop boundary |
 | Current references | Slow control loop or fast diagnostic oscillator | Fast current loop | Bounded aligned-q/static publication, or backend-owned 20 kHz oscillator state selected only while inactive |
 | Current-controller state | Fast current loop | Diagnostics only | Single writer; diagnostics receive a copied snapshot |
@@ -259,7 +280,8 @@ still requires a channel-budget and latency review.
   post-hold publication; the sensor's exact internal latch instant remains a
   hardware detail. PendSV performs decode/runtime work. One post-power-up
   exchange is explicitly primed and discarded; subsequent errors are reported
-  normally.
+  normally. The next TIM6 release is also the complete-chain deadline boundary:
+  PD0 is high exactly while one or more prior release jobs are overdue.
 - **USART1/RS-485:** RX and TX DMA eliminate per-byte interrupt work. DMA owns
   byte movement only; framing, CRC, address checks, command validation, timeout
   policy, and PC13 direction turnaround remain explicit software behavior.
@@ -370,6 +392,10 @@ The 4 kHz rotor release has 16,000 core cycles between nominal events. Its
 acceptance budget includes the complete DMA-to-PendSV deferred chain plus any
 higher-priority 20 kHz current-loop preemption; enabling hardware
 single-precision and `-O2` does not substitute for measuring that worst case.
+Firmware 0.38.1 exposes failure of that complete-by-next-release budget on
+active-high PD0 without extending the indication. Sequence tracking keeps the
+LED high across overlapping overdue releases and clears it at the actual
+completion that catches up through the newest overdue sequence.
 
 Cycle-conservation rules for the hard-real-time path are:
 

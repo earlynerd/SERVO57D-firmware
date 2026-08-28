@@ -106,6 +106,9 @@ bool current_loop_backend_reconfigure_gains(
 bool current_loop_backend_recover(uint32_t* cleared_fault_flags);
 void current_loop_backend_get_snapshot(
     current_loop_backend_snapshot_t* snapshot);
+/* Single-field atomic status read for the 4 kHz control path. Use the full
+ * snapshot API whenever fields must be mutually coherent. */
+bool current_loop_backend_is_active(void);
 uint32_t current_loop_backend_sample_count(void);
 uint16_t current_loop_backend_trace_count(void);
 bool current_loop_backend_trace_arm(void);

@@ -146,6 +146,15 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS -O2
 )
 
+# The nano C library's memcpy stub is byte-at-a-time on this target.  Keep the
+# fixed-size rotor publications in this translation unit so GCC can expand
+# their aligned structure copies as 32-bit loads and stores instead of calling
+# that stub from the 4 kHz deferred path.
+set_property(
+    SOURCE src/app/rotor_control_runtime.c
+    APPEND PROPERTY COMPILE_OPTIONS -finline-stringops=memcpy
+)
+
 set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/n32l406cbl7.ld)
 target_link_options(${FIRMWARE_TARGET} PRIVATE
     -mcpu=cortex-m4

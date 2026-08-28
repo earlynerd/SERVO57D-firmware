@@ -563,7 +563,6 @@ static void update_torque(rotor_control_runtime_t* runtime,
                           uint32_t now_millis,
                           uint32_t timestamp_us)
 {
-    current_loop_backend_snapshot_t loop = {0};
     aligned_torque_status_t status;
     aligned_torque_event_t event;
     uint32_t electrical_phase_q32 = 0u;
@@ -571,8 +570,8 @@ static void update_torque(rotor_control_runtime_t* runtime,
         &runtime->motor_alignment,
         sample->angle_raw,
         &electrical_phase_q32);
+    const bool backend_active = current_loop_backend_is_active();
 
-    current_loop_backend_get_snapshot(&loop);
     event = aligned_torque_controller_update(
         &runtime->torque_controller,
         now_millis,
@@ -581,7 +580,7 @@ static void update_torque(rotor_control_runtime_t* runtime,
         electrical_phase_q32,
         float_to_q16_16(
             runtime->angle_tracker.velocity_revolutions_per_second),
-        loop.active);
+        backend_active);
     if (event == ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED)
     {
         aligned_torque_controller_get_status(
@@ -612,7 +611,6 @@ static void update_velocity(rotor_control_runtime_t* runtime,
                             uint32_t now_millis,
                             uint32_t timestamp_us)
 {
-    current_loop_backend_snapshot_t loop = {0};
     aligned_torque_status_t torque_status;
     velocity_control_event_t velocity_event;
     aligned_torque_event_t torque_event = ALIGNED_TORQUE_EVENT_NONE;
@@ -623,9 +621,9 @@ static void update_velocity(rotor_control_runtime_t* runtime,
         &runtime->motor_alignment,
         sample->angle_raw,
         &electrical_phase_q32);
+    const bool backend_active = current_loop_backend_is_active();
 
     observation.timestamp_us = timestamp_us;
-    current_loop_backend_get_snapshot(&loop);
     velocity_event = velocity_controller_update(
         &runtime->velocity_controller,
         now_millis,
@@ -650,7 +648,7 @@ static void update_velocity(rotor_control_runtime_t* runtime,
                 electrical_phase_q32,
                 float_to_q16_16(
                     observation.velocity_revolutions_per_second),
-                loop.active);
+                backend_active);
             if (torque_event == ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED)
             {
                 aligned_torque_controller_get_status(
@@ -700,7 +698,6 @@ static void update_position(rotor_control_runtime_t* runtime,
                             uint32_t now_millis,
                             uint32_t timestamp_us)
 {
-    current_loop_backend_snapshot_t loop = {0};
     aligned_torque_status_t torque_status;
     position_control_event_t position_event;
     velocity_control_event_t velocity_event =
@@ -714,9 +711,9 @@ static void update_position(rotor_control_runtime_t* runtime,
         &runtime->motor_alignment,
         sample->angle_raw,
         &electrical_phase_q32);
+    const bool backend_active = current_loop_backend_is_active();
 
     observation.timestamp_us = timestamp_us;
-    current_loop_backend_get_snapshot(&loop);
     position_event = position_controller_update(
         &runtime->position_controller,
         now_millis,
@@ -751,7 +748,7 @@ static void update_position(rotor_control_runtime_t* runtime,
                     electrical_phase_q32,
                     float_to_q16_16(
                         observation.velocity_revolutions_per_second),
-                    loop.active);
+                    backend_active);
                 if (torque_event == ALIGNED_TORQUE_EVENT_REFERENCE_CHANGED)
                 {
                     aligned_torque_controller_get_status(

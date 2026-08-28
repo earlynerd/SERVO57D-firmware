@@ -250,8 +250,6 @@ static void adc_current_event(adc1_status_t status,
         report_aligned_reference = true;
         use_rotating_frame_controller = true;
         current_q_reference_counts = s_aligned_q_reference_counts;
-        s_predicted_electrical_phase_q32 = pwm_application_phase_q32;
-        record_prediction_age(prediction_age_us);
     }
     if (!(use_rotating_frame_controller ?
           phase_current_loop_step_rotating_prevalidated(
@@ -299,6 +297,11 @@ static void adc_current_event(adc1_status_t status,
             fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
             return;
         }
+    }
+    if (report_aligned_reference)
+    {
+        s_predicted_electrical_phase_q32 = pwm_application_phase_q32;
+        record_prediction_age(prediction_age_us);
     }
     /* The aligned A/B reference is reporting-only: rotating control consumes
        d/q references directly. Keep the ordinary 20 kHz deadline path free of
@@ -967,6 +970,11 @@ void current_loop_backend_get_snapshot(
     snapshot->active = s_active;
     snapshot->phase_prediction_active = s_phase_prediction_active;
     control_critical_exit(previous);
+}
+
+bool current_loop_backend_is_active(void)
+{
+    return s_active;
 }
 
 uint32_t current_loop_backend_sample_count(void)

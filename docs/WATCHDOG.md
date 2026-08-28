@@ -76,7 +76,7 @@ being measured:
 - confirm LSI readiness and the programmed IWDG prescaler/reload fields;
 - measure the real watchdog reset interval over supply and temperature conditions available during bring-up;
 - prove a running-but-unserviced image resets and reports `IWDGRSTF` on the next boot;
-- prove normal heartbeat operation does not reset over an extended run;
+- prove normal software-liveness operation does not reset over an extended run;
 - halt under SWD and verify watchdog reset timing plus all four gate-command and gate-output waveforms;
 - repeat power-cycle, external reset, software panic, and watchdog reset while monitoring all bridge-control pins.
 

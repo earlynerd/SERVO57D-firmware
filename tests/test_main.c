@@ -19,6 +19,7 @@
 #include "mks57d/control_math.h"
 #include "mks57d/current_controller.h"
 #include "mks57d/current_loop_backend.h"
+#include "mks57d/deferred_deadline_indicator.h"
 #include "mks57d/diagnostics.h"
 #include "mks57d/dma_channels.h"
 #include "mks57d/dma_ring.h"
@@ -3333,6 +3334,7 @@ static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
     EXPECT_TRUE(electrical_phase_predictor_init(&predictor, &config));
     EXPECT_TRUE(electrical_phase_predictor_set_observation(
         &predictor, 0x10000000u, 4 << 16, 1, 1000u));
+    EXPECT_TRUE(predictor.output_lead_phase_delta_q32 != 0u);
     EXPECT_TRUE(electrical_phase_predictor_predict_horizons(
         &predictor,
         1000u,
@@ -3341,6 +3343,8 @@ static void test_electrical_phase_predictor_advances_at_current_loop_rate(void)
         &age_us));
     EXPECT_TRUE(age_us == 0u);
     EXPECT_TRUE(sample_phase == 0x10000000u);
+    EXPECT_TRUE((pwm_application_phase - sample_phase) ==
+                predictor.output_lead_phase_delta_q32);
     EXPECT_TRUE((pwm_application_phase - sample_phase) > 0x005BB000u);
     EXPECT_TRUE((pwm_application_phase - sample_phase) < 0x005BD000u);
     EXPECT_TRUE(electrical_phase_predictor_predict(
@@ -3379,6 +3383,7 @@ static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
     uint32_t boundary_phase = 0u;
     uint32_t age_us = 0u;
     const uint32_t timestamp_us = UINT32_MAX - 500u;
+    uint32_t forward_output_lead_phase_delta = 0u;
 
     EXPECT_TRUE(electrical_phase_predictor_init(&predictor, &config));
     EXPECT_TRUE(!electrical_phase_predictor_predict(
@@ -3390,6 +3395,8 @@ static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
 
     EXPECT_TRUE(electrical_phase_predictor_set_observation(
         &predictor, 0u, 4 << 16, 1, timestamp_us));
+    forward_output_lead_phase_delta =
+        predictor.output_lead_phase_delta_q32;
     EXPECT_TRUE(electrical_phase_predictor_predict(
         &predictor, 499u, &forward_phase, &age_us));
     EXPECT_TRUE(age_us == 1000u);
@@ -3402,11 +3409,14 @@ static void test_electrical_phase_predictor_handles_direction_age_and_wrap(void)
 
     EXPECT_TRUE(electrical_phase_predictor_set_observation(
         &predictor, 0u, 4 << 16, -1, 1000u));
+    EXPECT_TRUE(predictor.output_lead_phase_delta_q32 ==
+                (0u - forward_output_lead_phase_delta));
     EXPECT_TRUE(electrical_phase_predictor_predict(
         &predictor, 2000u, &reverse_phase, &age_us));
     EXPECT_TRUE((forward_phase + reverse_phase) < 0x00001000u);
 
     electrical_phase_predictor_reset(&predictor);
+    EXPECT_TRUE(predictor.output_lead_phase_delta_q32 == 0u);
     EXPECT_TRUE(!electrical_phase_predictor_predict(
         &predictor, 2000u, &reverse_phase, &age_us));
 
@@ -5247,6 +5257,28 @@ static void test_phase_current_reference_maps_signed_quadrants(void)
     EXPECT_TRUE(reference_b == 0);
 }
 
+static void test_phase_current_reference_reuses_quadrature_fraction(void)
+{
+    uint32_t phase = 0x00123456u;
+
+    for (uint32_t index = 0u; index < 257u; ++index)
+    {
+        int16_t sine = 0;
+        int16_t cosine = 0;
+        int16_t quarter_sine = 0;
+        int16_t quarter_cosine = 0;
+
+        EXPECT_TRUE(phase_current_reference_sin_cos_q15(
+            phase, &sine, &cosine));
+        EXPECT_TRUE(phase_current_reference_sin_cos_q15(
+            phase + 0x40000000u, &quarter_sine, &quarter_cosine));
+        EXPECT_TRUE(cosine == quarter_sine);
+        EXPECT_TRUE(((int32_t)sine + quarter_cosine) >= -1);
+        EXPECT_TRUE(((int32_t)sine + quarter_cosine) <= 1);
+        phase += 0x01020305u;
+    }
+}
+
 static void test_aligned_torque_ramps_signed_q_current_and_deadlines(void)
 {
     const aligned_torque_config_t config = test_aligned_torque_config();
@@ -5628,6 +5660,46 @@ static void test_runtime_profile_rejects_future_pend_marker_race(void)
                     maximum_cycles == 10u);
 }
 
+static void test_deferred_deadline_indicator_tracks_raw_overdue_time(void)
+{
+    deferred_deadline_indicator_t indicator;
+    uint32_t release_1;
+    uint32_t release_2;
+    uint32_t release_3;
+
+    deferred_deadline_indicator_init(&indicator);
+    release_1 = deferred_deadline_indicator_start(&indicator);
+    EXPECT_TRUE(release_1 == 1u);
+    EXPECT_TRUE(deferred_deadline_indicator_deadline_elapsed(&indicator));
+    EXPECT_TRUE(indicator.active);
+
+    release_2 = deferred_deadline_indicator_start(&indicator);
+    EXPECT_TRUE(!deferred_deadline_indicator_deadline_elapsed(&indicator));
+    release_3 = deferred_deadline_indicator_start(&indicator);
+    EXPECT_TRUE(!deferred_deadline_indicator_complete(
+        &indicator, release_1));
+    EXPECT_TRUE(indicator.active);
+    EXPECT_TRUE(deferred_deadline_indicator_complete(
+        &indicator, release_2));
+    EXPECT_TRUE(!indicator.active);
+
+    EXPECT_TRUE(!deferred_deadline_indicator_complete(
+        &indicator, release_3));
+    EXPECT_TRUE(!deferred_deadline_indicator_deadline_elapsed(&indicator));
+
+    release_1 = deferred_deadline_indicator_start(&indicator);
+    EXPECT_TRUE(!deferred_deadline_indicator_complete(
+        &indicator, release_1));
+    EXPECT_TRUE(!deferred_deadline_indicator_deadline_elapsed(&indicator));
+
+    indicator.latest_started_sequence = UINT32_MAX;
+    indicator.latest_completed_sequence = UINT32_MAX;
+    release_1 = deferred_deadline_indicator_start(&indicator);
+    EXPECT_TRUE(release_1 == 0u);
+    EXPECT_TRUE(deferred_deadline_indicator_deadline_elapsed(&indicator));
+    EXPECT_TRUE(deferred_deadline_indicator_complete(&indicator, 0u));
+}
+
 int main(void)
 {
     test_control_math_shared_saturation_semantics();
@@ -5680,6 +5752,7 @@ int main(void)
     test_native_protocol_counts_transport_rejection();
     test_runtime_profile_aggregates_explicit_window();
     test_runtime_profile_rejects_future_pend_marker_race();
+    test_deferred_deadline_indicator_tracks_raw_overdue_time();
     test_angle_tracker_unwraps_in_both_directions();
     test_angle_tracker_rejects_implausible_motion_without_advancing();
     test_encoder_liveness_requires_fresh_progress();
@@ -5725,6 +5798,7 @@ int main(void)
     test_rotating_current_test_supports_long_fractional_ramps();
     test_rotating_current_test_rounds_fractional_ramp_steps();
     test_phase_current_reference_maps_signed_quadrants();
+    test_phase_current_reference_reuses_quadrature_fraction();
     test_aligned_torque_ramps_signed_q_current_and_deadlines();
     test_aligned_torque_rejects_unsafe_feedback_and_backend();
     test_aligned_torque_requires_feedback_after_seed_sample();

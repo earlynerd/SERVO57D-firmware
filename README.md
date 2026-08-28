@@ -5,7 +5,7 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.38.0 / native protocol 1.19 is the current source and flashed
+Firmware 0.38.3 / native protocol 1.19 is the current source and flashed
 baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
@@ -124,7 +124,45 @@ plus higher-priority current-loop completions. The profiler is dormant unless
 armed, consumes no trace buffer, and can run alongside the existing 20 kHz
 current trace.
 
-Firmware 0.38.0 is flashed and accepted on the COM14 controller. A +4 rev/s,
+Firmware 0.38.1 retains protocol 1.19 and assigns the active-high PD0 LED only
+to the raw 4 kHz deferred-chain deadline. At each 250 us TIM6 release boundary,
+the LED turns on if the preceding acquisition-through-PendSV job is still
+incomplete and turns off when the newest overdue job completes. There is no
+pulse stretching or latching; overlapping misses remain continuously on, and
+the former physical heartbeat is now a software-only diagnostic counter.
+
+Firmware 0.38.2 retains protocol 1.19, publication rates, layouts, and sequence
+protection while forcing the fixed rotor-runtime structure assignments to
+expand as aligned 32-bit loads/stores. Arm disassembly showed that 0.38.1 moved
+472 controller bytes through four calls to the nano C library's byte-at-a-time
+`memcpy` on every 100 Hz full publication. Native/Python tests and Debug/Release
+Arm builds pass. After flashing, the previously motion-correlated PD0 pulses are
+no longer visible while the rotor moves.
+
+Firmware 0.38.3 retains protocol 1.19 and makes four exact hot-path reductions:
+active 4 kHz controllers read the backend's atomic `active` field instead of a
+full critical-section snapshot; each accepted observation caches its dynamic
+55 us phase advance; aligned prediction reporting occurs only after PWM staging
+and the immediate trace timestamp; and each sine/cosine pair shares lookup index
+and interpolation-fraction work. The 55 us horizon remains the measured timing
+contract, while its cached phase is recomputed from every observed phase rate.
+Control outputs, numerical rounding, publication/protocol layouts, trace timing,
+authority, limits, faults, STOP, and `ZERO` are unchanged.
+
+Firmware 0.38.3 is flashed on the COM14 controller. On 0.38.1, PD0 was dark
+while idle but rapidly emitted individually very-low-duty pulses during motion;
+after the 0.38.2 word-copy change, no blue light was visible during motion.
+Firmware 0.38.3 completed simultaneous current-trace/runtime-profile captures at
+both +4 and -4 rev/s plus a profiler-disarmed +4 rev/s control run. All 512
+profiled releases completed with no incomplete release: total PendSV averaged
+105.34/104.46 us and peaked at 164.34/164.11 us for the positive/negative runs,
+respectively, against the 250 us period. Both 256-sample current traces retained
+at least 31.22 us PWM-preload margin, zero missed updates, and clean finite-
+deadline `ZERO` release without reset or panic evidence. The disarmed run had
+nearly identical tracking. A separate +8 rev/s attempt was intentionally not
+accepted after proving too aggressive for the unloaded setup and faulting safely.
+
+Firmware 0.38.0 was flashed and accepted on the COM14 controller. A +4 rev/s,
 16 rev/s², 606 mA, two-second run armed both profilers at steady state and
 completed with 0.0967 rev/s RMS error, zero faults, and normal `ZERO` release.
 All 256 deferred releases were complete: pend latency averaged 2.89 us and
@@ -177,7 +215,7 @@ faults. Automatic-injected VBUS telemetry reports physical bus and commanded
 phase volts without delaying the current-loop DMA event.
 
 The next work is firmware control-path performance rather than final
-motor/load tuning. The accepted 0.37.0 through 0.38.0 current, timing, and motion captures are
+motor/load tuning. The accepted 0.37.0 through 0.38.3 current, timing, and motion captures are
 regression baselines for reducing ordinary 20 kHz fixed-point current-path and
 4 kHz rotor/control overhead, then improving high-electrical-frequency current
 tracking and estimator/phase/outer-loop scheduling without weakening authority,

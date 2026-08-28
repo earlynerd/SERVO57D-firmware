@@ -32,11 +32,11 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 4 | `schema_version` | Record schema, currently `5` |
 | 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; currently `0.29.2` |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; current source is `0.38.3` |
 | 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, rotating-current diagnostic, current-loop, automatic-alignment, persistent-configuration, aligned-torque, velocity-control, position-control, and fault-recovery capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
-| 32 | `heartbeat_count` | Number of active-high PD0 LED toggles completed |
+| 32 | `heartbeat_count` | Number of 250 ms foreground software-liveness epochs completed; firmware 0.38.1 no longer couples this field to PD0 |
 | 36 | `watchdog_status` | Numeric `watchdog_status_t` value from the foreground supervisor |
 | 40 | `platform_boot_status` | Numeric `platform_boot_status_t` value |
 | 44 | `reset_flags` | RCC reset flags captured before they were cleared |
@@ -100,7 +100,7 @@ The format is append-only within a schema: new fields may be appended and `recor
 
 The cooperative foreground loop is the sole writer. It publishes after every
 boot gate, immediately after watchdog initialization, after each 250 ms
-heartbeat, after encoder activity, after RS-485 initialization or a
+software-liveness epoch, after encoder activity, after RS-485 initialization or a
 transport failure, after each non-empty RS-485 foreground drain, and
 after each 10 ms current-loop snapshot, and immediately before entering a
 watchdog-related panic.
@@ -128,8 +128,11 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 
 For a new board or diagnostic-schema validation:
 
-- load the matching ELF symbols and inspect `g_diagnostics` before and after heartbeat changes;
-- confirm `firmware_version` decodes to `0.29.2`, schema is 5, and record size is 240;
+- load the matching ELF symbols and inspect `g_diagnostics` before and after software-liveness changes;
+- confirm `firmware_version` decodes to `0.38.3`, schema is 5, and record size is 240;
+- independently scope PD0: firmware 0.38.1 leaves it low on complete 4 kHz
+  releases and drives it high only from the next 250 us boundary until the
+  newest overdue acquisition-through-PendSV job completes;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
 - compare `reset_flags` against power-on, NRST, and induced IWDG resets;

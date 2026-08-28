@@ -105,7 +105,7 @@ retained 2 MHz ADC clock, the two 28.5-cycle current conversions require about
 44 microseconds including conservative single-sequence overhead, leaving about
 6 microseconds before the next 50 microsecond trigger. PWM is inhibited until
 the first complete pair is available. A DMA error or invalid result immediately
-removes PWM authority while heartbeat, protocol, and OLED diagnostics remain
+removes PWM authority while the software liveness counter, protocol, and OLED diagnostics remain
 alive; the OLED shows the numeric status as `A####`. In that historical image,
 `vBus` was not part of the synchronous sequence and its earlier 20 Hz polling
 was inactive. On the tested board DMA channel 1 instead set

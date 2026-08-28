@@ -44,4 +44,5 @@ the 64 MHz run configuration.
 
 Do not route MCO to PA8 for measurement because PA8 is the bench-proven
 isolated `nDIR` input. Clock acceptance instead uses the mandatory clock-source
-readback plus normal heartbeat, OLED, encoder, ADC, and communications behavior.
+readback plus a normally dark raw deadline LED, OLED, encoder, ADC, and
+communications behavior.

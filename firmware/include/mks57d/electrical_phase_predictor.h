@@ -18,6 +18,8 @@ typedef struct
     uint32_t observed_electrical_phase_q32;
     uint32_t observation_timestamp_us;
     int32_t electrical_phase_rate_q32_per_us;
+    /* Observation-derived phase advance across config.output_lead_us. */
+    uint32_t output_lead_phase_delta_q32;
     bool observation_valid;
     bool initialized;
 } electrical_phase_predictor_t;

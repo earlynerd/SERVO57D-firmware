@@ -3864,7 +3864,6 @@ int main(void)
 
         if ((int32_t)(now - next_heartbeat) >= 0)
         {
-            board_status_led_toggle();
             ++heartbeat_count;
             next_heartbeat += 250u;
             diagnostics_due = true;

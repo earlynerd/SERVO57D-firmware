@@ -69,6 +69,25 @@ PendSV, foreground housekeeping, and higher-priority current-loop completions.
 DWT reads and accumulation are confined to the armed window, the existing
 8,192-byte current trace may run simultaneously, and neither diagnostic gains
 bridge authority or changes fault/`ZERO` behavior.
+Firmware 0.38.1 retains protocol 1.19 and repurposes active-high PD0 from a
+foreground heartbeat to an unstretched 4 kHz deadline indication. TIM6 asserts
+the LED when the preceding acquisition-through-PendSV release remains
+incomplete at the next 250 us boundary; completion clears it after the newest
+overdue release. The debugger heartbeat field remains a software liveness
+counter and no longer describes LED transitions.
+Firmware 0.38.2 retains protocol 1.19 and all rotor-publication semantics while
+applying `-finline-stringops=memcpy` only to `rotor_control_runtime.c`. The four
+fixed controller assignments in each 100 Hz full publication now expand as
+aligned 32-bit load/store loops instead of calling the nano library's
+byte-at-a-time `memcpy`; the 56-byte/576-byte layouts, rates, sequence counters,
+and readers are unchanged.
+Firmware 0.38.3 retains protocol 1.19 and removes four remaining exact hot-path
+costs. The active 4 kHz torque/velocity/position paths use a one-byte atomic
+backend-active accessor instead of a full coherent status copy; each new rotor
+observation caches the phase advance across the configured 55 us output horizon;
+prediction reporting occurs after PWM staging and the immediate trace timestamp;
+and sine/cosine interpolation shares index/fraction decoding. The cached phase
+advance remains velocity- and direction-dependent, not a fixed angle.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -148,7 +167,10 @@ expanded-current hardware gates remain pending.
 
 - Startup verifies the reset-default 4 MHz MSI, then enables the fitted 8 MHz HSE and PLL x8 for 64 MHz HCLK. PCLK2 is 32 MHz, PCLK1 is 16 MHz, and TIM3 receives the doubled 32 MHz APB1 timer clock.
 - The initial stack and runtime data use SRAM1 only. SRAM2 is initialized for parity but unavailable to the linker until bench validation.
-- The active-high status LED is PD0; PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low monitored inputs.
+- The active-high PD0 status LED is on only while at least one 4 kHz deferred
+  release is beyond its 250 us completion deadline; it has no minimum pulse,
+  heartbeat, or latch. PB8/PB9/PA15 and PB12/PB13 are bench-proven active-low
+  monitored inputs.
 - PA6, PA7, PB0, and PB1 begin high impedance/no-pull, then firmware preloads all four low and assigns TIM3 channels 1-4 on AF2. Each signal directly drives tied EG3013 HIN/LIN inputs, so low selects the low-side FET and high selects the high-side FET.
 - SPI1 on PB3-PB6 performs bounded mode-3 MT6816 reads at an 8 MHz target on a deterministic 4 kHz TIM6/TIM7/SPI-DMA schedule, including while the motor runs; CS assertion timestamps the start of each coherent four-byte window, and PendSV later decodes the completed frame and advances the sole rotor runtime. An independent foreground monitor requires accepted encoder production to advance within 3 ms: loss removes idle readiness or faults energized authority through `ZERO`. Native protocol 1.14 reports raw sensor health, unwrapped mechanical position, filtered velocity, current and maximum observed sample intervals, estimator faults, alignment validity, automatic-alignment progress/results, persistent configuration, aligned-torque state/policy and predictor evidence, velocity state/policy, position state/policy, VBUS telemetry, and the post-authority timing burst; its existing estimator-ready flag is asserted only while this progress evidence is live.
 - USART1 AF4 on PA9/PA10 receives continuously through DMA channel 4. DMA

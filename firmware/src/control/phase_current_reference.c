@@ -22,12 +22,9 @@ static const int16_t SINE_Q15[SINE_TABLE_SIZE] = {
     -32767, -32137, -30273, -27245, -23170, -18204, -12539, -6393,
 };
 
-static int16_t sine_q15(uint32_t phase)
+static int16_t interpolate_sine_q15(uint32_t index, uint32_t fraction)
 {
-    const uint32_t index = phase >> SINE_INDEX_SHIFT;
     const uint32_t next_index = (index + 1u) & (SINE_TABLE_SIZE - 1u);
-    const uint32_t fraction =
-        (phase >> SINE_FRACTION_SHIFT) & SINE_FRACTION_MASK;
     const int32_t first = SINE_Q15[index];
     const int32_t difference = (int32_t)SINE_Q15[next_index] - first;
 
@@ -41,14 +38,24 @@ bool phase_current_reference_sin_cos_q15(
     int16_t* sine,
     int16_t* cosine)
 {
+    uint32_t index;
+    uint32_t fraction;
+    uint32_t cosine_index;
+
     if ((sine == NULL) || (cosine == NULL))
     {
         return false;
     }
 
-    *sine = sine_q15(electrical_phase_q32);
-    *cosine = sine_q15(
-        electrical_phase_q32 + QUARTER_CYCLE_PHASE);
+    index = electrical_phase_q32 >> SINE_INDEX_SHIFT;
+    fraction =
+        (electrical_phase_q32 >> SINE_FRACTION_SHIFT) &
+        SINE_FRACTION_MASK;
+    cosine_index =
+        (index + (QUARTER_CYCLE_PHASE >> SINE_INDEX_SHIFT)) &
+        (SINE_TABLE_SIZE - 1u);
+    *sine = interpolate_sine_q15(index, fraction);
+    *cosine = interpolate_sine_q15(cosine_index, fraction);
     return true;
 }
 

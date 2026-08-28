@@ -79,6 +79,7 @@ bool electrical_phase_predictor_init(
     predictor->observed_electrical_phase_q32 = 0u;
     predictor->observation_timestamp_us = 0u;
     predictor->electrical_phase_rate_q32_per_us = 0;
+    predictor->output_lead_phase_delta_q32 = 0u;
     predictor->observation_valid = false;
     predictor->initialized = true;
     return true;
@@ -106,6 +107,9 @@ bool electrical_phase_predictor_set_observation(
     predictor->observed_electrical_phase_q32 = electrical_phase_q32;
     predictor->observation_timestamp_us = observation_timestamp_us;
     predictor->electrical_phase_rate_q32_per_us = phase_rate;
+    predictor->output_lead_phase_delta_q32 =
+        (uint32_t)((int64_t)phase_rate *
+                   (int64_t)predictor->config.output_lead_us);
     predictor->observation_valid = true;
     return true;
 }
@@ -119,7 +123,6 @@ bool electrical_phase_predictor_predict_horizons(
 {
     uint32_t age_us;
     int64_t sample_phase_delta;
-    int64_t output_lead_phase_delta;
 
     if ((predictor == NULL) || (sample_phase_q32 == NULL) ||
         (pwm_application_phase_q32 == NULL) ||
@@ -140,14 +143,11 @@ bool electrical_phase_predictor_predict_horizons(
     sample_phase_delta =
         (int64_t)predictor->electrical_phase_rate_q32_per_us *
         (int64_t)age_us;
-    output_lead_phase_delta =
-        (int64_t)predictor->electrical_phase_rate_q32_per_us *
-        (int64_t)predictor->config.output_lead_us;
     *sample_phase_q32 =
         predictor->observed_electrical_phase_q32 +
         (uint32_t)sample_phase_delta;
     *pwm_application_phase_q32 =
-        *sample_phase_q32 + (uint32_t)output_lead_phase_delta;
+        *sample_phase_q32 + predictor->output_lead_phase_delta_q32;
     return true;
 }
 
@@ -178,5 +178,6 @@ void electrical_phase_predictor_reset(
     predictor->observed_electrical_phase_q32 = 0u;
     predictor->observation_timestamp_us = 0u;
     predictor->electrical_phase_rate_q32_per_us = 0;
+    predictor->output_lead_phase_delta_q32 = 0u;
     predictor->observation_valid = false;
 }

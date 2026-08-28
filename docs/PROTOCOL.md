@@ -1,6 +1,6 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.19 is implemented in the flashed firmware 0.38.0
+Status: native protocol 1.19 is implemented in the flashed firmware 0.38.3
 baseline.
 Protocol 1.12 trace schema 1
 remains backward-decodable by the host.

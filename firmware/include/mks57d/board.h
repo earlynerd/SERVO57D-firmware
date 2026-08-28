@@ -12,6 +12,6 @@ bool board_bridge_pwm_init(uint32_t timer_clock_hz);
 void board_bridge_force_low_zero(void);
 void board_display_reset_assert(void);
 void board_display_reset_release(void);
-void board_status_led_toggle(void);
+void board_status_led_set(bool enabled);
 
 #endif

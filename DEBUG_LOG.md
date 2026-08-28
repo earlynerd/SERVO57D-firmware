@@ -500,3 +500,12 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** aligned-q-signed-motion-and-position-fault-bench-validation
 - **Recently-touched?** yes — firmware 0.36.0 promoted the rotating d/q controller into the production aligned-q path, and firmware 0.37.0 changed only direct-velocity trajectory selection.
 - **Status:** Final status reported zero duties/references, 250 us encoder cadence, valid generation-3 alignment, volatile Kp=9/Ki=0.5 still intentionally unsaved, no current/backend/encoder/supervisor faults, no missed PWM updates, and no reset or retained panic.
+
+## 2026-08-27 — Bytewise full-snapshot publication crosses the 4 kHz motion deadline
+
+- **Observation:** On flashed 0.38.1, raw PD0 is completely dark while idle and rapidly emits very-low-duty pulses only during motion. The retained +4 rev/s profile measured 185.52 us maximum publication and 336.61 us maximum PendSV work against the 250 us release period.
+- **Root cause/evidence:** The four full-controller assignments in `firmware/src/app/rotor_control_runtime.c` compiled into four calls totaling 472 bytes through the nano library's byte-at-a-time `memcpy`, making the 100 Hz full publication the leading deterministic motion-only overrun source.
+- **Fix:** Firmware 0.38.2 forces fixed-size `memcpy` expansion only for the rotor-runtime translation unit. Debug/Release disassembly uses 32-bit load/store loops with no full-snapshot `memcpy` call.
+- **Class:** hot-loop-code-generation
+- **Recently-touched?** no — the full publication predates the raw LED; firmware 0.38.1 made the timing state directly visible.
+- **Status:** Resolved on hardware. After flashing 0.38.2, the user reports no blue light during motion, where 0.38.1 had emitted rapid low-duty deadline pulses. A retained numerical before/after profile remains useful but no longer blocks the visual timing gate.

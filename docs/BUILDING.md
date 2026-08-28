@@ -45,6 +45,9 @@ Firmware targets use the Cortex-M4F single-precision unit through
 soft-float-compatible while generated outer-control math uses hardware FP.
 The complete 20 kHz current path and accepted-sample/PendSV estimator-control
 chain receive a source-level `-O2` override in Debug as well as Release.
+`rotor_control_runtime.c` additionally uses `-finline-stringops=memcpy` so its
+fixed publication assignments do not call the target's byte-at-a-time nano
+library routine.
 `-ffast-math` is intentionally not enabled because finite-value and fault checks
 remain part of the control contract.
 
@@ -171,7 +174,7 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.38.0 / protocol 1.19 is the current source and flashed evaluation
+Firmware 0.38.3 / protocol 1.19 is the current source and flashed evaluation
 build. The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
@@ -236,7 +239,7 @@ position-cascade headroom without changing the wire layout. It:
    its microsecond view uses bounded raw-snapshot and exclusive-publication
    retries so current control may preempt epoch service without observing
    backward time.
-7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; the LED toggles every 250 ms.
+7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; PD0 stays low except while a complete 4 kHz rotor job is overdue.
 8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at an 8 MHz target. TIM6 releases a 4 kHz MT6816 transaction, timestamps the start of the coherent window when CS asserts, TIM7 retains the bounded 2 us CS setup/hold guards, SPI1 DMA channels 2/3 move the unchanged four-byte frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
@@ -282,7 +285,7 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.32.2`, authoritative drive state, reset cause,
+22. Publishes firmware `0.38.3`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
@@ -485,3 +488,36 @@ independently verified the Debug image. A simultaneous aggregate profile and
 current trace completed a bounded +4 rev/s / 606 mA run with all 256 deferred
 releases complete, 256 consecutive current samples, zero missed updates or
 faults, and normal `ZERO` release.
+
+Firmware 0.38.1 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,208/60,936 bytes Flash and 11,852 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. The
+source candidate replaces foreground PD0 heartbeat toggles with an unstretched
+complete-chain deadline indication. On hardware PD0 is dark while idle and
+emits rapid, individually low-duty pulses only while the rotor is moving; exact
+scope/profile correlation remains open.
+
+Firmware 0.38.2 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,328/61,044 bytes Flash and 11,852 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Debug
+disassembly shows the four fixed full-snapshot controller assignments expanded
+as 32-bit load/store loops with no call to `memcpy`. After manual flash, the raw
+PD0 deadline LED remains visibly dark during motion; the same numerical profile
+comparison remains open.
+
+Firmware 0.38.3 / protocol 1.19 passes the native suite and all 67 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,320/61,040 bytes Flash and 11,856 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified.
+Disassembly confirms a single multiply in the 20 kHz horizon predictor, a
+three-instruction backend-active accessor in the three active 4 kHz paths,
+shared sine/cosine fraction extraction, aligned reporting after PWM staging and
+the immediate trace timestamp, and no regression to library full-snapshot
+copies. The flashed image completed simultaneous trace/profile captures at
+signed 4 rev/s plus a profiler-disarmed positive control run. All 512 profiled
+releases completed, the worst total PendSV time was 164.34 us against the
+250 us period, both 256-sample current traces reported zero missed PWM updates,
+and every accepted run ended fault-free in `ZERO` without reset or panic
+evidence.
