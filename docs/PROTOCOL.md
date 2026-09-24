@@ -1,7 +1,10 @@
 # Command Protocol Architecture
 
-Status: native protocol 1.19 is unchanged in the firmware 0.38.6 source
-candidate and implemented in the currently flashed firmware 0.38.4.
+Status: native protocol 1.20 is the firmware 0.39.0 source candidate.
+The currently flashed firmware 0.38.7 implements protocol 1.19 and boot status
+through schema 2; schema-3 crash/stack and encoder-error extensions require
+0.38.8 or newer. The bootstrap probe requires protocol 1.20 capability bit 20
+and remains an unqualified waveform-characterization feature.
 Protocol 1.12 trace schema 1
 remains backward-decodable by the host.
 Discovery, boot and encoder telemetry, the
@@ -112,12 +115,13 @@ from causing reply storms.
 | `0x0101` | `CONFIGURE_CURRENT_TEST` | Legacy: amplitude counts `u16`, frequency millihertz `u32`; protocol 1.17 extended: those fields plus controller mode `u8` | Applied request fields; the mode byte is returned for the extended request |
 | `0x0102` | `START_CURRENT_TEST` | Legacy: initial leg `u8`, hold milliseconds `u32`; protocol 1.15 extended: initial leg `u8`, ramp milliseconds `u32`, hold milliseconds `u32` | Empty |
 | `0x0103` | `STOP_CURRENT_TEST` | Empty | Empty |
-| `0x0104` | `GET_BOOT_STATUS` | Empty | Schema `u8`, RCC reset flags `u32`, retained panic `u8`, uptime milliseconds `u32` |
+| `0x0104` | `GET_BOOT_STATUS` | Empty | Schema-versioned boot/reset evidence described below |
 | `0x0105` | `GET_ENCODER_STATUS` | Empty | Schema-2 raw encoder, mechanical estimator, alignment, electrical-phase, and scheduling block described below |
 | `0x0106` | `GET_CURRENT_TRACE` | Sample index `u16` | Schema-2 current, prediction, carrier-timer, DWT, and PWM-preload sample described below |
 | `0x0107` | `ARM_CURRENT_TRACE` | Empty | Empty |
 | `0x0108` | `GET_RUNTIME_PROFILE` | Empty | Completed schema-1 aggregate runtime profile described below |
 | `0x0109` | `ARM_RUNTIME_PROFILE` | Empty | Empty |
+| `0x010A` | `START_BOOTSTRAP_PROBE` | Duration milliseconds `u32` (1..5000 inclusive) | Empty |
 | `0x0200` | `START_ALIGNMENT` | Requested current counts `u16` | Empty |
 | `0x0201` | `GET_ALIGNMENT_STATUS` | Empty | Schema-1 automatic-alignment status block described below |
 | `0x0202` | `STOP_DRIVE` | Empty | Empty |
@@ -236,6 +240,38 @@ PendSV executions. Arming this aggregate profile does not allocate a sample
 buffer and may be combined with `ARM_CURRENT_TRACE`; enabling either profiler
 does not reset an already-running DWT counter.
 
+Firmware 0.39.0 / protocol 1.20 adds `START_BOOTSTRAP_PROBE` (`0x010A`).
+The request is exactly four big-endian bytes specifying 1..5000 milliseconds;
+wrong lengths and out-of-range durations return `INVALID_PAYLOAD`. An absent
+callback or a denied readiness/authority request returns `UNAVAILABLE`.
+A successful response contains only the normal `OK` status byte. Hosts must
+check `GET_CAPABILITIES` bit 20 before sending this command.
+
+This is an experimental all-high bootstrap-discharge probe, not a verified
+coast/release mode. Initial characterization requires the motor disconnected
+and a 12 V current-limited supply; follow [BRINGUP.md](BRINGUP.md) before bench
+use. The application requires its existing ready/inactive supervisor state,
+fresh supply observation in the initial 10..14 V window, near-zero measured
+current and near-rest encoder, and no stop/fault condition before granting the
+bounded diagnostic authority. The project-owned current backend commands the
+all-high vector only for the requested interval, subject also to a refreshed
+foreground lease and existing fault/stop paths. Expiry, STOP, transport failure,
+or a failed lease converges on common all-low `ZERO`. This command does not
+change idle, startup, fault, or ordinary motion shutdown behavior.
+
+Commissioning flag bit 12, `BOOTSTRAP_PROBE_ACTIVE`, means the experimental
+all-high vector is commanded. It does not establish discharged bootstrap
+capacitors, both switches off, free shaft rotation, or zero winding current.
+Low-side phase-current readings cannot validate winding current while the
+low-side switches are commanded off. Status schema 5 and its 78-byte body
+remain unchanged; remote remaining time describes the finite probe deadline.
+
+The host command `bootstrap-probe --duration-ms 100` defaults to 100 ms, checks
+the capability, waits for finite completion, and sends generic `STOP_DRIVE` in
+cleanup even if START's acknowledgment is lost or polling is interrupted.
+It waits finitely for pending stop/authority flags to clear and reads final
+status; a communication failure is reported without claiming verified release.
+
 The current-loop commands are the present low-level motor-diagnostic service;
 they are not a velocity or position protocol. `CONFIGURE_CURRENT_TEST` is accepted only while
 inactive. Amplitude is currently bounded to 1-495 ADC counts and frequency to
@@ -256,7 +292,7 @@ is already active, a fault is latched, or the physical Right button is asserted.
 diagnostic authority from the supervisor before the backend can switch.
 `STOP_CURRENT_TEST` remains a wire-compatible alias for generic stop behavior.
 `STOP_DRIVE` is the preferred name and is always accepted; either operation
-stops a current diagnostic, alignment, aligned-torque, velocity, or position operation before
+stops a current diagnostic, bootstrap probe, alignment, aligned-torque, velocity, or position operation before
 releasing its authority. A remote run also stops at its single ramp-plus-hold
 deadline, on the physical Right button, or on an
 RS-485 transport failure. Foreground parsing continues during a run so status
@@ -516,10 +552,48 @@ are big-endian.
 | 54 | `i32` | Maximum trajectory acceleration, Q16.16 rev/s² |
 | 58 | `i32` | Maximum following error, Q16.16 revolutions |
 
-`GET_BOOT_STATUS` exposes the complete captured RCC reset-flag mask rather
-than only the IWDG summary in commissioning status. This distinguishes RAM,
-MMU, pin, power-on, software, independent/window-watchdog, and low-power reset
-causes and reports the current boot uptime.
+`GET_BOOT_STATUS` schema 1 is a 10-byte body. Schema 2 preserves that complete
+prefix and appends 12 bytes of raw pre-clear register evidence. Schema 3 keeps
+the complete 22-byte schema-2 prefix and appends stack/crash evidence:
+
+| Body offset | Type | Boot-status field |
+| ---: | --- | --- |
+| 0 | `u8` | Schema version: 1 for the legacy prefix, 2 when raw registers follow, 3 when stack/crash evidence follows |
+| 1 | `u32` | Legacy masked `RCC_CTRLSTS` reset bits |
+| 5 | `u8` | Retained panic code |
+| 6 | `u32` | Current boot uptime, milliseconds |
+| 10 | `u32` | Raw boot-time `RCC_CTRLSTS` (schema 2) |
+| 14 | `u32` | Raw boot-time `RCC_LDCTRL` (schema 2), including `BORRSTF` and `LDEMCRSTF` |
+| 18 | `u32` | Raw boot-time `RCC_SRAM_CTRLSTS` (schema 2) |
+| 22 | `u8` | Schema-3 evidence flags: preceding stack valid, current stack valid, retained fault valid, exception frame valid |
+| 23 | `u8` | Cortex exception number from `IPSR`; zero for a non-exception panic |
+| 24 | `u16` | Preceding boot's stack high-water in bytes from SRAM1 stack top |
+| 26 | `u16` | Preceding boot's minimum untouched bytes above `_end` |
+| 28 | `u16` | Current boot's stack high-water in bytes from SRAM1 stack top |
+| 30 | `u16` | Current boot's minimum untouched bytes above `_end` |
+| 32 | `u32` | Exception-return value (`EXC_RETURN`) |
+| 36 | `u32` | Stacked program counter when the exception frame is valid |
+| 40 | `u32` | Stacked link register when the exception frame is valid |
+| 44 | `u32` | Stacked xPSR when the exception frame is valid |
+| 48 | `u32` | Exception-entry main stack pointer |
+| 52 | `u32` | Exception-entry process stack pointer |
+| 56 | `u32` | Cortex configurable fault status (`CFSR`) |
+| 60 | `u32` | Cortex hard-fault status (`HFSR`) |
+| 64 | `u32` | Cortex debug-fault status (`DFSR`) |
+| 68 | `u32` | Memory-management fault address (`MMFAR`) |
+| 72 | `u32` | Bus-fault address (`BFAR`) |
+| 76 | `u16` | Current measured SRAM1 stack capacity from `_end` to stack top |
+
+All three schema-2 registers are captured in `SystemInit()` before
+`RCC_CTRLSTS.RMRSTF` clears the sticky reset evidence. The legacy mask reports
+RAM, MMU, pin, power-on, software, independent/window-watchdog, and low-power
+flags from `RCC_CTRLSTS`; it is not the complete device reset-source record
+because brownout is reported separately in `RCC_LDCTRL`. `PINRSTF` is therefore
+reported as an observed RCC flag, not as proof that an external circuit drove
+NRST low. Schema 3 paints only the unused SRAM1 interval below `main`'s live
+frame. Its high-water values include `main`, foreground calls, and exception
+nesting; they are evidence, not a software stack limit. The checksummed fault
+record is consumed once on the boot immediately following `platform_panic()`.
 
 `GET_ENCODER_STATUS` preserves the schema-1 raw encoder prefix and, in schema 2,
 adds the product mechanical estimator, alignment gate, electrical phase, and
@@ -535,14 +609,13 @@ sample intervals therefore measure acquisition start to acquisition start.
 Firmware 0.32.2 changes only internal publication cadence: compact progress is
 available to foreground at 4 kHz and full controller state at 100 Hz or on
 transitions. Command replies still take a coherent full snapshot, and no wire
-field, schema, command, or protocol-version change results.
-The raw sample count, last-attempt time, estimator timestamp, and interval
-fields retain their existing encodings; no schema or protocol-version bump is
-needed for the tightened readiness or acquisition-timestamp semantics.
+field or protocol-version change resulted. Schema 3 preserves the complete
+schema-2 body and appends the last failed transaction so a later successful
+sample cannot erase the failure classification.
 
 | Body offset | Type | Encoder schema-2 field |
 | ---: | --- | --- |
-| 0 | `u8` | Schema version, currently 2 |
+| 0 | `u8` | Schema version, currently 3 |
 | 1 | `u8` | `mt6816_status_t` |
 | 2 | `u8` | `spi_status_t` |
 | 3 | `u16` | Latest accepted raw angle |
@@ -560,6 +633,13 @@ needed for the tightened readiness or acquisition-timestamp semantics.
 | 38 | `u32` | Electrical phase, Q0.32 turns; valid only when flagged |
 | 42 | `u32` | Latest estimator sample interval in microseconds |
 | 46 | `u32` | Maximum estimator sample interval observed since boot |
+| 50 | `u8` | Status of the most recent failed MT6816 acquisition |
+| 51 | `u8` | SPI transport status of that failed acquisition |
+| 52 | `u8` | Response length supplied to the decoder |
+| 53 | `u8` | Raw register `0x03` byte, or zero when unavailable |
+| 54 | `u8` | Raw register `0x04` byte, or zero when unavailable |
+| 55 | `u8` | Raw register `0x05` byte, or zero when unavailable |
+| 56 | `u32` | Failed acquisition-start timestamp in microseconds |
 
 `GET_ALIGNMENT_STATUS` returns this schema-1 body after the common status byte.
 All multi-byte values are big-endian and signed values use two's complement.
@@ -762,7 +842,8 @@ the schema or protocol version.
 Commissioning flag bits are: bit 0 ADC ready, 1 ADC snapshot valid, 2 zero
 calibration ready, 3 current loop initialized, 4 bridge ready, 5 authority
 active, 6 ISR backend active, 7 remote authority, 8 remote start pending,
-9 remote stop pending, 10 fault present, and 11 VBUS snapshot valid. The
+9 remote stop pending, 10 fault present, 11 VBUS snapshot valid, and 12
+experimental bootstrap probe active (commanded all-high, not proven coast). The
 schema-5 status body is 78 bytes and the complete successful response payload
 is 79 bytes. Schema-2's 63-byte, schema-3's 69-byte, and schema-4's 77-byte
 bodies remain decodable by the host for older flashed images. The guardian still
@@ -800,6 +881,7 @@ to make measured current track the requested current.
 | 17 | Bounded relative-position control |
 | 18 | Explicit operator fault acknowledgment and in-place recovery |
 | 19 | Volatile current-loop tuning with explicit configuration promotion |
+| 20 | Experimental bounded all-high bootstrap probe |
 
 Golden request vectors below use device address 1, sequence 1, and empty
 payloads. Each row is a complete on-wire frame including the final delimiter:

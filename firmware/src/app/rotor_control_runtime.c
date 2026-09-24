@@ -840,6 +840,8 @@ bool rotor_control_runtime_init(
     runtime->velocity_controller = *velocity_controller;
     runtime->position_controller = *position_controller;
     runtime->encoder_diagnostics = empty_encoder;
+    runtime->encoder_error_sequence = 0u;
+    runtime->encoder_last_error = (diagnostics_encoder_error_t){0};
     runtime->estimator_fault_flags = 0u;
     runtime->estimator_sample_interval_us = 0u;
     runtime->estimator_maximum_sample_interval_us = 0u;
@@ -1234,6 +1236,33 @@ bool rotor_control_runtime_get_progress_snapshot(
     return true;
 }
 
+bool rotor_control_runtime_get_encoder_error(
+    const rotor_control_runtime_t* runtime,
+    diagnostics_encoder_error_t* encoder_error)
+{
+    uint32_t before;
+    uint32_t after;
+
+    if ((runtime == NULL) || (encoder_error == NULL) ||
+        !runtime->initialized)
+    {
+        return false;
+    }
+    do
+    {
+        before = runtime->encoder_error_sequence;
+        if ((before & 1u) != 0u)
+        {
+            continue;
+        }
+        __DMB();
+        *encoder_error = runtime->encoder_last_error;
+        __DMB();
+        after = runtime->encoder_error_sequence;
+    } while ((before != after) || ((after & 1u) != 0u));
+    return true;
+}
+
 void rotor_control_runtime_spi_callback(
     void* context,
     spi_status_t transport_status,
@@ -1281,6 +1310,22 @@ void rotor_control_runtime_spi_callback(
             runtime_profile_estimator_complete(cycle_counter_read());
         }
         ++runtime->encoder_diagnostics.error_count;
+        ++runtime->encoder_error_sequence;
+        __DMB();
+        runtime->encoder_last_error.last_error_status = encoder_status;
+        runtime->encoder_last_error.last_error_transport_status =
+            transport_status;
+        runtime->encoder_last_error.last_error_response_length =
+            (uint32_t)length;
+        runtime->encoder_last_error.last_error_register_03 =
+            ((receive != NULL) && (length > 1u)) ? receive[1] : 0u;
+        runtime->encoder_last_error.last_error_register_04 =
+            ((receive != NULL) && (length > 2u)) ? receive[2] : 0u;
+        runtime->encoder_last_error.last_error_register_05 =
+            ((receive != NULL) && (length > 3u)) ? receive[3] : 0u;
+        runtime->encoder_last_error.last_error_timestamp_us = timestamp_us;
+        __DMB();
+        ++runtime->encoder_error_sequence;
         reject_requests_without_feedback(
             runtime, now_millis, timestamp_us);
         if (runtime_profile_release_active())

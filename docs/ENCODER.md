@@ -10,7 +10,7 @@ its coherent four-byte window, and accepted samples feed the shared mechanical
 angle/velocity estimator,
 automatic-alignment and aligned-torque controllers, firmware 0.25.1's bounded
 velocity controller, and firmware 0.26.0's relative-position controller. Native
-protocol retains encoder schema 2 and exposes raw health,
+protocol encoder schema 3 preserves schema 2 and exposes raw health,
 unwrapped position, filtered velocity, estimator faults, alignment validity,
 sample timing, alignment progress/result, and aligned-current/velocity policy
 evidence. The flashed 1 kHz schedule passed its
@@ -97,6 +97,12 @@ removes drive readiness and is a fault if authority is active. The foreground
 records the failure and retries at the next sampling period. A
 no-magnet or over-speed indication is retained as a sensor flag alongside the
 decoded raw word; consumers must not treat a flagged angle as control-valid.
+Firmware 0.38.8 also retains the failed transaction's MT6816 status, SPI
+status, supplied response length, three raw register bytes, and acquisition
+timestamp in a separate sequence-protected record. Later successful samples
+restore the live status but do not erase this last-error evidence. The record
+is outside the 64-byte maximum compact progress publication and therefore adds
+no normal 4 kHz copy work.
 
 The callback-driven controllers already reject individual bad or older-than-2
 ms observations. The separate foreground `encoder_liveness` monitor closes the
@@ -144,6 +150,8 @@ validity/faults, Q16.16 position and velocity, microsecond timestamp, alignment
 zero/direction, Q0.32 electrical phase, and current/maximum sample intervals.
 The estimator timestamp denotes CS assertion/acquisition-window start, not the
 later DMA/hold completion or PendSV publication instant.
+Native schema 3 appends the most recent failed acquisition's status, transport
+status, response length, raw register bytes, and microsecond timestamp.
 Status values are defined in `mks57d/mt6816.h`; SPI transport values are defined
 in `mks57d/spi_status.h`.
 

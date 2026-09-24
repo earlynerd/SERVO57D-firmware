@@ -90,8 +90,49 @@ the already-tested board.
 3. Observe high-side and low-side gate signals and bridge switch nodes.
 4. Test reset, watchdog, firmware fault, breakpoint, and communications loss while the pattern is active.
 5. Confirm the all-low zero-vector fault path acts immediately in every case;
-   this PCB has no defined software-commanded all-FET-off state.
+   a reliable software-commanded all-FET-off state remains unverified.
 6. Characterize minimum pulse width, dead time, propagation delay, and bootstrap behavior.
+
+### Bootstrap release characterization
+
+This is a new bridge-state experiment, not an attached-motor release feature.
+Use firmware with the bootstrap-probe capability and follow the stop conditions
+below. No stock firmware extraction or disassembly is involved.
+
+1. With power removed, disconnect the motor windings. Use a 12 V bench supply
+   initially limited to 100 mA and verify stable normal idle first. If that
+   limit cannot sustain unloaded idle, investigate before proceeding.
+2. Use appropriately rated differential probes for upper gate-to-source
+   (`HO - VS`) and bootstrap (`VB - VS`) voltages. Never connect an earth-ground
+   scope clip to a switching node. Capture the low-side gate-to-source signal,
+   GPIO input, and winding-terminal differential voltage as well.
+3. After readiness, request the initial 100 ms interval:
+
+   ```powershell
+   py tools/mks57d_rs485.py --port COM14 bootstrap-probe --duration-ms 100
+   ```
+
+4. Confirm all four control inputs become continuously high together, with no
+   refresh pulses. Observe whether upper gate drive actually decays, its time
+   course on every leg, and any unequal winding voltage. The software reports
+   a commanded test state, never verified coast. Low-side current telemetry is
+   not evidence of zero winding current here.
+5. Verify expiry and STOP return all commands low. Check Right-button stop,
+   communications failure, stale VBUS, watchdog/debugger halt, and restart
+   behavior unloaded. The carrier deadline and VBUS lease work independently
+   of foreground timekeeping; cable removal alone is bounded by the requested
+   interval, since silence is not necessarily a transport error.
+6. Only after reviewing unloaded captures should a separate, guarded
+   attached-motor test characterize both directions, initial/remaining current,
+   partial gate conduction, bus regeneration, temperature, and re-entry into
+   current control. Do not enable automatic idle release on the basis of shaft
+   feel or software tests alone.
+
+Numeric bounds and their enforcement owners are in
+[OPERATING_LIMITS.md](OPERATING_LIMITS.md#bootstrap-probe-evaluation-envelope).
+Retain scope captures with board revision, firmware identity, supply setting,
+connection state, and probe references. The initial supply-current limit is
+enforced by the bench supply, not the low-side current loop.
 
 ## Stage 6 — Current-regulated motor operation
 

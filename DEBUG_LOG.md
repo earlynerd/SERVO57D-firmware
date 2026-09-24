@@ -527,3 +527,21 @@ The first correction still stopped at half of the motor's rated current and prop
 - **Class:** over-eager-peripheral-error-state
 - **Recently-touched?** yes — the recovery/suspension policy was introduced while correcting the 0.38.4 terminal latch.
 - **Status:** Native/Python tests and Debug/Release Arm builds pass; repeated-motion hardware confirmation remains open.
+
+## 2026-08-28 — Boot telemetry discarded the separate brownout flag
+
+- **Observation:** Retained position capture `scratch/position-runs/20260828-000407-p100p000rev-6p500rps-00330cnt-60000ms/` stopped sharply about 3.8 seconds into motion, lost the command response, and subsequently timed out waiting for STOP. Boot-relative encoder counters and timestamps restarted within the capture, proving an MCU reboot. The post-reboot boot command reported only `RCC_CTRLSTS.PINRSTF`; there is no external reset connection on this board.
+- **Root cause:** The physical reset source remains unresolved. The diagnostic misclassification was caused by `513225b:firmware/src/platform/system.c:195-210`: it captured only `RCC_CTRLSTS` before `RMRSTF` cleared the device's reset flags, omitting the separate `RCC_LDCTRL.BORRSTF` evidence. The schema-1 serializer at `513225b:firmware/src/protocol/native_protocol.c:571-582` could therefore never report brownout, so `PINRSTF` was incorrectly treated as a complete source classification.
+- **Fix:** Firmware 0.38.7 snapshots raw `RCC_LDCTRL` beside the existing raw `RCC_CTRLSTS` and `RCC_SRAM_CTRLSTS` before the clear. `GET_BOOT_STATUS` schema 2 appends those three raw values after the unchanged schema-1 prefix, and `tools/mks57d_rs485.py:796` decodes both schemas plus the `BORRSTF` and `LDEMCRSTF` flags.
+- **Class:** incomplete-reset-source-telemetry
+- **Recently-touched?** no — the incomplete reset record originated with schema 1 in firmware 0.17.2; the 0.38.6 OLED changes did not touch reset capture or boot-status serialization.
+- **Status:** Native and Python compatibility regressions pass, and clean Debug/Release Arm builds pass. Flash 0.38.7 and reproduce the event before assigning an electrical or firmware reset cause; software validation does not identify the physical trigger of the original sharp stop.
+
+## 2026-08-28 — High-speed reboot remains unresolved; separate run exposed one-sample encoder shutdown
+
+- **Observation:** On flashed 0.38.7, the first 100-revolution/6.5-rev/s move completed, then the MCU rebooted about 4.1 seconds into the second move. The last pre-reset sample had normal current, bus voltage, tracking, encoder, estimator, and loop state. The reboot reported `RCC_CTRLSTS=0x040026EC` (`PINRSTF` only), `RCC_LDCTRL=0`, `RCC_SRAM_CTRLSTS=0`, and panic zero. A later identical pair did not reboot: the second run stopped safely at 15.039 seconds with torque `phase_invalid`, propagated as velocity/position `actuator_fault`.
+- **Root cause/evidence:** The reboot's physical/software cause remains unresolved. Static Debug analysis finds a 2,264-byte `main` frame within a 4,368-byte linked SRAM1 stack interval, making peak preemption overlap plausible but unproven. The separate safe fault is explained by `rotor_control_runtime_spi_callback()`: one failed MT6816 acquisition increments the error count and deliberately fails active control; its exact parity/transport type was overwritten by later valid status.
+- **Fix/telemetry:** Firmware 0.38.8 adds current/preceding stack high-water, a checksummed one-boot panic/exception record with stacked PC/LR/xPSR and Cortex fault registers, and a separately published last-encoder-error record. It does not change feedback rejection or drive shutdown behavior.
+- **Class:** unresolved-reset-with-distinct-encoder-fault-evidence
+- **Recently-touched?** possibly — the live OLED increases foreground activity but adds only about 152 bytes along its call chain; repeated calls unwind and do not accumulate. The large pre-existing `main` frame and interrupt nesting remain the stack concern.
+- **Status:** Native and Python tests plus Debug/Release Arm builds pass. Flash 0.38.8 and reproduce the paired move; classify the event from preceding-stack minimum, retained crash validity/registers, raw reset registers, and retained encoder error before changing control or hardware assumptions.

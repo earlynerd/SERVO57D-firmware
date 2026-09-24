@@ -4,6 +4,11 @@ Project-owned host tools, probe firmware configuration, build helpers, and test 
 
 Manufacturer executables and archives belong under ignored `vendor/local/`, not in this directory.
 
+The explicit `mks57d_rs485.py bootstrap-probe` command is an experimental,
+finite all-high bridge characterization. It defaults to 100 ms and requires
+the [motor-disconnected 12 V procedure](../docs/BRINGUP.md#bootstrap-release-characterization).
+It does not change normal STOP or establish that the shaft is released.
+
 ## Production disposition
 
 The motor tools below are product service and engineering-diagnostic tools, not

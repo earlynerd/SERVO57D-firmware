@@ -1,8 +1,7 @@
 # Real-Time and Control Architecture
 
-Status: firmware 0.38.6 is the current source candidate; firmware 0.38.4 is
-currently flashed for OLED testing and firmware 0.38.3 remains the accepted
-motion/timing baseline. The source
+For source, flashed, and accepted-baseline status, see the
+[current operating snapshot](../README.md#current-operating-snapshot). The source
 implements the fast current path, production
 alignment, safe-state configuration maintenance, the first aligned torque-current
 motion client, and a deterministic 4 kHz timer/SPI-DMA/PendSV rotor service.
@@ -26,6 +25,15 @@ requests exact per-event values after PWM staging.
 Firmware 0.28.0 also follows each regular current pair with an automatic-
 injected PA3 VBUS conversion. Regular DMA completion and current-loop release
 remain first; foreground alone consumes the later VBUS result.
+The bootstrap probe keeps that single foreground VBUS owner. Fresh conversions
+renew a carrier-counted lease; the priority-1 TIM3 guardian enforces both lease
+and finite duration without SysTick progress. The short probe ADC transaction
+masks the guardian so expiry cannot be followed by a resumed callback
+reasserting all-high. TIM3 UPDIS inhibits shadow transfer while all four
+common-vector preloads are written; entry commits on a natural update and
+ZERO commits immediately. Normal PI duty policy does not authorize this
+experimental vector; see [its limits](OPERATING_LIMITS.md#bootstrap-probe-evaluation-envelope).
+
 Firmware 0.29.0 keeps fault acknowledgment in foreground: it establishes
 direct-GPIO `ZERO` before rebuilding ADC/DMA, TIM3/current-loop, rotor-runtime,
 and supervisor state. No ISR clears its own latch.
@@ -170,6 +178,18 @@ current-loop completions per PendSV execution. The same window measured
 This establishes one representative loaded timing baseline; stack high-water,
 other command/display/communications loads, and broader worst-case repetition
 remain acceptance work.
+
+Firmware 0.38.8 adds an observer-only SRAM1 stack watermark after static
+analysis showed a 2,264-byte Debug `main` frame inside a 4,368-byte `_end`-to-
+stack-top interval. The pattern begins below `main`'s already-live frame, so
+the reported high-water includes that baseline plus foreground calls and
+exception nesting. `GET_BOOT_STATUS` schema 3 reports both current use and the
+preceding boot's retained result. This measures actual paths but is not a guard
+or proof of margin; high-speed motion, protocol status traffic, OLED traffic,
+PendSV, and priority-2 current-loop preemption must still be exercised together.
+The 64-byte maximum compact rotor progress publication is unchanged. Last
+encoder-error details use a separate transition/error record rather than
+growing the normal 4 kHz copy.
 
 Firmware 0.34.0 also makes the retained rotating-current diagnostic a native
 fast-loop reference source. Its phase accumulator and divide-free ramp DDA
@@ -710,7 +730,8 @@ Verification for the active backend and next control layers includes:
   sequences, stale encoder snapshots, counter/timer wrap, nonfinite values,
   saturation, and deadline overruns.
 - Compile-time checks for the NVIC grouping and assigned priority range.
-- On-target cycle instrumentation and stack high-water measurements.
+- On-target schema-3 stack high-water measurements across representative and
+  deliberately overlapping foreground/interrupt loads.
 - Oscilloscope validation of ADC trigger position, PWM preload timing, emergency shutdown latency, reset, watchdog, and debugger halt.
 
 ## Open hardware-dependent decisions

@@ -9,7 +9,11 @@
 
 enum
 {
-    CURRENT_LOOP_BACKEND_TRACE_CAPACITY = 256u
+    CURRENT_LOOP_BACKEND_TRACE_CAPACITY = 256u,
+    CURRENT_LOOP_BACKEND_BOOTSTRAP_MAX_DURATION_MS = 5000u,
+    CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MIN_RAW = 757u,
+    CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MAX_RAW = 1059u,
+    CURRENT_LOOP_BACKEND_BOOTSTRAP_ENTRY_CURRENT_COUNTS = 10u
 };
 
 typedef enum
@@ -20,7 +24,8 @@ typedef enum
     CURRENT_LOOP_BACKEND_FAULT_PWM = 1u << 17,
     CURRENT_LOOP_BACKEND_FAULT_DEADLINE = 1u << 18,
     CURRENT_LOOP_BACKEND_FAULT_INTERNAL = 1u << 19,
-    CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION = 1u << 20
+    CURRENT_LOOP_BACKEND_FAULT_PHASE_PREDICTION = 1u << 20,
+    CURRENT_LOOP_BACKEND_FAULT_BOOTSTRAP_VBUS = 1u << 21
 } current_loop_backend_fault_t;
 
 typedef enum
@@ -60,6 +65,8 @@ typedef struct
     bool initialized;
     bool active;
     bool phase_prediction_active;
+    bool bootstrap_probe_active;
+    bool bootstrap_probe_completed;
 } current_loop_backend_snapshot_t;
 
 typedef struct
@@ -99,6 +106,13 @@ bool current_loop_backend_set_aligned_q_reference(
     int8_t encoder_direction,
     uint32_t encoder_timestamp_us);
 bool current_loop_backend_start(void);
+/* Unloaded waveform characterization only: static all-high is NOT a verified
+ * coast state. Low-side shunts cannot bound winding current in this mode.
+ * VBUS is nominally 10..14 V; foreground owns acquisition and refreshes the
+ * 30 ms carrier-counted lease with each fresh sample. */
+bool current_loop_backend_start_bootstrap_probe(
+    uint32_t duration_millis, uint16_t vbus_raw);
+bool current_loop_backend_refresh_bootstrap_probe_vbus(uint16_t vbus_raw);
 bool current_loop_backend_stop(void);
 bool current_loop_backend_reconfigure_gains(
     int32_t proportional_gain_q16_per_count,

@@ -487,6 +487,152 @@ def position_capture_args(root: Path) -> SimpleNamespace:
     )
 
 
+class BootStatusTests(unittest.TestCase):
+    def test_schema_one_remains_decodable(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.BOOT_STATUS_V1_BODY.pack(
+            1, 0x06000000, 15, 1234
+        )
+
+        status = console.query_boot_status(client)
+
+        client.transact.assert_called_once_with(
+            console.COMMAND_GET_BOOT_STATUS
+        )
+        self.assertEqual(status["schema"], 1)
+        self.assertEqual(status["reset_causes"], ["mmu", "pin"])
+        self.assertNotIn("rcc_ldctrl_raw_hex", status)
+
+    def test_schema_two_decodes_pre_clear_reset_registers(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.BOOT_STATUS_V2_BODY.pack(
+            2,
+            0x04000000,
+            0,
+            2468,
+            0x04007F80,
+            0x50008001,
+            0x80000000,
+        )
+
+        status = console.query_boot_status(client)
+
+        self.assertEqual(status["reset_causes"], ["pin"])
+        self.assertEqual(status["rcc_ctrlsts_raw_hex"], "0x04007F80")
+        self.assertEqual(status["rcc_ldctrl_raw_hex"], "0x50008001")
+        self.assertEqual(
+            status["rcc_ldctrl_reset_flags_hex"], "0x50000000"
+        )
+        self.assertEqual(
+            status["rcc_ldctrl_reset_causes"],
+            ["brown_out", "low_power_domain_emc"],
+        )
+        self.assertEqual(status["rcc_sram_ctrlsts_raw_hex"], "0x80000000")
+
+    def test_schema_three_decodes_stack_and_fault_evidence(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.BOOT_STATUS_V3_BODY.pack(
+            3,
+            0x04000000,
+            2,
+            2468,
+            0x04007F80,
+            0,
+            0,
+            0x0F,
+            3,
+            3584,
+            640,
+            3072,
+            1152,
+            0xFFFFFFF9,
+            0x08001235,
+            0x08004567,
+            0x21000000,
+            0x20003200,
+            0,
+            0x00008200,
+            0x40000000,
+            0,
+            0x20000010,
+            0x20000020,
+            4224,
+        )
+
+        status = console.query_boot_status(client)
+
+        self.assertEqual(status["schema"], 3)
+        self.assertEqual(status["stack"]["capacity_bytes"], 4224)
+        self.assertEqual(status["stack"]["previous"]["high_water_bytes"], 3584)
+        self.assertEqual(status["stack"]["current"]["minimum_free_bytes"], 1152)
+        self.assertTrue(status["crash"]["valid"])
+        self.assertTrue(status["crash"]["exception_frame_valid"])
+        self.assertEqual(status["crash"]["panic"], "hard_fault")
+        self.assertEqual(status["crash"]["exception"], "hard_fault")
+        self.assertEqual(
+            status["crash"]["stacked_program_counter_hex"], "0x08001235"
+        )
+        self.assertEqual(
+            status["crash"]["configurable_fault_status_hex"], "0x00008200"
+        )
+
+    def test_schema_and_length_must_agree(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.BOOT_STATUS_V1_BODY.pack(
+            2, 0, 0, 1
+        )
+
+        with self.assertRaisesRegex(
+            console.ProtocolError, "unexpected length or schema"
+        ):
+            console.query_boot_status(client)
+
+
+class EncoderStatusTelemetryTests(unittest.TestCase):
+    def test_schema_three_retains_last_failed_transaction(self) -> None:
+        client = mock.Mock()
+        client.transact.return_value = console.ENCODER_STATUS_V3_BODY.pack(
+            3,
+            1,
+            0,
+            10969,
+            0,
+            659572,
+            1,
+            164935,
+            7,
+            196 * 65536,
+            0,
+            164935861,
+            0,
+            9301,
+            -1,
+            0x12480000,
+            250,
+            478,
+            4,
+            0,
+            4,
+            0xAB,
+            0xCD,
+            0xEF,
+            164935750,
+        )
+
+        status = console.query_encoder(client)
+
+        self.assertEqual(status["schema"], 3)
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["last_error"]["status"], "parity_error")
+        self.assertEqual(status["last_error"]["transport_status"], "ok")
+        self.assertEqual(status["last_error"]["response_length"], 4)
+        self.assertEqual(
+            status["last_error"]["registers_hex"],
+            ["0xAB", "0xCD", "0xEF"],
+        )
+        self.assertEqual(status["last_error"]["timestamp_us"], 164935750)
+
+
 class ConfigurationTuningTests(unittest.TestCase):
     @staticmethod
     def configuration_prefix(schema: int = 1) -> tuple[int, ...]:
@@ -2080,6 +2226,112 @@ class PositionCaptureTests(unittest.TestCase):
             )
             self.assertTrue(metadata["capture"]["scheduled_stop_sent"])
             self.assertEqual(metadata["capture"]["status"], "complete")
+
+
+class BootstrapProbeTests(unittest.TestCase):
+    def client(self, start_error=None, capabilities=None):
+        client = mock.Mock()
+        if capabilities is None:
+            capabilities = struct.pack(">I", console.CAPABILITY_BOOTSTRAP_PROBE)
+
+        def transact(command, payload=b""):
+            if command == console.COMMAND_GET_CAPABILITIES:
+                return capabilities
+            if command == console.COMMAND_START_BOOTSTRAP_PROBE and start_error:
+                raise start_error
+            return b""
+
+        client.transact.side_effect = transact
+        return client
+
+    def test_parser_defaults_to_short_probe(self):
+        args = console.make_parser().parse_args(["bootstrap-probe"])
+        self.assertEqual(args.duration_ms, 100)
+
+    def test_duration_and_capability_rejections_do_not_start(self):
+        for duration in (0, -1, 5001):
+            with self.subTest(duration=duration):
+                client = self.client()
+                with self.assertRaisesRegex(console.ProtocolError, "1..5000"):
+                    console.run_bootstrap_probe(client, duration)
+                client.transact.assert_not_called()
+        for capabilities, message in ((b"bad", "unexpected length"),
+                                      (struct.pack(">I", 0), "does not support")):
+            with self.subTest(capabilities=capabilities):
+                client = self.client(capabilities=capabilities)
+                with self.assertRaisesRegex(console.ProtocolError, message):
+                    console.run_bootstrap_probe(client, 100)
+                self.assertEqual(client.transact.call_args_list,
+                                 [mock.call(console.COMMAND_GET_CAPABILITIES)])
+
+    def test_waits_for_probe_and_pending_stop_then_returns_final_status(self):
+        client = self.client()
+        final = {"flags": [], "sample_count": 42}
+        with mock.patch.object(console, "query_status", side_effect=[
+            {"flags": ["remote_start_pending"]},
+            {"flags": ["bootstrap_probe_active", "authority_active"]},
+            {"flags": []},
+            {"flags": ["remote_stop_pending"]}, final,
+        ]) as query, mock.patch.object(console.time, "sleep"):
+            result = console.run_bootstrap_probe(client, 5000)
+        self.assertEqual(query.call_count, 5)
+        self.assertEqual(result["status"], final)
+        self.assertFalse(result["release_verified"])
+        self.assertEqual(client.transact.call_args_list, [
+            mock.call(console.COMMAND_GET_CAPABILITIES),
+            mock.call(console.COMMAND_START_BOOTSTRAP_PROBE, struct.pack(">I", 5000)),
+            mock.call(console.COMMAND_STOP_DRIVE),
+        ])
+
+    def test_start_timeout_still_stops_and_checks_final_status(self):
+        client = self.client(start_error=console.TransportError("lost START reply"))
+        with mock.patch.object(console, "query_status", return_value={"flags": []}) as query:
+            with self.assertRaisesRegex(console.TransportError, "lost START reply"):
+                console.run_bootstrap_probe(client, 1)
+        client.transact.assert_any_call(console.COMMAND_STOP_DRIVE)
+        query.assert_called_once_with(client)
+
+    def test_interrupt_and_poll_failure_stop_before_propagating(self):
+        for error in (KeyboardInterrupt(), OSError("serial disconnected"),
+                      console.ProtocolError("bad status")):
+            with self.subTest(error=type(error).__name__):
+                client = self.client()
+                with mock.patch.object(console, "query_status", side_effect=[error, {"flags": []}]):
+                    with self.assertRaises(type(error)):
+                        console.run_bootstrap_probe(client, 100)
+                client.transact.assert_any_call(console.COMMAND_STOP_DRIVE)
+
+    def test_timeout_stops_and_does_not_wait_indefinitely(self):
+        client = self.client()
+        with mock.patch.object(console, "query_status", side_effect=[
+            {"flags": ["bootstrap_probe_active"]}, {"flags": []}
+        ]), mock.patch.object(console.time, "monotonic", side_effect=[0, 2, 2]):
+            with self.assertRaisesRegex(console.ProtocolError, "deadline"):
+                console.run_bootstrap_probe(client, 100)
+        client.transact.assert_any_call(console.COMMAND_STOP_DRIVE)
+
+    def test_pending_stop_has_a_finite_timeout(self):
+        client = self.client()
+        with mock.patch.object(console, "query_status", side_effect=[
+            {"flags": []}, {"flags": ["remote_stop_pending"]}
+        ]), mock.patch.object(console.time, "monotonic", side_effect=[0, 1, 3]):
+            with self.assertRaisesRegex(console.ProtocolError, "remains active"):
+                console.run_bootstrap_probe(client, 100)
+
+    def test_fault_stops_and_cleanup_failure_preserves_original_error(self):
+        client = self.client()
+        with mock.patch.object(console, "query_status", return_value={"flags": ["fault_present"]}):
+            with self.assertRaisesRegex(console.ProtocolError, "drive fault"):
+                console.run_bootstrap_probe(client, 100)
+        client.transact.assert_any_call(console.COMMAND_STOP_DRIVE)
+        client = self.client(start_error=console.TransportError("lost START reply"))
+        with mock.patch.object(console, "stop_drive", side_effect=OSError("port lost")):
+            with self.assertRaisesRegex(console.TransportError, "lost START reply"):
+                console.run_bootstrap_probe(client, 100)
+
+    def test_flag_decodes_as_probe_not_proven_coast(self):
+        self.assertEqual(console.active_names(1 << 12, console.FLAG_NAMES),
+                         ["bootstrap_probe_active"])
 
 
 if __name__ == "__main__":

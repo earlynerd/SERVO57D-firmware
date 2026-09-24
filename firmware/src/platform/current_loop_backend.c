@@ -21,7 +21,9 @@ enum
     QUARTER_CYCLE_PHASE_Q32 = 0x40000000u,
     MICROSECONDS_PER_SECOND = 1000000u,
     CURRENT_LOOP_STEP_US =
-        MICROSECONDS_PER_SECOND / ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ
+        MICROSECONDS_PER_SECOND / ADC1_SYNCHRONOUS_CURRENT_FREQUENCY_HZ,
+    BOOTSTRAP_TICKS_PER_MS = TIM3_BRIDGE_PWM_FREQUENCY_HZ / 1000u,
+    BOOTSTRAP_VBUS_LEASE_TICKS = 30u * BOOTSTRAP_TICKS_PER_MS
 };
 
 _Static_assert(
@@ -53,6 +55,11 @@ static uint8_t s_phase_prediction_reject_reason;
 static uint8_t s_rotating_reference_controller_mode;
 static volatile bool s_initialized;
 static volatile bool s_active;
+static volatile bool s_bootstrap_probe_active;
+static volatile bool s_bootstrap_probe_completed;
+static bool s_bootstrap_probe_staged;
+static uint32_t s_bootstrap_remaining_ticks;
+static uint32_t s_bootstrap_vbus_lease_ticks;
 static bool s_phase_prediction_active;
 static bool s_rotating_reference_active;
 static bool s_guardian_primed;
@@ -91,12 +98,65 @@ static void control_critical_exit(uint32_t previous)
 static void fault_from_interrupt(uint32_t fault)
 {
     s_active = false;
+    s_bootstrap_probe_active = false;
+    s_bootstrap_probe_completed = false;
     s_rotating_reference_active = false;
     s_trace_armed = false;
     (void)adc1_set_current_timing_capture(false);
     s_fault_flags |= fault;
     phase_current_loop_stop(&s_loop);
     board_bridge_force_low_zero();
+}
+
+static bool bootstrap_vbus_valid(uint16_t raw)
+{
+    return (raw >= CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MIN_RAW) &&
+           (raw <= CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MAX_RAW);
+}
+
+static void bootstrap_probe_adc_event(const adc1_current_snapshot_t* snapshot)
+{
+    phase_current_loop_output_t output = {0};
+    const uint32_t previous = control_critical_enter();
+    uint32_t channel;
+
+    /* Expiry/STOP must not be followed by a preempted callback reasserting
+       all-high. Keep this short observe/stage/publication transaction atomic
+       against the carrier guardian as well as foreground state changes. */
+    if (!s_active || !s_bootstrap_probe_active)
+    {
+        control_critical_exit(previous);
+        return;
+    }
+    if (!phase_current_loop_measure_prevalidated(
+            &s_loop, &s_config, snapshot->current_a_raw,
+            snapshot->current_b_raw, &output))
+    {
+        fault_from_interrupt(s_loop.fault_flags != 0u ?
+            s_loop.fault_flags : CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
+        control_critical_exit(previous);
+        return;
+    }
+    /* Continue checking ADC validity and observable shunt excursions, but
+       never represent these as a bound on high-side circulating current. */
+    if (!s_bootstrap_probe_staged)
+    {
+        if (!tim3_bridge_pwm_stage_bootstrap_probe())
+        {
+            fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
+            control_critical_exit(previous);
+            return;
+        }
+        s_bootstrap_probe_staged = true;
+    }
+    for (channel = 0u; channel < PHASE_CURRENT_LOOP_CHANNEL_COUNT; ++channel)
+    {
+        output.duty_permille[channel] = 1000u;
+    }
+    s_latest_output = output;
+    ++s_sample_count;
+    ++s_output_generation;
+    control_critical_exit(previous);
 }
 
 static bool predict_aligned_phases(
@@ -181,6 +241,11 @@ static void adc_current_event(adc1_status_t status,
     if (snapshot == NULL)
     {
         fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_INTERNAL);
+        return;
+    }
+    if (s_bootstrap_probe_active || s_bootstrap_probe_completed)
+    {
+        bootstrap_probe_adc_event(snapshot);
         return;
     }
     if (s_rotating_reference_active)
@@ -382,6 +447,33 @@ static void pwm_update_event(void* context)
     {
         return;
     }
+    if (s_bootstrap_probe_active)
+    {
+        if (s_bootstrap_remaining_ticks <= 1u)
+        {
+            /* Hardware-period deadline: no dependency on foreground/SysTick.
+               Leave TIM3/ADC live for normal READY acquisition afterward. */
+            s_active = false;
+            s_bootstrap_probe_active = false;
+            phase_current_loop_stop(&s_loop);
+            if (!tim3_bridge_pwm_zero() ||
+                !tim3_bridge_pwm_update_irq_enable(false))
+            {
+                fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_PWM);
+                return;
+            }
+            memset(&s_latest_output, 0, sizeof(s_latest_output));
+            s_bootstrap_probe_completed = true;
+            return;
+        }
+        --s_bootstrap_remaining_ticks;
+        if (s_bootstrap_vbus_lease_ticks <= 1u)
+        {
+            fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_BOOTSTRAP_VBUS);
+            return;
+        }
+        --s_bootstrap_vbus_lease_ticks;
+    }
     if (!s_guardian_primed)
     {
         s_guardian_generation = generation;
@@ -451,6 +543,11 @@ bool current_loop_backend_init(
     s_trace_count = 0u;
     s_trace_armed = false;
     s_active = false;
+    s_bootstrap_probe_active = false;
+    s_bootstrap_probe_staged = false;
+    s_bootstrap_probe_completed = false;
+    s_bootstrap_remaining_ticks = 0u;
+    s_bootstrap_vbus_lease_ticks = 0u;
     s_phase_prediction_active = false;
     s_rotating_reference_active = false;
     s_initialized = false;
@@ -476,7 +573,7 @@ bool current_loop_backend_set_reference_counts(
     uint32_t previous;
     bool accepted;
 
-    if (!s_initialized ||
+    if (!s_initialized || s_bootstrap_probe_active ||
         (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE))
     {
         return false;
@@ -587,7 +684,7 @@ bool current_loop_backend_set_aligned_q_reference(
     bool candidate_valid = true;
     bool accepted = false;
 
-    if (!s_initialized ||
+    if (!s_initialized || s_bootstrap_probe_active ||
         (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE))
     {
         return false;
@@ -718,6 +815,7 @@ bool current_loop_backend_start(void)
         board_bridge_force_low_zero();
         return false;
     }
+    s_bootstrap_probe_completed = false;
     s_active = true;
     control_critical_exit(previous);
 
@@ -729,10 +827,75 @@ bool current_loop_backend_start(void)
     return true;
 }
 
+bool current_loop_backend_start_bootstrap_probe(
+    uint32_t duration_millis, uint16_t vbus_raw)
+{
+    adc1_current_snapshot_t current;
+    uint32_t previous;
+    int32_t delta_a;
+    int32_t delta_b;
+    bool started = false;
+
+    if ((duration_millis == 0u) ||
+        (duration_millis > CURRENT_LOOP_BACKEND_BOOTSTRAP_MAX_DURATION_MS) ||
+        !bootstrap_vbus_valid(vbus_raw))
+    {
+        return false;
+    }
+    previous = control_critical_enter();
+    if (!s_initialized || s_active || s_bootstrap_probe_active ||
+        (s_fault_flags != 0u) ||
+        (adc1_read_synchronized_current(&current) != ADC1_STATUS_OK))
+    {
+        control_critical_exit(previous);
+        return false;
+    }
+    delta_a = (int32_t)current.current_a_raw - s_config.current_a_zero_raw;
+    delta_b = (int32_t)current.current_b_raw - s_config.current_b_zero_raw;
+    if ((delta_a >= -(int32_t)CURRENT_LOOP_BACKEND_BOOTSTRAP_ENTRY_CURRENT_COUNTS) &&
+        (delta_a <= (int32_t)CURRENT_LOOP_BACKEND_BOOTSTRAP_ENTRY_CURRENT_COUNTS) &&
+        (delta_b >= -(int32_t)CURRENT_LOOP_BACKEND_BOOTSTRAP_ENTRY_CURRENT_COUNTS) &&
+        (delta_b <= (int32_t)CURRENT_LOOP_BACKEND_BOOTSTRAP_ENTRY_CURRENT_COUNTS) &&
+        current_loop_backend_set_reference_counts(0, 0) &&
+        current_loop_backend_start())
+    {
+        s_bootstrap_probe_staged = false;
+        s_bootstrap_probe_completed = false;
+        s_bootstrap_remaining_ticks = duration_millis * BOOTSTRAP_TICKS_PER_MS;
+        s_bootstrap_vbus_lease_ticks = BOOTSTRAP_VBUS_LEASE_TICKS;
+        s_bootstrap_probe_active = true;
+        started = true;
+    }
+    control_critical_exit(previous);
+    return started;
+}
+
+bool current_loop_backend_refresh_bootstrap_probe_vbus(uint16_t vbus_raw)
+{
+    const uint32_t previous = control_critical_enter();
+    bool refreshed = false;
+
+    if (s_active && s_bootstrap_probe_active)
+    {
+        if (bootstrap_vbus_valid(vbus_raw))
+        {
+            s_bootstrap_vbus_lease_ticks = BOOTSTRAP_VBUS_LEASE_TICKS;
+            refreshed = true;
+        }
+        else
+        {
+            fault_from_interrupt(CURRENT_LOOP_BACKEND_FAULT_BOOTSTRAP_VBUS);
+        }
+    }
+    control_critical_exit(previous);
+    return refreshed;
+}
+
 bool current_loop_backend_stop(void)
 {
     uint32_t previous;
     bool fault_was_latched;
+    bool was_bootstrap_probe;
 
     if (!s_initialized)
     {
@@ -742,7 +905,10 @@ bool current_loop_backend_stop(void)
     previous = control_critical_enter();
     fault_was_latched =
         s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE;
+    was_bootstrap_probe = s_bootstrap_probe_active || s_bootstrap_probe_completed;
     s_active = false;
+    s_bootstrap_probe_active = false;
+    s_bootstrap_probe_completed = false;
     s_trace_armed = false;
     (void)adc1_set_current_timing_capture(false);
     (void)tim3_bridge_pwm_update_irq_enable(false);
@@ -771,6 +937,10 @@ bool current_loop_backend_stop(void)
         board_bridge_force_low_zero();
         s_fault_flags |= CURRENT_LOOP_BACKEND_FAULT_PWM;
         return false;
+    }
+    if (was_bootstrap_probe)
+    {
+        memset(&s_latest_output, 0, sizeof(s_latest_output));
     }
     return true;
 }
@@ -874,6 +1044,8 @@ bool current_loop_backend_recover(uint32_t* cleared_fault_flags)
        switching path back down to the direct-GPIO ZERO vector before
        rebuilding the idle PWM backend and all of its volatile loop state. */
     s_active = false;
+    s_bootstrap_probe_active = false;
+    s_bootstrap_probe_completed = false;
     s_trace_armed = false;
     (void)adc1_set_current_timing_capture(false);
     (void)tim3_bridge_pwm_update_irq_enable(false);
@@ -969,6 +1141,8 @@ void current_loop_backend_get_snapshot(
     snapshot->initialized = s_initialized;
     snapshot->active = s_active;
     snapshot->phase_prediction_active = s_phase_prediction_active;
+    snapshot->bootstrap_probe_active = s_bootstrap_probe_active;
+    snapshot->bootstrap_probe_completed = s_bootstrap_probe_completed;
     control_critical_exit(previous);
 }
 
@@ -1001,7 +1175,7 @@ bool current_loop_backend_trace_arm(void)
     }
 
     previous = control_critical_enter();
-    if (!s_active ||
+    if (!s_active || s_bootstrap_probe_active ||
         (s_fault_flags != CURRENT_LOOP_BACKEND_FAULT_NONE))
     {
         control_critical_exit(previous);

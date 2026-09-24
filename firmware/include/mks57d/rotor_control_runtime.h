@@ -78,6 +78,8 @@ typedef struct
     velocity_controller_t velocity_controller;
     position_controller_t position_controller;
     diagnostics_encoder_t encoder_diagnostics;
+    volatile uint32_t encoder_error_sequence;
+    diagnostics_encoder_error_t encoder_last_error;
     uint32_t estimator_fault_flags;
     uint32_t estimator_sample_interval_us;
     uint32_t estimator_maximum_sample_interval_us;
@@ -148,6 +150,9 @@ bool rotor_control_runtime_get_snapshot(
 bool rotor_control_runtime_get_progress_snapshot(
     const rotor_control_runtime_t* runtime,
     rotor_control_progress_snapshot_t* snapshot);
+bool rotor_control_runtime_get_encoder_error(
+    const rotor_control_runtime_t* runtime,
+    diagnostics_encoder_error_t* encoder_error);
 void rotor_control_runtime_spi_callback(
     void* context,
     spi_status_t transport_status,

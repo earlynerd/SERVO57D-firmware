@@ -1,8 +1,8 @@
 # Motor-Drive Operating Limits
 
-Status: firmware 0.38.6 / protocol 1.19 is the current source candidate;
-firmware 0.38.4 is currently flashed for OLED testing and firmware 0.38.3
-remains the accepted motion/timing baseline. The flashed motion image retains
+For source, flashed, and accepted-baseline status, see the
+[current operating snapshot](../README.md#current-operating-snapshot). The
+accepted motion image retains
 the measured 55 us predictor lead, generation-3 alignment, physical VBUS, and
 the complete bounded motion/fault envelope. Matched +8 rev/s trials at 24 V
 reduced velocity RMS error from 0.797 to 0.621 to 0.460 rev/s while staging
@@ -71,9 +71,31 @@ motors. Loss of synchronism does not by itself indicate danger to the drive;
 electrical protections remain independent, while following-error shutdown may
 still preserve position-command integrity.
 
+## Bootstrap probe evaluation envelope
+
+The explicit probe is permitted only for initial unloaded waveform
+characterization. Its 100% common-mode vector is a separate experimental
+operation, not an expansion of the motor-current loop's 80% duty allowance.
+It cannot enforce winding-current or differential-voltage limits while the
+low-side shunts are bypassed. Normal motion/STOP/fault policies are unchanged.
+
+| Bound | Value | Enforcement owner and evidence |
+| --- | --- | --- |
+| Requested duration | 1..5000 ms; host default 100 ms | Command parser and backend; 20 TIM3 guardian ticks/ms, normal expiry to ZERO; software-tested, electrical timing unqualified |
+| Initial supply | 12 V, initially 100 mA current limit | Operator/bench supply with windings disconnected; not firmware current regulation |
+| VBUS permission | Raw ADC 757..1059 inclusive, nominally 10.00..14.00 V | Fresh foreground sample before start and each refresh; backend validates raw bounds; nominal 3.3 V reference and 15.4 kOhm/1 kOhm divider, not precision overvoltage protection |
+| VBUS freshness | 600 carrier ticks, nominally 30 ms | Guardian lease; foreground refreshes only on a new consumed VBUS conversion, normally every 10 ms; failure latches backend bit 21 and direct-GPIO ZERO |
+| Entry current | Each shunt within 10 ADC counts of calibrated zero, nominally 60.59 mA | Backend checks fresh idle ADC pair; does not bound unobserved circulating current after entry |
+| Entry motion | Absolute filtered speed at most 0.05 rev/s | Foreground readiness gate; not attached-motor qualification |
+| Acquisition liveness | Existing second-consecutive-missed-output boundary | TIM3 guardian still requires ADC callback progress during the constant vector |
+
+Next evidence: the [unloaded procedure](BRINGUP.md#bootstrap-release-characterization),
+then a separately assessed attached-motor experiment. All-high is not a
+guaranteed electrical disconnect or production coast state.
+
 ## Current firmware inventory
 
-| Quantity | Firmware 0.38.6 source value | Class and basis | Enforcement owner | Status / next evidence |
+| Quantity | Current source value | Class and basis | Enforcement owner | Status / next evidence |
 | --- | ---: | --- | --- | --- |
 | Current scale | 6.059 mA/count nominal | Measured conversion on the tested board: 3.3 V ADC reference, 6.65 gain, 20 mΩ shunt | ADC conversion and host tools | Verified on one board; production tolerance and temperature remain open |
 | Bus-voltage scale | 13.22 mV/count nominal | Tested-board 3.3 V ADC reference and fitted 15.4 kOhm/1 kOhm divider | Automatic-injected PA3 ADC acquisition and host conversion | Inactive 0.28.0 status reported 23.829 V at the 24 V supply setting; all 22 active samples held 23.776-23.815 V with advancing samples and no ADC/deadline fault |
@@ -89,6 +111,7 @@ still preserve position-command integrity.
 | Rotor/control release | 4 kHz, 250 us nominal | Implementation timing baseline with 16,000 core cycles between releases at 64 MHz | TIM6/TIM7, SPI1 DMA, PendSV, and `rotor_control_runtime` | Firmware 0.38.3 signed +4/-4 rev/s simultaneous profile/current-trace gates completed 512/512 releases with none incomplete. PendSV work including current-loop preemption averaged 105.34/104.46 us and peaked at 164.34/164.11 us, down from the 0.38.0 +4 rev/s baseline of 144.09/336.61 us. Repeat under other loads and retain stack high-water evidence before declaring WCET |
 | Deferred deadline LED | PD0 high only while one or more 4 kHz release jobs are overdue | Raw diagnostic state: assert at the next 250 us TIM6 boundary if the preceding acquisition-through-PendSV job is incomplete; clear when completion catches up through the newest overdue sequence | `spi1` release sequencing and board PD0 output | On 0.38.1 it emitted rapid low-duty pulses only during motion; after flashing 0.38.2 no blue light was visible during motion. Firmware 0.38.3's signed numerical profiles completed every release with a 164.34 us worst-case total; direct visual observation on 0.38.3 remains useful corroboration |
 | Rotor publication | 56-byte progress at 4 kHz; 576-byte full state at 100 Hz plus transitions | Scheduling contract separating liveness/readiness fields from telemetry-sized controller state | `rotor_control_runtime` sequence-protected publications and foreground | The 0.38.0 loaded profile measured publication at 13.31 us average and 185.52 us maximum. Firmware 0.38.2 replaces four byte-at-a-time calls totaling 472 controller bytes with aligned word loops; 0.38.3 additionally replaces active-loop full snapshots with an atomic active read. Signed 0.38.3 captures limited the stage maximum to 51.59 us; averages remain preemption-phase dependent, so total PendSV is the comparison metric |
+| SRAM1 stack interval | 4,368 bytes from linked `_end` to stack top; Debug `main` frame is 2,264 bytes before callees/exceptions | Implementation constraint, not a permission limit | Linker minimum assertion plus firmware 0.38.8 schema-3 current/preceding high-water telemetry | Static usage makes stack exhaustion plausible under overlapping foreground protocol work and nested exceptions but does not prove it caused the reset. Reproduce the paired high-speed moves and retain high-water plus fault-record evidence before restructuring storage or assigning a cause |
 | Foreground safety housekeeping | 1 kHz nominal; 72-byte OLED page every 100 ms | Implementation cadence for compact progress, liveness/readiness, runtime events, state invariants, RS-485 health, diagnostic deadline, watchdog policy, and the foreground-only display | Foreground main loop | The 0.38.3 signed captures averaged 207.71/151.33 us and peaked at 1.79/1.01 ms while host telemetry ran, versus 256.35 us average and 2.70 ms maximum in the 0.38.0 loaded capture. Firmware 0.38.4 exposed a terminal display-error latch after one or two moves; 0.38.6 drops runtime display errors, attempts remaining chunks, and advances the page schedule without reset or suspension. Flash, repeat motion, and profile foreground/Right-button latency before accepting this load |
 | Encoder observation timestamp | CS assertion at the start of the coherent four-byte window | Acquisition-window timing contract replacing post-DMA/post-hold publication time | `spi1` | Correlate CS/SCK and reported prediction age; the exact sensor-internal register-latch instant remains to be established |
 | Mechanical acceleration during open torque | 8,192 rev/s² observed | Estimator-plausibility boundary above the approximately 5,350 rev/s² largest nominal-cadence velocity change the 4 kHz filtered estimator can publish while accepting raw motion at its 20 rev/s boundary; not a hardware protection threshold | `aligned_torque_controller` | A +151.5 mA, 100 ms pulse accelerated the unloaded shaft to about 5.25 rev/s within 80 ms without approaching this shutdown. Higher direct-torque work requires restraint/load; current rating alone does not qualify unloaded acceleration |

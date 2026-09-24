@@ -102,6 +102,9 @@ typedef struct
     size_t status_calls;
     size_t configure_calls;
     size_t start_calls;
+    size_t bootstrap_probe_start_calls;
+    uint32_t bootstrap_probe_duration_millis;
+    command_status_t bootstrap_probe_start_status;
     size_t stop_calls;
     size_t boot_status_calls;
     size_t encoder_status_calls;
@@ -448,6 +451,15 @@ static command_status_t mock_commissioning_start(
     return COMMAND_STATUS_OK;
 }
 
+static command_status_t mock_commissioning_start_bootstrap_probe(
+    void* context, uint32_t duration_millis)
+{
+    mock_commissioning_t* mock = context;
+    ++mock->bootstrap_probe_start_calls;
+    mock->bootstrap_probe_duration_millis = duration_millis;
+    return mock->bootstrap_probe_start_status;
+}
+
 static command_status_t mock_commissioning_stop(void* context)
 {
     mock_commissioning_t* mock = context;
@@ -463,10 +475,31 @@ static command_status_t mock_commissioning_get_boot_status(
     mock_commissioning_t* mock = context;
 
     ++mock->boot_status_calls;
-    status->schema_version = 1u;
+    status->schema_version = 3u;
     status->reset_flags = 0x28000000u;
     status->retained_panic = 15u;
     status->uptime_millis = 0x01020304u;
+    status->initial_rcc_ctrlsts = 0x2A000003u;
+    status->initial_rcc_ldctrl = 0x50008001u;
+    status->initial_sram_ctrlsts = 0x80000000u;
+    status->evidence_flags = 0x0Fu;
+    status->exception_number = 3u;
+    status->previous_stack_high_water_bytes = 0x090Au;
+    status->previous_stack_minimum_free_bytes = 0x0B0Cu;
+    status->current_stack_high_water_bytes = 0x0D0Eu;
+    status->current_stack_minimum_free_bytes = 0x0F10u;
+    status->exception_return = 0x11121314u;
+    status->stacked_program_counter = 0x21222324u;
+    status->stacked_link_register = 0x31323334u;
+    status->stacked_xpsr = 0x41424344u;
+    status->main_stack_pointer = 0x51525354u;
+    status->process_stack_pointer = 0x61626364u;
+    status->configurable_fault_status = 0x71727374u;
+    status->hard_fault_status = 0x81828384u;
+    status->debug_fault_status = 0x91929394u;
+    status->memory_management_fault_address = 0xA1A2A3A4u;
+    status->bus_fault_address = 0xB1B2B3B4u;
+    status->stack_capacity_bytes = 0xC1C2u;
     return COMMAND_STATUS_OK;
 }
 
@@ -734,6 +767,7 @@ static bool init_commissioning_server(native_protocol_server_t* server,
             .get_status = mock_commissioning_get_status,
             .configure = mock_commissioning_configure,
             .start = mock_commissioning_start,
+            .start_bootstrap_probe = mock_commissioning_start_bootstrap_probe,
             .stop = mock_commissioning_stop,
             .get_boot_status = mock_commissioning_get_boot_status,
             .get_encoder_status = mock_commissioning_get_encoder_status,
@@ -1756,6 +1790,86 @@ static void test_command_service_rejects_invalid_identity_payload(void)
     EXPECT_TRUE(response.kind == COMMAND_RESPONSE_NONE);
 }
 
+static void test_bootstrap_probe_command_validation_and_wire_dispatch(void)
+{
+    uint8_t payload[5] = {0u, 0u, 0u, 1u, 0u};
+    static const size_t invalid_lengths[] = {0u, 1u, 3u, 5u};
+    static const uint32_t invalid_durations[] = {0u, 5001u, UINT32_MAX};
+    mock_commissioning_t commissioning = {0};
+    command_service_context_t context = {
+        .commissioning = {
+            .context = &commissioning,
+            .start_bootstrap_probe = mock_commissioning_start_bootstrap_probe,
+        },
+    };
+    command_request_t request = {
+        .operation = COMMAND_OPERATION_START_BOOTSTRAP_PROBE,
+        .payload = payload,
+        .payload_length = 4u,
+    };
+    command_response_t response;
+    uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
+    native_protocol_server_t server;
+    mock_protocol_tx_t transmit = {.accept = true};
+    native_protocol_frame_t wire_response;
+    size_t index;
+    size_t wire_length;
+
+    for (index = 0u; index < sizeof(invalid_lengths) / sizeof(invalid_lengths[0]); ++index)
+    {
+        request.payload_length = invalid_lengths[index];
+        command_service_dispatch(&context, &request, &response);
+        EXPECT_TRUE(response.status == COMMAND_STATUS_INVALID_PAYLOAD);
+    }
+    request.payload_length = 4u;
+    for (index = 0u; index < sizeof(invalid_durations) / sizeof(invalid_durations[0]); ++index)
+    {
+        const uint32_t duration = invalid_durations[index];
+        payload[0] = (uint8_t)(duration >> 24u);
+        payload[1] = (uint8_t)(duration >> 16u);
+        payload[2] = (uint8_t)(duration >> 8u);
+        payload[3] = (uint8_t)duration;
+        command_service_dispatch(&context, &request, &response);
+        EXPECT_TRUE(response.status == COMMAND_STATUS_INVALID_PAYLOAD);
+    }
+    EXPECT_TRUE(commissioning.bootstrap_probe_start_calls == 0u);
+
+    memset(payload, 0, sizeof(payload));
+    payload[3] = 1u;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_OK);
+    EXPECT_TRUE(response.kind == COMMAND_RESPONSE_NONE);
+    EXPECT_TRUE(commissioning.bootstrap_probe_duration_millis == 1u);
+    payload[2] = 0x13u;
+    payload[3] = 0x88u;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_OK);
+    EXPECT_TRUE(commissioning.bootstrap_probe_duration_millis == 5000u);
+    commissioning.bootstrap_probe_start_status = COMMAND_STATUS_UNAVAILABLE;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_UNAVAILABLE);
+    context.commissioning.start_bootstrap_probe = NULL;
+    command_service_dispatch(&context, &request, &response);
+    EXPECT_TRUE(response.status == COMMAND_STATUS_UNAVAILABLE);
+    EXPECT_TRUE(commissioning.bootstrap_probe_start_calls == 3u);
+
+    commissioning.bootstrap_probe_start_status = COMMAND_STATUS_OK;
+    EXPECT_TRUE(init_commissioning_server(&server, &transmit, &commissioning));
+    wire_length = encode_native_request(
+        NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS, 73u,
+        NATIVE_PROTOCOL_MESSAGE_REQUEST,
+        NATIVE_PROTOCOL_COMMAND_START_BOOTSTRAP_PROBE,
+        payload, 4u, wire, sizeof(wire));
+    native_protocol_server_consume(&server, wire, wire_length);
+    EXPECT_TRUE(native_protocol_decode_wire_frame(
+                    transmit.bytes, transmit.length, &wire_response) ==
+                NATIVE_PROTOCOL_DECODE_OK);
+    EXPECT_TRUE(wire_response.payload_length == 1u);
+    EXPECT_TRUE(wire_response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
+    EXPECT_TRUE(commissioning.bootstrap_probe_start_calls == 4u);
+    EXPECT_TRUE(commissioning.bootstrap_probe_duration_millis == 5000u);
+}
+
 static void test_command_service_tuning_payload_and_busy_status(void)
 {
     static const uint8_t gains[] = {
@@ -1902,7 +2016,7 @@ static void test_native_protocol_reports_identity_and_capabilities(void)
     EXPECT_TRUE(response.payload[8] == 0u);
     EXPECT_TRUE(response.payload[9] == NATIVE_PROTOCOL_VERSION_MAJOR);
     EXPECT_TRUE(response.payload[10] == NATIVE_PROTOCOL_VERSION_MINOR);
-    EXPECT_TRUE(protocol_minor == 19u);
+    EXPECT_TRUE(protocol_minor == 20u);
 
     transmit.length = 0u;
     wire_length = encode_native_request(
@@ -1949,13 +2063,38 @@ static void test_native_protocol_commissioning_console_round_trip(void)
         0x00u, 0x00u, 0x13u, 0x88u
     };
     static const uint8_t trace_payload[] = {0x00u, 0x2Au};
+    static const uint8_t boot_status_payload[] = {
+        NATIVE_PROTOCOL_STATUS_OK,
+        0x03u,
+        0x28u, 0x00u, 0x00u, 0x00u,
+        0x0Fu,
+        0x01u, 0x02u, 0x03u, 0x04u,
+        0x2Au, 0x00u, 0x00u, 0x03u,
+        0x50u, 0x00u, 0x80u, 0x01u,
+        0x80u, 0x00u, 0x00u, 0x00u,
+        0x0Fu, 0x03u,
+        0x09u, 0x0Au, 0x0Bu, 0x0Cu,
+        0x0Du, 0x0Eu, 0x0Fu, 0x10u,
+        0x11u, 0x12u, 0x13u, 0x14u,
+        0x21u, 0x22u, 0x23u, 0x24u,
+        0x31u, 0x32u, 0x33u, 0x34u,
+        0x41u, 0x42u, 0x43u, 0x44u,
+        0x51u, 0x52u, 0x53u, 0x54u,
+        0x61u, 0x62u, 0x63u, 0x64u,
+        0x71u, 0x72u, 0x73u, 0x74u,
+        0x81u, 0x82u, 0x83u, 0x84u,
+        0x91u, 0x92u, 0x93u, 0x94u,
+        0xA1u, 0xA2u, 0xA3u, 0xA4u,
+        0xB1u, 0xB2u, 0xB3u, 0xB4u,
+        0xC1u, 0xC2u
+    };
     uint8_t wire[NATIVE_PROTOCOL_MAX_WIRE_FRAME_SIZE];
     native_protocol_server_t server;
     mock_protocol_tx_t transmit = {.accept = true};
     mock_commissioning_t commissioning = {
         .status = {
             .schema_version = 5u,
-            .flags = 0x00000FFFu,
+            .flags = 0x00001FFFu,
             .raw_input_levels = 0xA5u,
             .debounced_input_levels = 0x5Au,
             .adc_status = 3u,
@@ -1992,7 +2131,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                 COMMAND_CURRENT_TEST_CONTROLLER_ROTATING_FRAME,
         },
         .encoder_status = {
-            .schema_version = 2u,
+            .schema_version = 3u,
             .status = 1u,
             .transport_status = 0u,
             .angle_raw = 0x2345u,
@@ -2010,6 +2149,13 @@ static void test_native_protocol_commissioning_console_round_trip(void)
             .electrical_phase_q32 = 0x89ABCDEFu,
             .estimator_sample_interval_us = 0x21222324u,
             .estimator_maximum_sample_interval_us = 0x25262728u,
+            .last_error_status = 4u,
+            .last_error_transport_status = 0u,
+            .last_error_response_length = 4u,
+            .last_error_register_03 = 0xA1u,
+            .last_error_register_04 = 0xB2u,
+            .last_error_register_05 = 0xC3u,
+            .last_error_timestamp_us = 0x31323334u,
         },
         .current_trace = {
             .schema_version = 2u,
@@ -2236,6 +2382,7 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
     EXPECT_TRUE(response.payload[1] == 5u);
     EXPECT_TRUE(response.payload[2] == 0u);
+    EXPECT_TRUE(response.payload[4] == 0x1Fu);
     EXPECT_TRUE(response.payload[5] == 0xFFu);
     EXPECT_TRUE(response.payload[6] == 0xA5u);
     EXPECT_TRUE(response.payload[7] == 0x5Au);
@@ -2420,13 +2567,10 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.boot_status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 11u);
-    EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 1u);
-    EXPECT_TRUE(response.payload[2] == 0x28u);
-    EXPECT_TRUE(response.payload[6] == 15u);
-    EXPECT_TRUE(response.payload[7] == 1u);
-    EXPECT_TRUE(response.payload[10] == 4u);
+    EXPECT_TRUE(response.payload_length == sizeof(boot_status_payload));
+    EXPECT_TRUE(memcmp(response.payload,
+                       boot_status_payload,
+                       sizeof(boot_status_payload)) == 0);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -2443,9 +2587,9 @@ static void test_native_protocol_commissioning_console_round_trip(void)
                     transmit.length,
                     &response) == NATIVE_PROTOCOL_DECODE_OK);
     EXPECT_TRUE(commissioning.encoder_status_calls == 1u);
-    EXPECT_TRUE(response.payload_length == 51u);
+    EXPECT_TRUE(response.payload_length == 61u);
     EXPECT_TRUE(response.payload[0] == NATIVE_PROTOCOL_STATUS_OK);
-    EXPECT_TRUE(response.payload[1] == 2u);
+    EXPECT_TRUE(response.payload[1] == 3u);
     EXPECT_TRUE(response.payload[2] == 1u);
     EXPECT_TRUE(response.payload[3] == 0u);
     EXPECT_TRUE(response.payload[4] == 0x23u);
@@ -2475,6 +2619,14 @@ static void test_native_protocol_commissioning_console_round_trip(void)
     EXPECT_TRUE(response.payload[46] == 0x24u);
     EXPECT_TRUE(response.payload[47] == 0x25u);
     EXPECT_TRUE(response.payload[50] == 0x28u);
+    EXPECT_TRUE(response.payload[51] == 4u);
+    EXPECT_TRUE(response.payload[52] == 0u);
+    EXPECT_TRUE(response.payload[53] == 4u);
+    EXPECT_TRUE(response.payload[54] == 0xA1u);
+    EXPECT_TRUE(response.payload[55] == 0xB2u);
+    EXPECT_TRUE(response.payload[56] == 0xC3u);
+    EXPECT_TRUE(response.payload[57] == 0x31u);
+    EXPECT_TRUE(response.payload[60] == 0x34u);
 
     wire_length = encode_native_request(
         NATIVE_PROTOCOL_DEFAULT_DEVICE_ADDRESS,
@@ -5865,6 +6017,7 @@ int main(void)
     test_native_protocol_crc_matches_standard_vector();
     test_native_protocol_codec_accepts_maximum_payload();
     test_command_service_rejects_invalid_identity_payload();
+    test_bootstrap_probe_command_validation_and_wire_dispatch();
     test_command_service_tuning_payload_and_busy_status();
     test_native_protocol_ping_round_trip_handles_zero_bytes();
     test_native_protocol_reports_identity_and_capabilities();

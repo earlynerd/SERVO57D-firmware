@@ -38,10 +38,30 @@ _Static_assert(RCC_CFG_PLLMULFCT8 == 0x00180000u,
 
 extern uint32_t __sram2_start__;
 extern uint32_t __sram2_end__;
+extern uint32_t _end;
+extern uint32_t __StackTop;
 
 uint32_t SystemCoreClock = PLATFORM_MSI_HZ;
 
 volatile platform_boot_diagnostics_t g_platform_boot_diagnostics;
+
+enum
+{
+    PLATFORM_STACK_WATERMARK_MAGIC = 0x4D4B5357u,
+    PLATFORM_STACK_WATERMARK_PATTERN = 0xA5C39E71u
+};
+
+typedef struct
+{
+    uint32_t magic;
+    uint32_t inverted_magic;
+    uint32_t low_address;
+    uint32_t high_address;
+    uint32_t checksum;
+} retained_stack_watermark_t;
+
+static volatile retained_stack_watermark_t s_retained_stack_watermark
+    __attribute__((section(".noinit")));
 
 static const uint32_t s_msi_clock_hz[7] = {
     MSI_VALUE_L0,
@@ -61,6 +81,102 @@ static const uint8_t s_ahb_shift[16] = {
 static const uint8_t s_apb_shift[8] = {
     0u, 0u, 0u, 0u, 1u, 2u, 3u, 4u,
 };
+
+static uint32_t stack_watermark_checksum(uint32_t low_address,
+                                         uint32_t high_address)
+{
+    return PLATFORM_STACK_WATERMARK_MAGIC ^
+           PLATFORM_STACK_WATERMARK_PATTERN ^
+           low_address ^ high_address;
+}
+
+static bool stack_watermark_metadata_valid(uint32_t* low_address,
+                                           uint32_t* high_address)
+{
+    const uint32_t low = s_retained_stack_watermark.low_address;
+    const uint32_t high = s_retained_stack_watermark.high_address;
+    const uint32_t region_low = (uint32_t)(uintptr_t)&_end;
+    const uint32_t region_high = (uint32_t)(uintptr_t)&__StackTop;
+
+    if ((s_retained_stack_watermark.magic !=
+         PLATFORM_STACK_WATERMARK_MAGIC) ||
+        (s_retained_stack_watermark.inverted_magic !=
+         ~PLATFORM_STACK_WATERMARK_MAGIC) ||
+        (s_retained_stack_watermark.checksum !=
+         stack_watermark_checksum(low, high)) ||
+        ((low & 3u) != 0u) || ((high & 3u) != 0u) ||
+        (low < region_low) || (high > region_high) || (low >= high))
+    {
+        return false;
+    }
+    *low_address = low;
+    *high_address = high;
+    return true;
+}
+
+bool platform_stack_watermark_get(platform_stack_watermark_t* watermark)
+{
+    uint32_t low_address;
+    uint32_t high_address;
+    const uint32_t stack_top = (uint32_t)(uintptr_t)&__StackTop;
+    const volatile uint32_t* word;
+    const volatile uint32_t* end;
+
+    if ((watermark == NULL) ||
+        !stack_watermark_metadata_valid(&low_address, &high_address))
+    {
+        return false;
+    }
+
+    word = (const volatile uint32_t*)(uintptr_t)low_address;
+    end = (const volatile uint32_t*)(uintptr_t)high_address;
+    while ((word < end) && (*word == PLATFORM_STACK_WATERMARK_PATTERN))
+    {
+        ++word;
+    }
+
+    watermark->high_water_bytes =
+        stack_top - (uint32_t)(uintptr_t)word;
+    watermark->minimum_free_bytes =
+        (uint32_t)(uintptr_t)word - low_address;
+    watermark->capacity_bytes = stack_top - low_address;
+    return true;
+}
+
+bool platform_stack_watermark_start(void)
+{
+    const uint32_t low_address =
+        ((uint32_t)(uintptr_t)&_end + 3u) & ~3u;
+    const uint32_t high_address = __get_MSP() & ~3u;
+    volatile uint32_t* word =
+        (volatile uint32_t*)(uintptr_t)low_address;
+    volatile uint32_t* const end =
+        (volatile uint32_t*)(uintptr_t)high_address;
+
+    s_retained_stack_watermark.magic = 0u;
+    __DMB();
+    if ((low_address >= high_address) ||
+        (high_address > (uint32_t)(uintptr_t)&__StackTop))
+    {
+        return false;
+    }
+    while (word < end)
+    {
+        *word = PLATFORM_STACK_WATERMARK_PATTERN;
+        ++word;
+    }
+    __DMB();
+    s_retained_stack_watermark.low_address = low_address;
+    s_retained_stack_watermark.high_address = high_address;
+    s_retained_stack_watermark.checksum =
+        stack_watermark_checksum(low_address, high_address);
+    s_retained_stack_watermark.inverted_magic =
+        ~PLATFORM_STACK_WATERMARK_MAGIC;
+    __DMB();
+    s_retained_stack_watermark.magic = PLATFORM_STACK_WATERMARK_MAGIC;
+    __DSB();
+    return true;
+}
 
 static const uint32_t s_reset_flag_mask =
     RCC_CTRLSTS_RAMRSTF | RCC_CTRLSTS_MMURSTF | RCC_CTRLSTS_PINRSTF |
@@ -186,6 +302,8 @@ void SystemCoreClockUpdate(void)
 
 void SystemInit(void)
 {
+    platform_stack_watermark_t previous_stack_watermark = {0};
+
 #if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
     SCB->CPACR |= (3UL << (10u * 2u)) | (3UL << (11u * 2u));
     __DSB();
@@ -195,13 +313,35 @@ void SystemInit(void)
     g_platform_boot_diagnostics.initial_rcc_ctrl = RCC->CTRL;
     g_platform_boot_diagnostics.initial_rcc_cfg = RCC->CFG;
     g_platform_boot_diagnostics.initial_rcc_ctrlsts = RCC->CTRLSTS;
+    g_platform_boot_diagnostics.initial_rcc_ldctrl = RCC->LDCTRL;
     g_platform_boot_diagnostics.reset_flags =
         g_platform_boot_diagnostics.initial_rcc_ctrlsts & s_reset_flag_mask;
     g_platform_boot_diagnostics.initial_sram_ctrlsts = RCC->SRAM_CTRLSTS;
 
-    if (((g_platform_boot_diagnostics.reset_flags &
-          RCC_CTRLSTS_IWDGRSTF) == 0u) ||
-        ((uint32_t)g_last_panic >= (uint32_t)PANIC_CODE_COUNT))
+    g_platform_boot_diagnostics.previous_stack_watermark_valid =
+        platform_stack_watermark_get(&previous_stack_watermark);
+    if (g_platform_boot_diagnostics.previous_stack_watermark_valid)
+    {
+        g_platform_boot_diagnostics.previous_stack_high_water_bytes =
+            previous_stack_watermark.high_water_bytes;
+        g_platform_boot_diagnostics.previous_stack_minimum_free_bytes =
+            previous_stack_watermark.minimum_free_bytes;
+        g_platform_boot_diagnostics.previous_stack_capacity_bytes =
+            previous_stack_watermark.capacity_bytes;
+    }
+    s_retained_stack_watermark.magic = 0u;
+
+    g_platform_boot_diagnostics.fault_record_valid =
+        platform_fault_record_consume();
+    if (g_platform_boot_diagnostics.fault_record_valid)
+    {
+        const volatile platform_fault_record_t* const fault_record =
+            platform_fault_record_current();
+
+        g_last_panic = fault_record != NULL ?
+            (panic_code_t)fault_record->panic_code : PANIC_NONE;
+    }
+    else
     {
         g_last_panic = PANIC_NONE;
     }

@@ -8,7 +8,8 @@
 enum
 {
     COMMAND_SERVICE_PRODUCT_ID_MKS57D = 0x4D4B5335u,
-    COMMAND_SERVICE_MAX_PING_BYTES = 16u
+    COMMAND_SERVICE_MAX_PING_BYTES = 16u,
+    COMMAND_SERVICE_BOOTSTRAP_PROBE_MAX_DURATION_MILLIS = 5000u
 };
 
 typedef enum
@@ -40,7 +41,8 @@ typedef enum
     COMMAND_OPERATION_START_VELOCITY,
     COMMAND_OPERATION_GET_VELOCITY_STATUS,
     COMMAND_OPERATION_START_POSITION_RELATIVE,
-    COMMAND_OPERATION_GET_POSITION_STATUS
+    COMMAND_OPERATION_GET_POSITION_STATUS,
+    COMMAND_OPERATION_START_BOOTSTRAP_PROBE
 } command_operation_t;
 
 typedef enum
@@ -72,7 +74,8 @@ typedef enum
     COMMAND_COMMISSIONING_FLAG_REMOTE_START_PENDING = 1u << 8,
     COMMAND_COMMISSIONING_FLAG_REMOTE_STOP_PENDING = 1u << 9,
     COMMAND_COMMISSIONING_FLAG_FAULT_PRESENT = 1u << 10,
-    COMMAND_COMMISSIONING_FLAG_VBUS_SNAPSHOT_VALID = 1u << 11
+    COMMAND_COMMISSIONING_FLAG_VBUS_SNAPSHOT_VALID = 1u << 11,
+    COMMAND_COMMISSIONING_FLAG_BOOTSTRAP_PROBE_ACTIVE = 1u << 12
 } command_commissioning_flag_t;
 
 typedef enum
@@ -163,7 +166,36 @@ typedef struct
     uint32_t reset_flags;
     uint8_t retained_panic;
     uint32_t uptime_millis;
+    uint32_t initial_rcc_ctrlsts;
+    uint32_t initial_rcc_ldctrl;
+    uint32_t initial_sram_ctrlsts;
+    uint8_t evidence_flags;
+    uint8_t exception_number;
+    uint16_t previous_stack_high_water_bytes;
+    uint16_t previous_stack_minimum_free_bytes;
+    uint16_t current_stack_high_water_bytes;
+    uint16_t current_stack_minimum_free_bytes;
+    uint32_t exception_return;
+    uint32_t stacked_program_counter;
+    uint32_t stacked_link_register;
+    uint32_t stacked_xpsr;
+    uint32_t main_stack_pointer;
+    uint32_t process_stack_pointer;
+    uint32_t configurable_fault_status;
+    uint32_t hard_fault_status;
+    uint32_t debug_fault_status;
+    uint32_t memory_management_fault_address;
+    uint32_t bus_fault_address;
+    uint16_t stack_capacity_bytes;
 } command_boot_status_t;
+
+enum
+{
+    COMMAND_BOOT_EVIDENCE_PREVIOUS_STACK_VALID = 1u << 0,
+    COMMAND_BOOT_EVIDENCE_CURRENT_STACK_VALID = 1u << 1,
+    COMMAND_BOOT_EVIDENCE_FAULT_RECORD_VALID = 1u << 2,
+    COMMAND_BOOT_EVIDENCE_EXCEPTION_FRAME_VALID = 1u << 3
+};
 
 typedef struct
 {
@@ -185,6 +217,13 @@ typedef struct
     uint32_t electrical_phase_q32;
     uint32_t estimator_sample_interval_us;
     uint32_t estimator_maximum_sample_interval_us;
+    uint8_t last_error_status;
+    uint8_t last_error_transport_status;
+    uint8_t last_error_response_length;
+    uint8_t last_error_register_03;
+    uint8_t last_error_register_04;
+    uint8_t last_error_register_05;
+    uint32_t last_error_timestamp_us;
 } command_encoder_status_t;
 
 enum
@@ -443,6 +482,9 @@ typedef command_status_t (*command_commissioning_start_fn)(
     uint8_t selected_leg,
     uint32_t ramp_duration_millis,
     uint32_t duration_millis);
+typedef command_status_t (*command_commissioning_start_bootstrap_probe_fn)(
+    void* context,
+    uint32_t duration_millis);
 typedef command_status_t (*command_commissioning_stop_fn)(void* context);
 typedef command_status_t (*command_commissioning_get_boot_status_fn)(
     void* context,
@@ -519,6 +561,7 @@ typedef struct
     command_commissioning_arm_current_trace_fn arm_current_trace;
     command_commissioning_get_runtime_profile_fn get_runtime_profile;
     command_commissioning_arm_runtime_profile_fn arm_runtime_profile;
+    command_commissioning_start_bootstrap_probe_fn start_bootstrap_probe;
 } command_commissioning_api_t;
 
 typedef struct

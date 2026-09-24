@@ -201,11 +201,45 @@ bool tim3_bridge_pwm_zero(void)
         return false;
     }
 
+    /* A carrier edge must never transfer only part of a common vector. */
+    TIM3->CTRL1 |= TIM_CTRL1_UPDIS;
+    __DSB();
     write_compares(TIM3_BRIDGE_PWM_CHANNEL_COUNT, 0u);
+    __DMB();
+    TIM3->CTRL1 &= ~((uint32_t)TIM_CTRL1_UPDIS);
     TIM3->EVTGEN = TIM_EVTGEN_UDGN;
     TIM3->STS = ~((uint32_t)TIM_STS_UDITF);
     __DSB();
     return compares_match(TIM3_BRIDGE_PWM_CHANNEL_COUNT, 0u);
+}
+
+bool tim3_bridge_pwm_stage_bootstrap_probe(void)
+{
+    uint16_t compares[TIM3_BRIDGE_PWM_CHANNEL_COUNT];
+    uint32_t channel;
+
+    if (!s_initialized || (s_period_counts == 0u) ||
+        ((TIM3->CTRL1 & (TIM_CTRL1_CNTEN | TIM_CTRL1_UPDIS)) !=
+         TIM_CTRL1_CNTEN) ||
+        ((TIM3->CCEN & ALL_CHANNEL_OUTPUTS_ENABLED) !=
+         ALL_CHANNEL_OUTPUTS_ENABLED))
+    {
+        return false;
+    }
+    for (channel = 0u; channel < TIM3_BRIDGE_PWM_CHANNEL_COUNT; ++channel)
+    {
+        compares[channel] = s_period_counts;
+    }
+    /* N32L40x UM: UPDIS suppresses UEV/shadow transfer, not counting.
+       Keep the carrier phase; all four preloads transfer on one natural UEV.
+       Backend masks the guardian while this short transaction is in flight. */
+    TIM3->CTRL1 |= TIM_CTRL1_UPDIS;
+    __DSB();
+    write_duty_compares(compares);
+    __DMB();
+    TIM3->CTRL1 &= ~((uint32_t)TIM_CTRL1_UPDIS);
+    __DSB();
+    return duty_compares_match(compares);
 }
 
 bool tim3_bridge_pwm_set_update_handler(

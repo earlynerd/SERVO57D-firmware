@@ -1,8 +1,7 @@
 # Firmware Architecture
 
-Status: firmware 0.38.6 is the current source candidate; firmware 0.38.4 is
-currently flashed for OLED testing and firmware 0.38.3 remains the accepted
-motion/timing baseline. The source
+For source, flashed, and accepted-baseline status, see the
+[current operating snapshot](../README.md#current-operating-snapshot). The source
 implements the reset-safe foundation, synchronous ADC
 acquisition, OLED diagnostics, DMA RS-485 transport, native product diagnostics,
 automatic/persistent alignment, an authoritative drive supervisor, and a 20 kHz
@@ -254,6 +253,14 @@ PWM/ADC timing are defined in [Real-time and control
 architecture](REALTIME_ARCHITECTURE.md). Remaining hardware characterization
 is tracked separately from the behavior already demonstrated on the tested
 board.
+
+The explicit bootstrap probe acquires diagnostic authority synchronously from
+READY. Its backend mode observes ADC health but skips PI, commands an atomic
+all-high vector, and enforces carrier-counted duration and fresh-VBUS lease
+limits. It is mutually exclusive with motor operations and configuration
+writes. Expiry releases to ZERO; faults retain direct-GPIO ZERO. Startup and
+ordinary STOP never select this experiment. See the
+[unloaded characterization procedure](BRINGUP.md#bootstrap-release-characterization).
 
 ## Motor-personality boundary
 

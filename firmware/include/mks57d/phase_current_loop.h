@@ -93,6 +93,15 @@ bool phase_current_loop_step_prevalidated(
     uint16_t current_a_raw,
     uint16_t current_b_raw,
     phase_current_loop_output_t* output);
+/* Observe shunt ADCs without advancing PI or commanding PWM. Same immutable,
+ * valid-config contract as the hot path; caller supplies initialized objects.
+ * These readings are NOT winding-current evidence with low-side FETs off. */
+bool phase_current_loop_measure_prevalidated(
+    phase_current_loop_t* loop,
+    const phase_current_loop_config_t* config,
+    uint16_t current_a_raw,
+    uint16_t current_b_raw,
+    phase_current_loop_output_t* output);
 /* Fixed-point rotating-frame hot path. Measurements are Park-transformed at
  * sample_electrical_phase_q32; the d/q PI voltage is inverse-Park-transformed
  * at pwm_application_phase_q32. The prevalidated-config contract matches the

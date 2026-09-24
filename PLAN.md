@@ -15,7 +15,7 @@ and fault bounds.
 
 ## Accepted baseline
 
-- Firmware 0.38.3 / protocol 1.19 is the current source and flashed baseline.
+- Firmware 0.38.3 / protocol 1.19 is the accepted motion/timing baseline.
   It runs the fixed-point rotating d/q controller in the production aligned-q
   torque, velocity, and position path, retains stationary A/B control for
   alignment and static vectors, and preserves the project-owned 20 kHz current
@@ -100,6 +100,12 @@ The exact numeric envelope and next evidence for each limit are maintained in
 [the operating-limit inventory](docs/OPERATING_LIMITS.md).
 
 ## Active outcomes
+
+- Characterize the explicit bootstrap probe with windings disconnected using
+  the [Stage 5 procedure](docs/BRINGUP.md#bootstrap-release-characterization).
+  Establish gate decay, simultaneous transitions, deadline/STOP/fault return,
+  and restart behavior before a separate attached-motor release experiment.
+  Reliable passive coast and automatic idle release remain unqualified.
 
 Work is ordered approximately by current engineering priority. Reorder this
 list only when measurements or a newly discovered prerequisite justify it.

@@ -43,3 +43,27 @@ else()
 endif()
 
 add_test(NAME host_unit_tests COMMAND host_unit_tests)
+
+# Exercise the actual interrupt-driven backend with only its hardware seams
+# replaced. Each case runs in a new process to retain production static state.
+add_executable(bootstrap_backend_tests
+    test_bootstrap_backend.c
+    ../firmware/src/platform/current_loop_backend.c
+    ../firmware/src/control/phase_current_loop.c
+    ../firmware/src/control/phase_current_reference.c
+    ../firmware/src/control/electrical_phase_predictor.c
+    ../firmware/src/control/rotating_current_test.c
+)
+target_include_directories(bootstrap_backend_tests PRIVATE mocks ../firmware/include)
+target_compile_features(bootstrap_backend_tests PRIVATE c_std_11)
+if(MSVC)
+    target_compile_options(bootstrap_backend_tests PRIVATE /W4 /WX)
+else()
+    target_compile_options(bootstrap_backend_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(bootstrap_backend_tests PRIVATE m)
+endif()
+foreach(probe_case boundaries expiry_restart blocked_stop lease adc_loss adc_error
+        entry_current entry_adc_missing raw_range overcurrent bad_vbus stage_failure)
+    add_test(NAME bootstrap_backend_${probe_case}
+             COMMAND bootstrap_backend_tests ${probe_case})
+endforeach()

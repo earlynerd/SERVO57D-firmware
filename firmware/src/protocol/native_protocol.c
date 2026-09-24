@@ -1,7 +1,7 @@
 #include "mks57d/native_protocol.h"
 
 _Static_assert(79u <= NATIVE_PROTOCOL_MAX_PAYLOAD_SIZE,
-               "runtime profile must fit one native response");
+               "boot status must fit one native response");
 
 enum
 {
@@ -356,6 +356,9 @@ static bool map_command(uint16_t native_command,
         case NATIVE_PROTOCOL_COMMAND_ARM_RUNTIME_PROFILE:
             *operation = COMMAND_OPERATION_ARM_RUNTIME_PROFILE;
             return true;
+        case NATIVE_PROTOCOL_COMMAND_START_BOOTSTRAP_PROBE:
+            *operation = COMMAND_OPERATION_START_BOOTSTRAP_PROBE;
+            return true;
         case NATIVE_PROTOCOL_COMMAND_START_ALIGNMENT:
             *operation = COMMAND_OPERATION_START_ALIGNMENT;
             return true;
@@ -579,7 +582,76 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                 write_u32_be(
                     &response_frame->payload[7],
                     command_response->data.boot_status.uptime_millis);
-                payload_length = 11u;
+                write_u32_be(
+                    &response_frame->payload[11],
+                    command_response->data.boot_status.initial_rcc_ctrlsts);
+                write_u32_be(
+                    &response_frame->payload[15],
+                    command_response->data.boot_status.initial_rcc_ldctrl);
+                write_u32_be(
+                    &response_frame->payload[19],
+                    command_response->data.boot_status.initial_sram_ctrlsts);
+                response_frame->payload[23] =
+                    command_response->data.boot_status.evidence_flags;
+                response_frame->payload[24] =
+                    command_response->data.boot_status.exception_number;
+                write_u16_be(
+                    &response_frame->payload[25],
+                    command_response->data.boot_status.
+                        previous_stack_high_water_bytes);
+                write_u16_be(
+                    &response_frame->payload[27],
+                    command_response->data.boot_status.
+                        previous_stack_minimum_free_bytes);
+                write_u16_be(
+                    &response_frame->payload[29],
+                    command_response->data.boot_status.
+                        current_stack_high_water_bytes);
+                write_u16_be(
+                    &response_frame->payload[31],
+                    command_response->data.boot_status.
+                        current_stack_minimum_free_bytes);
+                write_u32_be(
+                    &response_frame->payload[33],
+                    command_response->data.boot_status.exception_return);
+                write_u32_be(
+                    &response_frame->payload[37],
+                    command_response->data.boot_status.
+                        stacked_program_counter);
+                write_u32_be(
+                    &response_frame->payload[41],
+                    command_response->data.boot_status.
+                        stacked_link_register);
+                write_u32_be(
+                    &response_frame->payload[45],
+                    command_response->data.boot_status.stacked_xpsr);
+                write_u32_be(
+                    &response_frame->payload[49],
+                    command_response->data.boot_status.main_stack_pointer);
+                write_u32_be(
+                    &response_frame->payload[53],
+                    command_response->data.boot_status.process_stack_pointer);
+                write_u32_be(
+                    &response_frame->payload[57],
+                    command_response->data.boot_status.
+                        configurable_fault_status);
+                write_u32_be(
+                    &response_frame->payload[61],
+                    command_response->data.boot_status.hard_fault_status);
+                write_u32_be(
+                    &response_frame->payload[65],
+                    command_response->data.boot_status.debug_fault_status);
+                write_u32_be(
+                    &response_frame->payload[69],
+                    command_response->data.boot_status.
+                        memory_management_fault_address);
+                write_u32_be(
+                    &response_frame->payload[73],
+                    command_response->data.boot_status.bus_fault_address);
+                write_u16_be(
+                    &response_frame->payload[77],
+                    command_response->data.boot_status.stack_capacity_bytes);
+                payload_length = 79u;
                 break;
 
             case COMMAND_RESPONSE_ENCODER_STATUS:
@@ -641,7 +713,28 @@ static bool serialize_response(const native_protocol_frame_t* request_frame,
                     &response_frame->payload[47],
                     command_response->data.encoder_status.
                         estimator_maximum_sample_interval_us);
-                payload_length = 51u;
+                response_frame->payload[51] =
+                    command_response->data.encoder_status.last_error_status;
+                response_frame->payload[52] =
+                    command_response->data.encoder_status.
+                        last_error_transport_status;
+                response_frame->payload[53] =
+                    command_response->data.encoder_status.
+                        last_error_response_length;
+                response_frame->payload[54] =
+                    command_response->data.encoder_status.
+                        last_error_register_03;
+                response_frame->payload[55] =
+                    command_response->data.encoder_status.
+                        last_error_register_04;
+                response_frame->payload[56] =
+                    command_response->data.encoder_status.
+                        last_error_register_05;
+                write_u32_be(
+                    &response_frame->payload[57],
+                    command_response->data.encoder_status.
+                        last_error_timestamp_us);
+                payload_length = 61u;
                 break;
 
             case COMMAND_RESPONSE_CURRENT_TRACE:

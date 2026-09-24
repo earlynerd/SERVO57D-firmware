@@ -31,6 +31,9 @@ MESSAGE_RESPONSE = 2
 
 COMMAND_PING = 0x0001
 COMMAND_GET_IDENTITY = 0x0002
+COMMAND_GET_CAPABILITIES = 0x0003
+CAPABILITY_BOOTSTRAP_PROBE = 1 << 20
+BOOTSTRAP_PROBE_MAX_DURATION_MILLIS = 5000
 COMMAND_GET_COMMISSIONING_STATUS = 0x0100
 COMMAND_CONFIGURE_CURRENT_TEST = 0x0101
 COMMAND_START_CURRENT_TEST = 0x0102
@@ -41,6 +44,7 @@ COMMAND_GET_CURRENT_TRACE = 0x0106
 COMMAND_ARM_CURRENT_TRACE = 0x0107
 COMMAND_GET_RUNTIME_PROFILE = 0x0108
 COMMAND_ARM_RUNTIME_PROFILE = 0x0109
+COMMAND_START_BOOTSTRAP_PROBE = 0x010A
 COMMAND_START_ALIGNMENT = 0x0200
 COMMAND_GET_ALIGNMENT_STATUS = 0x0201
 COMMAND_STOP_DRIVE = 0x0202
@@ -86,6 +90,7 @@ FLAG_NAMES = {
     9: "remote_stop_pending",
     10: "fault_present",
     11: "vbus_snapshot_valid",
+    12: "bootstrap_probe_active",
 }
 
 INPUT_BITS = {
@@ -110,6 +115,7 @@ FAULT_NAMES = {
     18: "deadline",
     19: "internal",
     20: "phase_prediction",
+    21: "bootstrap_vbus",
 }
 
 PHASE_PREDICTION_REJECT_NAMES = {
@@ -169,6 +175,52 @@ RESET_FLAG_NAMES = {
     29: "independent_watchdog",
     30: "window_watchdog",
     31: "low_power",
+}
+
+LDCTRL_RESET_FLAG_NAMES = {
+    28: "brown_out",
+    30: "low_power_domain_emc",
+}
+
+BOOT_STATUS_V1_BODY = struct.Struct(">BIBI")
+BOOT_STATUS_V2_BODY = struct.Struct(">BIBIIII")
+BOOT_STATUS_V3_BODY = struct.Struct(
+    ">BIBIIII" + "BBHHHH" + "IIIIIIIIIII" + "H"
+)
+
+BOOT_EVIDENCE_FLAG_NAMES = {
+    0: "previous_stack_valid",
+    1: "current_stack_valid",
+    2: "fault_record_valid",
+    3: "exception_frame_valid",
+}
+
+PANIC_CODE_NAMES = {
+    0: "none",
+    1: "nmi",
+    2: "hard_fault",
+    3: "memory_fault",
+    4: "bus_fault",
+    5: "usage_fault",
+    6: "unexpected_interrupt",
+    7: "early_platform_init",
+    8: "clock_init",
+    9: "interrupt_priority_init",
+    10: "passive_board_invariant",
+    11: "timebase_init",
+    12: "watchdog_init",
+    13: "watchdog_liveness",
+    14: "internal_invariant",
+    15: "drive_control",
+}
+
+EXCEPTION_NUMBER_NAMES = {
+    0: "thread_mode",
+    2: "nmi",
+    3: "hard_fault",
+    4: "memory_management",
+    5: "bus_fault",
+    6: "usage_fault",
 }
 
 ENCODER_STATUS_NAMES = {
@@ -400,6 +452,7 @@ RUNTIME_PROFILE_METRIC_NAMES = (
 )
 ENCODER_STATUS_V1_BODY = struct.Struct(">BBBHBIII")
 ENCODER_STATUS_V2_BODY = struct.Struct(">BBBHBIIIBiiIIHbIII")
+ENCODER_STATUS_V3_BODY = struct.Struct(">BBBHBIIIBiiIIHbIIIBBBBBBI")
 ALIGNMENT_STATUS_BODY = struct.Struct(">BBBBHHHHHhhbHIIHHHHIIIHHHH")
 CONFIGURATION_STATUS_V1_BODY = struct.Struct(">BBBBHIHHHHhbHHHHhb")
 CONFIGURATION_STATUS_V2_BODY = struct.Struct(
@@ -785,6 +838,123 @@ def query_identity(client: Client) -> dict[str, Any]:
     }
 
 
+def query_boot_status(client: Client) -> dict[str, Any]:
+    body = client.transact(COMMAND_GET_BOOT_STATUS)
+    if len(body) < BOOT_STATUS_V1_BODY.size:
+        raise ProtocolError("boot-status response has an unexpected length")
+
+    schema, reset_flags, retained_panic, uptime_millis = (
+        BOOT_STATUS_V1_BODY.unpack(body[: BOOT_STATUS_V1_BODY.size])
+    )
+    result = {
+        "schema": schema,
+        "reset_flags_hex": f"0x{reset_flags:08X}",
+        "reset_causes": active_names(reset_flags, RESET_FLAG_NAMES),
+        "retained_panic": retained_panic,
+        "uptime_millis": uptime_millis,
+    }
+    if schema == 1 and len(body) == BOOT_STATUS_V1_BODY.size:
+        return result
+    if schema == 2 and len(body) == BOOT_STATUS_V2_BODY.size:
+        boot_values = BOOT_STATUS_V2_BODY.unpack(body)
+    elif schema == 3 and len(body) == BOOT_STATUS_V3_BODY.size:
+        boot_values = BOOT_STATUS_V3_BODY.unpack(body)
+    else:
+        raise ProtocolError(
+            "boot-status response has an unexpected length or schema"
+        )
+
+    (
+        _,
+        _,
+        _,
+        _,
+        initial_rcc_ctrlsts,
+        initial_rcc_ldctrl,
+        initial_sram_ctrlsts,
+    ) = boot_values[:7]
+    ldctrl_reset_flags = initial_rcc_ldctrl & sum(
+        1 << bit for bit in LDCTRL_RESET_FLAG_NAMES
+    )
+    result.update(
+        {
+            "rcc_ctrlsts_raw_hex": f"0x{initial_rcc_ctrlsts:08X}",
+            "rcc_ldctrl_raw_hex": f"0x{initial_rcc_ldctrl:08X}",
+            "rcc_ldctrl_reset_flags_hex": f"0x{ldctrl_reset_flags:08X}",
+            "rcc_ldctrl_reset_causes": active_names(
+                ldctrl_reset_flags, LDCTRL_RESET_FLAG_NAMES
+            ),
+            "rcc_sram_ctrlsts_raw_hex": f"0x{initial_sram_ctrlsts:08X}",
+        }
+    )
+    if schema == 3:
+        (
+            evidence_flags,
+            exception_number,
+            previous_stack_high_water_bytes,
+            previous_stack_minimum_free_bytes,
+            current_stack_high_water_bytes,
+            current_stack_minimum_free_bytes,
+            exception_return,
+            stacked_program_counter,
+            stacked_link_register,
+            stacked_xpsr,
+            main_stack_pointer,
+            process_stack_pointer,
+            configurable_fault_status,
+            hard_fault_status,
+            debug_fault_status,
+            memory_management_fault_address,
+            bus_fault_address,
+            stack_capacity_bytes,
+        ) = boot_values[7:]
+        result["evidence_flags_hex"] = f"0x{evidence_flags:02X}"
+        result["evidence_flags"] = active_names(
+            evidence_flags, BOOT_EVIDENCE_FLAG_NAMES
+        )
+        result["stack"] = {
+            "capacity_bytes": stack_capacity_bytes,
+            "previous": {
+                "valid": bool(evidence_flags & (1 << 0)),
+                "high_water_bytes": previous_stack_high_water_bytes,
+                "minimum_free_bytes": previous_stack_minimum_free_bytes,
+            },
+            "current": {
+                "valid": bool(evidence_flags & (1 << 1)),
+                "high_water_bytes": current_stack_high_water_bytes,
+                "minimum_free_bytes": current_stack_minimum_free_bytes,
+            },
+        }
+        result["crash"] = {
+            "valid": bool(evidence_flags & (1 << 2)),
+            "exception_frame_valid": bool(evidence_flags & (1 << 3)),
+            "panic": PANIC_CODE_NAMES.get(
+                retained_panic, f"panic_{retained_panic}"
+            ),
+            "exception_number": exception_number,
+            "exception": EXCEPTION_NUMBER_NAMES.get(
+                exception_number, f"exception_{exception_number}"
+            ),
+            "exception_return_hex": f"0x{exception_return:08X}",
+            "stacked_program_counter_hex":
+                f"0x{stacked_program_counter:08X}",
+            "stacked_link_register_hex":
+                f"0x{stacked_link_register:08X}",
+            "stacked_xpsr_hex": f"0x{stacked_xpsr:08X}",
+            "main_stack_pointer_hex": f"0x{main_stack_pointer:08X}",
+            "process_stack_pointer_hex":
+                f"0x{process_stack_pointer:08X}",
+            "configurable_fault_status_hex":
+                f"0x{configurable_fault_status:08X}",
+            "hard_fault_status_hex": f"0x{hard_fault_status:08X}",
+            "debug_fault_status_hex": f"0x{debug_fault_status:08X}",
+            "memory_management_fault_address_hex":
+                f"0x{memory_management_fault_address:08X}",
+            "bus_fault_address_hex": f"0x{bus_fault_address:08X}",
+        }
+    return result
+
+
 def configure_current_test(
     client: Client,
     amplitude_counts: int,
@@ -1012,6 +1182,7 @@ def query_encoder(client: Client) -> dict[str, Any]:
     if len(body) not in {
         ENCODER_STATUS_V1_BODY.size,
         ENCODER_STATUS_V2_BODY.size,
+        ENCODER_STATUS_V3_BODY.size,
     }:
         raise ProtocolError("encoder-status response has an unexpected length")
     (
@@ -1041,7 +1212,10 @@ def query_encoder(client: Client) -> dict[str, Any]:
         "error_count": error_count,
         "last_attempt_millis": last_attempt_millis,
     }
-    if len(body) == ENCODER_STATUS_V2_BODY.size:
+    if len(body) in {
+        ENCODER_STATUS_V2_BODY.size,
+        ENCODER_STATUS_V3_BODY.size,
+    }:
         (
             _schema,
             _status,
@@ -1061,7 +1235,9 @@ def query_encoder(client: Client) -> dict[str, Any]:
             electrical_phase_q32,
             estimator_sample_interval_us,
             estimator_maximum_sample_interval_us,
-        ) = ENCODER_STATUS_V2_BODY.unpack(body)
+        ) = ENCODER_STATUS_V2_BODY.unpack(
+            body[: ENCODER_STATUS_V2_BODY.size]
+        )
         result["estimator"] = {
             "flags": active_names(
                 estimator_flags, ENCODER_ESTIMATOR_FLAG_NAMES
@@ -1093,6 +1269,34 @@ def query_encoder(client: Client) -> dict[str, Any]:
             "electrical_phase_degrees": round(
                 electrical_phase_q32 * 360.0 / 4294967296.0, 4
             ),
+        }
+    if len(body) == ENCODER_STATUS_V3_BODY.size:
+        (
+            last_error_status,
+            last_error_transport_status,
+            last_error_response_length,
+            last_error_register_03,
+            last_error_register_04,
+            last_error_register_05,
+            last_error_timestamp_us,
+        ) = struct.unpack(
+            ">BBBBBBI", body[ENCODER_STATUS_V2_BODY.size :]
+        )
+        result["last_error"] = {
+            "status": ENCODER_STATUS_NAMES.get(
+                last_error_status, f"status_{last_error_status}"
+            ),
+            "transport_status": SPI_STATUS_NAMES.get(
+                last_error_transport_status,
+                f"status_{last_error_transport_status}",
+            ),
+            "response_length": last_error_response_length,
+            "registers_hex": [
+                f"0x{last_error_register_03:02X}",
+                f"0x{last_error_register_04:02X}",
+                f"0x{last_error_register_05:02X}",
+            ],
+            "timestamp_us": last_error_timestamp_us,
         }
     return result
 
@@ -2023,6 +2227,71 @@ def stop_drive(client: Client) -> None:
         if "unknown_command" not in str(error):
             raise
         client.transact(COMMAND_STOP_CURRENT_TEST)
+
+
+def run_bootstrap_probe(client: Client, duration_ms: int) -> dict[str, Any]:
+    """Run a finite all-high characterization probe, then request common ZERO."""
+    if not 1 <= duration_ms <= BOOTSTRAP_PROBE_MAX_DURATION_MILLIS:
+        raise ProtocolError("bootstrap probe --duration-ms must be in 1..5000")
+    capabilities = client.transact(COMMAND_GET_CAPABILITIES)
+    if len(capabilities) != 4:
+        raise ProtocolError("capability response has an unexpected length")
+    if not struct.unpack(">I", capabilities)[0] & CAPABILITY_BOOTSTRAP_PROBE:
+        raise ProtocolError("firmware does not support the experimental bootstrap probe")
+
+    print(
+        "Experimental all-high probe: disconnect the motor for initial waveform "
+        "characterization at 12 V with a current-limited supply. Release is "
+        "unproven; low-side phase-current readings "
+        "are not valid winding-current evidence during the probe.",
+        file=sys.stderr,
+    )
+    operation_error: BaseException | None = None
+    final_status: dict[str, Any] | None = None
+    active_flags = {
+        "bootstrap_probe_active", "remote_start_pending", "remote_stop_pending",
+        "authority_active", "backend_active", "remote_authority",
+    }
+    try:
+        # Cover a lost START reply too: the device may already have accepted it.
+        client.transact(COMMAND_START_BOOTSTRAP_PROBE, struct.pack(">I", duration_ms))
+        deadline = time.monotonic() + duration_ms / 1000.0 + 1.0
+        while True:
+            status = query_status(client)
+            if "fault_present" in status["flags"]:
+                raise ProtocolError("bootstrap probe stopped with a drive fault")
+            if not active_flags.intersection(status["flags"]):
+                break
+            if time.monotonic() >= deadline:
+                raise ProtocolError("bootstrap probe did not complete within its deadline")
+            time.sleep(0.01)
+    except BaseException as error:
+        operation_error = error
+        raise
+    finally:
+        try:
+            stop_drive(client)
+            stop_deadline = time.monotonic() + 1.0
+            while True:
+                final_status = query_status(client)
+                if not active_flags.intersection(final_status["flags"]):
+                    break
+                if time.monotonic() >= stop_deadline:
+                    raise ProtocolError("bootstrap probe remains active after STOP")
+                time.sleep(0.01)
+        except (ProtocolError, OSError) as stop_error:
+            if operation_error is None:
+                raise
+            print(f"bootstrap probe STOP verification failed: {stop_error}", file=sys.stderr)
+    assert final_status is not None
+    if "fault_present" in final_status["flags"]:
+        raise ProtocolError("bootstrap probe final status reports a drive fault")
+    return {
+        "operation": "experimental_all_high_bootstrap_probe",
+        "duration_ms": duration_ms,
+        "release_verified": False,
+        "status": final_status,
+    }
 
 
 def print_json(value: Any) -> None:
@@ -4368,6 +4637,19 @@ def make_parser() -> argparse.ArgumentParser:
         help="frequency ramp before the full duration-ms hold window",
     )
 
+    bootstrap = commands.add_parser(
+        "bootstrap-probe",
+        help="experimental all-high probe; disconnect motor for initial waveforms",
+        description=(
+            "Experimental bounded all-high bootstrap probe. Disconnect the motor "
+            "for initial waveform characterization at 12 V with a current-limited "
+            "supply. Release is unproven; low-side "
+            "phase-current readings are not valid winding-current evidence."
+        ),
+    )
+    bootstrap.add_argument("--duration-ms", type=int, default=100,
+                          help="all-high duration in milliseconds (1..5000; default 100)")
+
     commands.add_parser("stop", help="stop any active drive operation")
     commands.add_parser(
         "clear-faults",
@@ -4634,21 +4916,7 @@ def main() -> int:
         elif args.command == "status":
             print_json(query_status(client))
         elif args.command == "boot":
-            body = client.transact(COMMAND_GET_BOOT_STATUS)
-            if len(body) != 10:
-                raise ProtocolError("boot-status response has an unexpected length")
-            schema, reset_flags, retained_panic, uptime_millis = struct.unpack(
-                ">BIBI", body
-            )
-            print_json(
-                {
-                    "schema": schema,
-                    "reset_flags_hex": f"0x{reset_flags:08X}",
-                    "reset_causes": active_names(reset_flags, RESET_FLAG_NAMES),
-                    "retained_panic": retained_panic,
-                    "uptime_millis": uptime_millis,
-                }
-            )
+            print_json(query_boot_status(client))
         elif args.command == "encoder":
             print_json(query_encoder(client))
         elif args.command == "alignment":
@@ -4759,6 +5027,8 @@ def main() -> int:
                 ),
             )
             print_json(query_status(client))
+        elif args.command == "bootstrap-probe":
+            print_json(run_bootstrap_probe(client, args.duration_ms))
         elif args.command == "stop":
             stop_drive(client)
             print_json(query_status(client))

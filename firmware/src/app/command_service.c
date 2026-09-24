@@ -170,6 +170,32 @@ void command_service_dispatch(const command_service_context_t* context,
             response->kind = COMMAND_RESPONSE_NONE;
             return;
 
+        case COMMAND_OPERATION_START_BOOTSTRAP_PROBE:
+            if (request->payload_length != 4u)
+            {
+                response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                return;
+            }
+            {
+                const uint32_t duration_millis = read_u32_be(request->payload);
+                if ((duration_millis == 0u) ||
+                    (duration_millis >
+                     COMMAND_SERVICE_BOOTSTRAP_PROBE_MAX_DURATION_MILLIS))
+                {
+                    response->status = COMMAND_STATUS_INVALID_PAYLOAD;
+                    return;
+                }
+                if (context->commissioning.start_bootstrap_probe == NULL)
+                {
+                    response->status = COMMAND_STATUS_UNAVAILABLE;
+                    return;
+                }
+                response->status = context->commissioning.start_bootstrap_probe(
+                    context->commissioning.context,
+                    duration_millis);
+            }
+            return;
+
         case COMMAND_OPERATION_STOP_CURRENT_TEST:
             if (request->payload_length != 0u)
             {

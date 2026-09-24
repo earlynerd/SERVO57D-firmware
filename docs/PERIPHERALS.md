@@ -95,8 +95,8 @@ TIM7 bounds CS timing, DMA channels 2/3 transfer the frame, and PendSV defers
 decode after a 20 ms power-up delay. The driver rejects odd
 parity and publishes no-magnet and over-speed flags with raw 14-bit angle and
 status counters. Accepted samples feed the timestamped mechanical estimator;
-native encoder schema 2 adds position, velocity, alignment validity, and
-sample-interval telemetry. The driver retries transport and parity failures;
+native encoder schema 3 preserves schema 2's position, velocity, alignment
+validity, and sample-interval telemetry. The driver retries transport and parity failures;
 the product supervisor
 keeps an unready idle drive in `DIAGNOSTIC` and converts encoder-health loss
 during bridge authority into `FAULT`.

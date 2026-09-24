@@ -5,9 +5,10 @@ closed-loop stepper controller.
 
 ## Current operating snapshot
 
-Firmware 0.38.6 / native protocol 1.19 is the current source candidate;
-firmware 0.38.4 is currently flashed for the OLED test, while firmware 0.38.3
-remains the accepted motion/timing baseline. Firmware 0.30.1 corrected the fast
+Firmware 0.39.0 / native protocol 1.20 is the current source candidate.
+September 16 position captures identify firmware 0.38.8 on the controller;
+the currently flashed image has not been rechecked. Firmware 0.38.3 remains
+the accepted motion/timing baseline. Firmware 0.30.1 corrected the fast
 phase predictor to the measured 55 us DMA-to-PWM-application interval, and
 matched +8 rev/s bursts then staged current-loop proportional gains of 2, 3,
 and 4 while retaining `Ki=1/64` and every electrical limit. Velocity RMS error
@@ -169,7 +170,32 @@ the bounded idle-only initialization retry. Native/Python tests and clean
 Debug/Release Arm builds pass; flash, repeated-motion OLED behavior, and active
 foreground/Right-button timing remain hardware gates.
 
-Firmware 0.38.3 is flashed on the COM14 controller. On 0.38.1, PD0 was dark
+Firmware 0.38.7 retains protocol 1.19 and extends `GET_BOOT_STATUS` to schema
+2. The existing schema-1 prefix remains unchanged, followed by the raw
+boot-time `RCC_CTRLSTS`, `RCC_LDCTRL`, and `RCC_SRAM_CTRLSTS` values captured
+before reset flags are cleared. This preserves the separate brownout flag and
+prevents `PINRSTF` alone from being presented as proof that an external source
+pulled NRST low. Native/Python tests and Debug/Release Arm builds pass; flash
+and a reproduced reset are required to identify the observed sharp stop's
+physical reset source. The first 0.38.7 reproduction reported only `PINRSTF`:
+there was no brownout, watchdog, software, power-on, RAM, MMU, or low-power
+reset flag. A later run did not reset; one encoder acquisition error caused the
+intentional `phase_invalid` torque shutdown that velocity and position report
+as `actuator_fault`.
+
+Firmware 0.38.8 retains protocol 1.19 and adds the evidence needed to separate
+a core fault/stack failure from a reset that never reached a software handler.
+Boot-status schema 3 reports current and preceding-boot stack high-water plus a
+checksummed `.noinit` fault record containing panic, exception return, stacked
+PC/LR/xPSR, MSP/PSP, and Cortex fault-status/address registers. Encoder schema
+3 separately retains the exact status, SPI status, response length/raw bytes,
+and timestamp of the last failed acquisition after later samples recover.
+Neither addition changes sample acceptance, drive authority, fault thresholds,
+STOP, or `ZERO` behavior.
+
+Firmware 0.38.7 was flashed for reset investigation, and later September 16
+position captures identify 0.38.8 on the controller. Firmware 0.38.3 remains
+the accepted motion/timing baseline. On 0.38.1, PD0 was dark
 while idle but rapidly emitted individually very-low-duty pulses during motion;
 after the 0.38.2 word-copy change, no blue light was visible during motion.
 Firmware 0.38.3 completed simultaneous current-trace/runtime-profile captures at
@@ -249,6 +275,14 @@ by [the project plan](PLAN.md).
 
 ## Evaluation-firmware warning
 
+Firmware 0.39.0 adds an explicit, finite `bootstrap-probe` to investigate the
+stock firmware's observed shaft release. It commands all four bridge inputs
+high under diagnostic authority; it does not establish that bootstrap decay
+produces reliable coast. Normal STOP and faults retain all-low `ZERO`.
+Start with the [unloaded waveform procedure](docs/BRINGUP.md#bootstrap-release-characterization)
+before any attached-motor release trials. This candidate has not been flashed
+or physically qualified for that operation.
+
 This firmware deliberately exposes unqualified operating zones so the drive's
 real boundaries can be measured. Firmware acceptance is not a claim that the
 attached motor, supply, load, mechanics, cooling, or tuning will perform well
@@ -258,8 +292,8 @@ vibration, and energetic motion are possible.
 Use a current-limited supply, a suitable mechanical fixture, finite current,
 voltage, duration, and motion bounds, and captured telemetry. Keep the physical
 Right-button stop and supply cutoff immediately available. The common all-low
-`ZERO` state dynamically brakes the motor; the proven board path has no passive
-software coast state.
+`ZERO` state dynamically brakes the motor; passive software coast remains
+unverified.
 
 ## Run a bounded test
 

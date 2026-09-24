@@ -69,6 +69,13 @@ repository.
 
 ## Independent open firmware references
 
+Bootstrap-release reasoning uses EGmicro's EG3013 datasheet V1.0, especially
+sections 2, 7.2, and 8.3, read on 2026-09-16 from the
+[manufacturer-authored PDF mirror](https://dosya.motorobit.com/pdf/EG3013.pdf)
+and the [manufacturer product page](https://www.egmicro.com/products/detail/?name=EG3013).
+Bootstrap operation is documented; reliable coast from static-high input is
+not guaranteed there. No vendor binary or datasheet copy is added.
+
 ### Delsian `servo57d`
 
 - Public source: <https://github.com/Delsian/servo57d>

@@ -83,7 +83,7 @@ static rotor_control_progress_snapshot_t rotor_control_progress_snapshot;
 enum
 {
     COMMISSIONING_STATUS_SCHEMA_VERSION = 5u,
-    ENCODER_STATUS_SCHEMA_VERSION = 2u,
+    ENCODER_STATUS_SCHEMA_VERSION = 3u,
     CURRENT_TRACE_SCHEMA_VERSION = 2u,
     ALIGNMENT_STATUS_SCHEMA_VERSION = 1u,
     ALIGNED_TORQUE_STATUS_SCHEMA_VERSION = 2u,
@@ -194,6 +194,7 @@ struct product_command_context
     bool remote_start_requested;
     bool remote_stop_requested;
     bool remote_authority_active;
+    bool remote_bootstrap_probe;
     uint8_t remote_start_leg;
     uint32_t remote_start_ramp_duration_millis;
     uint32_t remote_start_duration_millis;
@@ -322,6 +323,10 @@ static command_status_t commissioning_get_status(
     if (loop.active)
     {
         status->flags |= COMMAND_COMMISSIONING_FLAG_BACKEND_ACTIVE;
+    }
+    if (loop.bootstrap_probe_active)
+    {
+        status->flags |= COMMAND_COMMISSIONING_FLAG_BOOTSTRAP_PROBE_ACTIVE;
     }
     if (commissioning->remote_authority_active)
     {
@@ -465,31 +470,9 @@ static command_status_t commissioning_configure(
     return COMMAND_STATUS_OK;
 }
 
-static command_status_t commissioning_start(
-    void* context,
-    uint8_t selected_leg,
-    uint32_t ramp_duration_millis,
-    uint32_t duration_millis)
+static bool commissioning_start_allowed(product_command_context_t* commissioning)
 {
-    product_command_context_t* commissioning = context;
     current_loop_backend_snapshot_t loop = {0};
-    const uint64_t total_duration_millis =
-        (uint64_t)ramp_duration_millis + duration_millis;
-
-    if (commissioning == NULL)
-    {
-        return COMMAND_STATUS_INTERNAL_ERROR;
-    }
-    if ((selected_leg >= CURRENT_TEST_INITIAL_LEG_COUNT) ||
-        (duration_millis < CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS) ||
-        (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
-        (ramp_duration_millis >
-         CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
-        (total_duration_millis >
-         CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
-    {
-        return COMMAND_STATUS_INVALID_PAYLOAD;
-    }
 
     current_loop_backend_get_snapshot(&loop);
     if ((commissioning->supervisor == NULL) ||
@@ -513,18 +496,115 @@ static command_status_t commissioning_start(
             commissioning->aligned_torque_controller) ||
         alignment_controller_is_active(
             commissioning->alignment_controller) ||
-        (loop.fault_flags != 0u) ||
+        loop.active || (loop.fault_flags != 0u) ||
         ((*commissioning->raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u))
+    {
+        return false;
+    }
+    return true;
+}
+
+static command_status_t commissioning_start(
+    void* context,
+    uint8_t selected_leg,
+    uint32_t ramp_duration_millis,
+    uint32_t duration_millis)
+{
+    product_command_context_t* commissioning = context;
+    const uint64_t total_duration_millis =
+        (uint64_t)ramp_duration_millis + duration_millis;
+
+    if (commissioning == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if ((selected_leg >= CURRENT_TEST_INITIAL_LEG_COUNT) ||
+        (duration_millis < CURRENT_TEST_MINIMUM_REMOTE_DURATION_MS) ||
+        (duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
+        (ramp_duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS) ||
+        (total_duration_millis > CURRENT_TEST_MAXIMUM_REMOTE_DURATION_MS))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    if (!commissioning_start_allowed(commissioning))
     {
         return COMMAND_STATUS_UNAVAILABLE;
     }
 
+    commissioning->remote_bootstrap_probe = false;
     commissioning->remote_start_leg = selected_leg;
     commissioning->remote_start_ramp_duration_millis =
         ramp_duration_millis;
     commissioning->remote_start_duration_millis = duration_millis;
     commissioning->remote_stop_requested = false;
     commissioning->remote_start_requested = true;
+    return COMMAND_STATUS_OK;
+}
+
+static command_status_t commissioning_start_bootstrap_probe(
+    void* context, uint32_t duration_millis)
+{
+    product_command_context_t* commissioning = context;
+    adc1_vbus_snapshot_t vbus;
+    current_loop_backend_snapshot_t loop = {0};
+
+    if (commissioning == NULL)
+    {
+        return COMMAND_STATUS_INTERNAL_ERROR;
+    }
+    if ((duration_millis == 0u) ||
+        (duration_millis > CURRENT_LOOP_BACKEND_BOOTSTRAP_MAX_DURATION_MS))
+    {
+        return COMMAND_STATUS_INVALID_PAYLOAD;
+    }
+    if (!commissioning_start_allowed(commissioning) ||
+        !encoder_control_ready(commissioning->encoder_diagnostics,
+            commissioning->angle_tracker, *commissioning->encoder_feedback_live,
+            *commissioning->estimator_fault_flags) ||
+        !isfinite(commissioning->angle_tracker->velocity_revolutions_per_second) ||
+        (fabsf(commissioning->angle_tracker->velocity_revolutions_per_second) >
+         0.05f) ||
+        (adc1_read_synchronized_vbus(&vbus) != ADC1_STATUS_OK) ||
+        (vbus.vbus_raw < CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MIN_RAW) ||
+        (vbus.vbus_raw > CURRENT_LOOP_BACKEND_BOOTSTRAP_VBUS_MAX_RAW))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    *commissioning->vbus_snapshot = vbus;
+    *commissioning->vbus_snapshot_valid = true;
+    if (!app_supervisor_handle_event(commissioning->supervisor,
+            APP_EVENT_DIAGNOSTIC_OPERATION_REQUESTED,
+            (app_transition_context_t){.safe_to_energize = true}))
+    {
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    if (!current_loop_backend_start_bootstrap_probe(duration_millis, vbus.vbus_raw))
+    {
+        /* An unavailable fresh/near-zero ADC sample is an entry refusal,
+           not a reset-worthy fault. No ACK until the backend accepts it. */
+        const bool stopped = current_loop_backend_stop();
+        current_loop_backend_get_snapshot(&loop);
+        if (!stopped || (loop.fault_flags != 0u))
+        {
+            *commissioning->bridge_ready = false;
+            (void)app_supervisor_handle_event(commissioning->supervisor,
+                APP_EVENT_FAULT_DETECTED, (app_transition_context_t){0});
+            board_bridge_force_low_zero();
+            return COMMAND_STATUS_INTERNAL_ERROR;
+        }
+        if (!app_supervisor_handle_event(commissioning->supervisor,
+                APP_EVENT_AUTHORITY_RELEASED, (app_transition_context_t){0}))
+        {
+            board_bridge_force_low_zero();
+            platform_panic(PANIC_INTERNAL_INVARIANT);
+        }
+        return COMMAND_STATUS_UNAVAILABLE;
+    }
+    commissioning->remote_bootstrap_probe = true;
+    commissioning->remote_start_duration_millis = duration_millis;
+    commissioning->remote_start_ramp_duration_millis = 0u;
+    commissioning->remote_run_deadline_millis = timebase_millis() + duration_millis;
+    commissioning->remote_authority_active = true;
     return COMMAND_STATUS_OK;
 }
 
@@ -629,6 +709,7 @@ static void clear_command_mailboxes(product_command_context_t* commands)
     commands->remote_start_requested = false;
     commands->remote_stop_requested = false;
     commands->remote_authority_active = false;
+    commands->remote_bootstrap_probe = false;
     commands->alignment_start_requested = false;
     commands->alignment_stop_requested = false;
     commands->torque_start_requested = false;
@@ -1931,15 +2012,72 @@ static command_status_t commissioning_get_boot_status(
     void* context,
     command_boot_status_t* status)
 {
+    platform_stack_watermark_t current_stack = {0};
+    const volatile platform_fault_record_t* const fault =
+        platform_fault_record_current();
+
     if ((context == NULL) || (status == NULL))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
 
-    status->schema_version = 1u;
+    memset(status, 0, sizeof(*status));
+    status->schema_version = 3u;
     status->reset_flags = g_platform_boot_diagnostics.reset_flags;
     status->retained_panic = (uint8_t)g_diagnostics.retained_panic;
     status->uptime_millis = timebase_millis();
+    status->initial_rcc_ctrlsts =
+        g_platform_boot_diagnostics.initial_rcc_ctrlsts;
+    status->initial_rcc_ldctrl =
+        g_platform_boot_diagnostics.initial_rcc_ldctrl;
+    status->initial_sram_ctrlsts =
+        g_platform_boot_diagnostics.initial_sram_ctrlsts;
+    if (g_platform_boot_diagnostics.previous_stack_watermark_valid)
+    {
+        status->evidence_flags |=
+            COMMAND_BOOT_EVIDENCE_PREVIOUS_STACK_VALID;
+        status->previous_stack_high_water_bytes = (uint16_t)
+            g_platform_boot_diagnostics.previous_stack_high_water_bytes;
+        status->previous_stack_minimum_free_bytes = (uint16_t)
+            g_platform_boot_diagnostics.previous_stack_minimum_free_bytes;
+        status->stack_capacity_bytes = (uint16_t)
+            g_platform_boot_diagnostics.previous_stack_capacity_bytes;
+    }
+    if (platform_stack_watermark_get(&current_stack))
+    {
+        status->evidence_flags |=
+            COMMAND_BOOT_EVIDENCE_CURRENT_STACK_VALID;
+        status->current_stack_high_water_bytes =
+            (uint16_t)current_stack.high_water_bytes;
+        status->current_stack_minimum_free_bytes =
+            (uint16_t)current_stack.minimum_free_bytes;
+        status->stack_capacity_bytes =
+            (uint16_t)current_stack.capacity_bytes;
+    }
+    if (g_platform_boot_diagnostics.fault_record_valid && (fault != NULL))
+    {
+        status->evidence_flags |= COMMAND_BOOT_EVIDENCE_FAULT_RECORD_VALID;
+        if ((fault->flags &
+             PLATFORM_FAULT_RECORD_FLAG_EXCEPTION_FRAME_VALID) != 0u)
+        {
+            status->evidence_flags |=
+                COMMAND_BOOT_EVIDENCE_EXCEPTION_FRAME_VALID;
+        }
+        status->exception_number = (uint8_t)fault->exception_number;
+        status->exception_return = fault->exception_return;
+        status->stacked_program_counter = fault->stacked_program_counter;
+        status->stacked_link_register = fault->stacked_link_register;
+        status->stacked_xpsr = fault->stacked_xpsr;
+        status->main_stack_pointer = fault->main_stack_pointer;
+        status->process_stack_pointer = fault->process_stack_pointer;
+        status->configurable_fault_status =
+            fault->configurable_fault_status;
+        status->hard_fault_status = fault->hard_fault_status;
+        status->debug_fault_status = fault->debug_fault_status;
+        status->memory_management_fault_address =
+            fault->memory_management_fault_address;
+        status->bus_fault_address = fault->bus_fault_address;
+    }
     return COMMAND_STATUS_OK;
 }
 
@@ -1949,6 +2087,7 @@ static command_status_t commissioning_get_encoder_status(
 {
     product_command_context_t* commissioning = context;
     const diagnostics_encoder_t* encoder;
+    diagnostics_encoder_error_t last_error = {0};
     const angle_tracker_t* angle_tracker;
     motor_alignment_status_t alignment_status;
     uint32_t electrical_phase_q32 = 0u;
@@ -1960,7 +2099,10 @@ static command_status_t commissioning_get_encoder_status(
         (commissioning->estimator_fault_flags == NULL) ||
         (commissioning->estimator_sample_interval_us == NULL) ||
         (commissioning->estimator_maximum_sample_interval_us == NULL) ||
-        (commissioning->motor_alignment == NULL))
+        (commissioning->motor_alignment == NULL) ||
+        (commissioning->rotor_control_runtime == NULL) ||
+        !rotor_control_runtime_get_encoder_error(
+            commissioning->rotor_control_runtime, &last_error))
     {
         return COMMAND_STATUS_INTERNAL_ERROR;
     }
@@ -1976,6 +2118,18 @@ static command_status_t commissioning_get_encoder_status(
     status->sample_count = encoder->sample_count;
     status->error_count = encoder->error_count;
     status->last_attempt_millis = encoder->last_attempt_millis;
+    status->last_error_status = (uint8_t)last_error.last_error_status;
+    status->last_error_transport_status =
+        (uint8_t)last_error.last_error_transport_status;
+    status->last_error_response_length =
+        (uint8_t)last_error.last_error_response_length;
+    status->last_error_register_03 =
+        (uint8_t)last_error.last_error_register_03;
+    status->last_error_register_04 =
+        (uint8_t)last_error.last_error_register_04;
+    status->last_error_register_05 =
+        (uint8_t)last_error.last_error_register_05;
+    status->last_error_timestamp_us = last_error.last_error_timestamp_us;
     status->estimator_fault_flags =
         *commissioning->estimator_fault_flags;
     status->estimator_sample_interval_us =
@@ -2748,6 +2902,7 @@ int main(void)
             .get_status = commissioning_get_status,
             .configure = commissioning_configure,
             .start = commissioning_start,
+            .start_bootstrap_probe = commissioning_start_bootstrap_probe,
             .stop = commissioning_stop,
             .get_boot_status = commissioning_get_boot_status,
             .get_encoder_status = commissioning_get_encoder_status,
@@ -2792,6 +2947,11 @@ int main(void)
             .get_status = position_get_status,
         },
     };
+
+    if (!platform_stack_watermark_start())
+    {
+        platform_panic(PANIC_EARLY_PLATFORM_INIT);
+    }
 
     if (!platform_early_memory_ready())
     {
@@ -3509,6 +3669,8 @@ int main(void)
 
         if (commissioning_context.remote_authority_active &&
             (((raw_input_levels & USER_INPUT_BUTTON_RIGHT) == 0u) ||
+             (commissioning_context.remote_bootstrap_probe &&
+              !current_loop_backend_is_active()) ||
              (safety_housekeeping_due &&
               ((int32_t)(now - commissioning_context.
                                    remote_run_deadline_millis) >= 0))))
@@ -3524,6 +3686,7 @@ int main(void)
             commissioning_context.remote_start_requested = false;
             commissioning_context.remote_authority_active = false;
             commissioning_context.remote_stop_requested = false;
+            commissioning_context.remote_bootstrap_probe = false;
             if (was_active)
             {
                 if (!current_loop_backend_stop())
@@ -3673,11 +3836,24 @@ int main(void)
             if (vbus_status == ADC1_STATUS_OK)
             {
                 vbus_snapshot_valid = true;
+                if (commissioning_context.remote_authority_active &&
+                    commissioning_context.remote_bootstrap_probe)
+                {
+                    /* Sole foreground VBUS consumer; only fresh conversions
+                       renew the carrier-counted 30 ms probe lease. */
+                    (void)current_loop_backend_refresh_bootstrap_probe_vbus(
+                        vbus_snapshot.vbus_raw);
+                }
             }
             else if ((vbus_status != ADC1_STATUS_NO_SAMPLE) &&
                      (vbus_status != ADC1_STATUS_BUSY))
             {
                 vbus_snapshot_valid = false;
+                if (commissioning_context.remote_authority_active &&
+                    commissioning_context.remote_bootstrap_probe)
+                {
+                    (void)current_loop_backend_refresh_bootstrap_probe_vbus(0u);
+                }
             }
             adc_status = adc1_read_synchronized_current(&adc_snapshot);
 
@@ -3784,7 +3960,9 @@ int main(void)
                               &alignment_controller) ||
                           aligned_torque_controller_is_active(
                               &aligned_torque_controller)) &&
-                         !current_loop_snapshot.active)
+                         !current_loop_snapshot.active &&
+                         !(commissioning_context.remote_bootstrap_probe &&
+                           current_loop_snapshot.bootstrap_probe_completed))
                 {
                     rotor_control_runtime_force_fault(
                         &rotor_control_runtime, timebase_micros());

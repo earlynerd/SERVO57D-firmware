@@ -1062,3 +1062,24 @@ When a decision is reversed or superseded, append a new entry rather than rewrit
 - **Why:** The OLED is an eventually consistent, non-essential observer; a missing ACK should lose display data rather than create display lifecycle state or constrain live motion updates.
 - **Supersedes:** “Recover the non-essential OLED only outside bridge authority” for runtime failures; its idle-only boot-recovery and non-interference clauses remain.
 - **Affects:** `i2c1`, `ssd1306`, `display_health`, foreground display scheduling, firmware 0.38.6, and OLED/real-time documentation; drive authority, control timing, faults, and `ZERO` are unchanged.
+
+## 2026-08-28 — Preserve all pre-clear RCC reset evidence on wire
+
+- **Decision:** Firmware 0.38.7 / protocol 1.19 extends `GET_BOOT_STATUS` to schema 2. It preserves the complete 10-byte schema-1 prefix, then appends raw boot-time `RCC_CTRLSTS`, `RCC_LDCTRL`, and `RCC_SRAM_CTRLSTS` values captured before `RMRSTF` clears the sticky flags. The host decodes the separate `RCC_LDCTRL.BORRSTF` and `LDEMCRSTF` causes and continues to decode schema 1.
+- **Why:** A sharp-stop capture proved an MCU reboot, but the existing command reported only `PINRSTF`. The N32L40x reset-source record spans both `RCC_CTRLSTS` and `RCC_LDCTRL`; firmware captured only the former and then cleared both, permanently discarding brownout evidence. `PINRSTF` alone therefore could not establish that an external circuit drove NRST low.
+- **Supersedes:** The completeness claim in “Expose complete boot/reset evidence through native RS-485” and any later classification of `PINRSTF` alone as an externally asserted reset. The physical source of the 2026-08-28 reboot remains unresolved until schema-2 firmware is flashed and the event is reproduced.
+- **Affects:** Early platform diagnostics, native command `0x0104`, `tools/mks57d_rs485.py`, reset-source procedures, and firmware version 0.38.7. Reset behavior, bridge authority, STOP, faults, and `ZERO` are unchanged.
+
+## 2026-08-28 — Retain crash, stack, and encoder-failure evidence outside control behavior
+
+- **Decision:** Firmware 0.38.8 / protocol 1.19 extends `GET_BOOT_STATUS` to schema 3 with current/preceding SRAM1 stack high-water and a one-boot checksummed Cortex fault record. Encoder status schema 3 separately retains the last failed acquisition's decoder/transport status, response bytes, and timestamp outside the compact 4 kHz progress publication.
+- **Why:** A reproduced high-speed reboot reported `PINRSTF` with every other reset source clear, while a separate no-reset run failed safely on one encoder error. The prior panic gate erased fault evidence unless `IWDGRSTF` was also present, stack use was unmeasured, and later valid encoder samples erased the failed transaction's type.
+- **Supersedes:** Extends “Preserve all pre-clear RCC reset evidence on wire”; reset-source registers remain authoritative and `PINRSTF` alone still does not prove an external NRST assertion.
+- **Affects:** Panic/exception entry, SRAM1 stack diagnostics, boot status `0x0104`, encoder status, host decoding, and firmware 0.38.8. Authority, thresholds, STOP, faults, and `ZERO` are unchanged.
+
+## 2026-09-16 — Characterize bootstrap release without changing normal shutdown
+
+- **Decision:** Add an explicit finite all-high bootstrap probe under existing diagnostic authority. The backend keeps ADC/TIM3 running, commits common vectors atomically, and enforces carrier-counted duration and fresh-VBUS lease limits. Startup, ordinary STOP, and faults retain all-low ZERO.
+- **Why:** The user observed stock firmware releasing the shaft without detectable added supply current. Bootstrap decay is a plausible explanation, not identified stock behavior or guaranteed coast. Low-side shunts cannot bound winding current in this state, so initial permission is for unloaded waveform characterization only.
+- **Supersedes:** The inference in “Characterize tied EG3013 inputs from an all-low zero vector” that missing binary off control proves coast impossible; its fault-vector contract remains.
+- **Affects:** Backend/TIM3, protocol 1.20 command `0x010A`, host `bootstrap-probe`, and the linked operating limits/bring-up gate. No automatic release policy is introduced.

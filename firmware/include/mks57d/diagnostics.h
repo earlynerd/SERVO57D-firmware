@@ -29,6 +29,7 @@ enum
     DIAGNOSTICS_CAPABILITY_POSITION_CONTROL = 1u << 17,
     DIAGNOSTICS_CAPABILITY_FAULT_RECOVERY = 1u << 18,
     DIAGNOSTICS_CAPABILITY_CURRENT_LOOP_TUNING = 1u << 19,
+    DIAGNOSTICS_CAPABILITY_BOOTSTRAP_PROBE = 1u << 20,
     DIAGNOSTICS_CAPABILITIES_CURRENT =
         DIAGNOSTICS_CAPABILITY_PRODUCT_IMAGE |
         DIAGNOSTICS_CAPABILITY_STATUS_LED |
@@ -49,7 +50,8 @@ enum
          DIAGNOSTICS_CAPABILITY_VELOCITY_CONTROL |
          DIAGNOSTICS_CAPABILITY_POSITION_CONTROL |
          DIAGNOSTICS_CAPABILITY_FAULT_RECOVERY |
-         DIAGNOSTICS_CAPABILITY_CURRENT_LOOP_TUNING
+         DIAGNOSTICS_CAPABILITY_CURRENT_LOOP_TUNING |
+         DIAGNOSTICS_CAPABILITY_BOOTSTRAP_PROBE
 };
 
 typedef struct
@@ -62,6 +64,17 @@ typedef struct
     uint32_t error_count;
     uint32_t last_attempt_millis;
 } diagnostics_encoder_t;
+
+typedef struct
+{
+    uint32_t last_error_status;
+    uint32_t last_error_transport_status;
+    uint32_t last_error_response_length;
+    uint32_t last_error_register_03;
+    uint32_t last_error_register_04;
+    uint32_t last_error_register_05;
+    uint32_t last_error_timestamp_us;
+} diagnostics_encoder_error_t;
 
 typedef struct
 {

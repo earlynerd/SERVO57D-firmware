@@ -170,6 +170,22 @@ when those inputs are tied, a floating MCU output is not a defined all-FET-off
 state. Firmware uses all four commands low as its deterministic zero-voltage
 vector, while recognizing that all four low-side FETs remain on.
 
+Stock firmware has now been observed by the user to release the shaft without
+detectable additional supply current. This disproves treating our lack of a
+characterized coast command as proof of impossibility. Static all-high inputs
+followed by bootstrap-charge decay are a hypothesis, not identified stock
+behavior. The EG3013 datasheet describes bootstrap operation but does not
+guarantee this as a controlled all-FET-off mode. Unequal decay, partial gate
+enhancement, and recharging through motor-generated voltages require physical
+measurement. Floating tied inputs likewise do not inherit the separately
+floating-input guarantee. See [the characterization procedure](BRINGUP.md#bootstrap-release-characterization).
+
+During all-high operation the low-side shunts can miss winding current.
+Neither near-zero shunt readings nor unchanged supply current establish
+electrical disconnect. Measure upper gate relative to its source, lower gate
+relative to its source, and both winding terminals before assigning release
+semantics.
+
 With a 12 V bus and the motor disconnected, firmware 0.10.0 measured 0 V DC
 across both windings in `ZERO`. Holding the Center button for the 500 Hz, nominally 50%
 single-leg pattern produced approximately 6 V average across the selected

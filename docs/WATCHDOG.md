@@ -54,9 +54,26 @@ waiting for reset.
 
 ## Reset diagnostics
 
-`SystemInit()` snapshots the sticky RCC reset flags into `g_platform_boot_diagnostics.reset_flags`, then clears the hardware flags so the next boot has an unambiguous cause. `RCC_CTRLSTS_IWDGRSTF` identifies an IWDG reset to a debugger or future diagnostic transport.
+`SystemInit()` snapshots raw `RCC_CTRLSTS`, `RCC_LDCTRL`, and
+`RCC_SRAM_CTRLSTS` before clearing the sticky reset flags. The legacy
+`g_platform_boot_diagnostics.reset_flags` field remains a masked
+`RCC_CTRLSTS` subset, while `GET_BOOT_STATUS` schemas 2 and 3 export all three
+raw pre-clear values. `RCC_CTRLSTS_IWDGRSTF` identifies an IWDG reset and
+`RCC_LDCTRL.BORRSTF` preserves separate brownout evidence. `PINRSTF` by itself
+does not establish that an external circuit pulled NRST low.
 
-The `.noinit` panic code remains separate: it describes the last software panic when retained RAM is meaningful, while the RCC flags describe the reset source.
+Schema 3 also consumes a checksummed `.noinit` fault record exactly once on the
+following boot. It reports the panic code independently of the RCC reset class,
+plus exception entry/stacked state and Cortex fault registers. This avoids
+discarding a HardFault record merely because the RCC reports `PINRSTF` rather
+than `IWDGRSTF`. The RCC flags still describe the reset source; a retained panic
+describes software execution before that reset and does not replace them.
+
+The same schema reports a painted SRAM1 stack high-water for the current boot
+and, when the metadata survived reset, the preceding boot. A missing retained
+fault record with a nearly exhausted preceding stack supports a failure before
+the handler could finish; a valid fault record identifies the exception path
+directly. Neither field changes watchdog service or bridge authority.
 
 ## Debugger halt policy
 

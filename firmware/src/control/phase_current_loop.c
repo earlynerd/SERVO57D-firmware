@@ -251,7 +251,7 @@ static bool build_duties(int16_t command_a,
     return true;
 }
 
-static bool measure_phase_currents(
+bool phase_current_loop_measure_prevalidated(
     phase_current_loop_t* loop,
     const phase_current_loop_config_t* config,
     uint16_t current_a_raw,
@@ -328,7 +328,7 @@ bool phase_current_loop_step_prevalidated(
     {
         return false;
     }
-    if (!measure_phase_currents(loop,
+    if (!phase_current_loop_measure_prevalidated(loop,
                                 config,
                                 current_a_raw,
                                 current_b_raw,
@@ -530,7 +530,7 @@ bool phase_current_loop_step_rotating_prevalidated(
     {
         return false;
     }
-    if (!measure_phase_currents(loop,
+    if (!phase_current_loop_measure_prevalidated(loop,
                                 config,
                                 current_a_raw,
                                 current_b_raw,

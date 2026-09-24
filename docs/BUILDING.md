@@ -174,9 +174,8 @@ Prompt, where those variables are already present.
 
 ## Current image behavior
 
-Firmware 0.38.6 / protocol 1.19 is the current source candidate; firmware
-0.38.4 is currently flashed for OLED testing and firmware 0.38.3 remains the
-accepted motion/timing baseline. The current
+For source, flashed, and accepted-baseline status, see the
+[current operating snapshot](../README.md#current-operating-snapshot). The current
 motion baseline retains the 0.27.1 identity, readiness, live-policy,
 calibration restore, and bounded positive-velocity smoke checks through a
 12 rev/s request. At 24 V, +8 rev/s reaches
@@ -241,7 +240,7 @@ position-cascade headroom without changing the wire layout. It:
    retries so current control may preempt epoch service without observing
    backward time.
 7. Enters `APP_STATE_DIAGNOSTIC`, then reaches `READY` only after current-path and encoder readiness; PD0 stays low except while a complete 4 kHz rotor job is overdue.
-8. Snapshots and clears sticky reset flags for debugger-visible reset-cause diagnostics.
+8. Snapshots and clears sticky reset flags, consumes a checksummed preceding fault record, and starts an SRAM1 stack watermark for boot-status diagnostics.
 9. Runs and publishes a seven-gate boot self-test, then preloads PA6/PA7/PB0/PB1 low, initializes edge-aligned TIM3 from its 32 MHz timer clock at 20 kHz with zero compare values, and assigns channels 1-4 to the four pins on AF2.
 10. Initializes mode-3 SPI1 on PB3-PB6 at an 8 MHz target. TIM6 releases a 4 kHz MT6816 transaction, timestamps the start of the coherent window when CS asserts, TIM7 retains the bounded 2 us CS setup/hold guards, SPI1 DMA channels 2/3 move the unchanged four-byte frame, and PendSV decodes accepted samples and advances the shared rotor runtime. Foreground independently requires accepted encoder progress within 3 ms; loss removes readiness while idle or faults every energized authority through `ZERO`.
 11. Configures USART1 AF4 on PA9/PA10 at 115200 8N1, holds PC13 low for receive, and moves RX/TX bytes with reserved DMA channels 4/5 without unsolicited transmission.
@@ -286,14 +285,14 @@ position-cascade headroom without changing the wire layout. It:
     duration, STOP, Right-button, and fault limits remain separate. The profile
     permits 64 rev/s² while the inner slew retains fourfold headroom; corrected
     velocity may reach 17 rev/s above the 16 rev/s profile range.
-22. Publishes firmware `0.38.6`, authoritative drive state, reset cause,
+22. Publishes firmware `0.39.0`, authoritative drive state, reset cause,
     retained panic, uptime, heartbeat, watchdog health, priority policy,
     self-test masks, raw encoder state, RS-485 transport state, native-protocol
     counters, and current-loop state through the unchanged 240-byte schema-5
     `g_diagnostics` RAM record; estimator, alignment, and configuration fields
     are presently on wire rather than appended to that debugger ABI.
 23. Starts a nominal one-second IWDG and services it only through the foreground liveness supervisor after every self-test gate passes. The watchdog continues during debugger halt.
-24. Commands the all-low zero vector, latches a panic code in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
+24. Commands the all-low zero vector, latches a checksummed panic/exception record in `.noinit` RAM, and halts on core exceptions, unclaimed interrupts, watchdog setup failure, or liveness failure; an active IWDG then resets the running panic loop.
 
 Firmware 0.24.13 passed the deterministic rotor-service regression on COM14:
 more than 54,000 idle samples held 1000-1001 us intervals with zero transport
@@ -548,3 +547,22 @@ coverage checks that runtime display failures remain ready, retain counters,
 attempt all SSD1306 chunks, and leave later pages scheduled; boot initialization
 failure retains wrap-safe idle-only retry. Flash and repeated-motion display
 confirmation remain open.
+
+Firmware 0.38.7 / protocol 1.19 passes the native suite and all 70 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+66,840/61,540 bytes Flash and 11,884 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. Coverage
+checks schema-1 compatibility, exact schema-2 serialization, raw pre-clear RCC
+register decoding, and separate brownout/low-power-domain flags. The flashed
+image reproduced the sharp stop with `PINRSTF` alone and no brownout,
+watchdog, software, or other RCC cause; the physical trigger remains unresolved.
+
+Firmware 0.38.8 / protocol 1.19 passes the native suite and all 72 Python tests
+with two optional skips. Debug and Release Arm post-link builds use
+68,472/63,176 bytes Flash and 12,016 bytes SRAM1; neither configuration slot nor
+SRAM2 is allocated, and the debugger diagnostic ABI remains verified. A
+separate `-fstack-usage` build reports a 2,264-byte Debug `main` frame and keeps
+the compact rotor progress publication at or below its 64-byte assertion.
+Coverage checks schema-1/2 boot compatibility, schema-3 crash/stack decoding,
+schema-3 last-encoder-error retention, and exact 79-byte maximum native payload
+serialization. Paired high-speed reproduction remains a hardware gate.

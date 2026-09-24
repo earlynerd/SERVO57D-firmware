@@ -102,6 +102,16 @@ the remaining chunks, and foreground advances to the next page while retaining
 the first status and error count. Runtime failures never suspend traffic or
 reset the panel. The bounded 11 ms idle-only initialization retry remains only
 for a panel that failed its boot setup. Display health never gates readiness.
+Firmware 0.38.7 retains protocol 1.19 and extends boot status to schema 2 with
+raw `RCC_CTRLSTS`, `RCC_LDCTRL`, and `RCC_SRAM_CTRLSTS` snapshots taken before
+the shared reset-flag clear. The legacy masked `RCC_CTRLSTS` prefix remains
+unchanged; separate `RCC_LDCTRL.BORRSTF` evidence is no longer discarded.
+Firmware 0.38.8 extends boot status to schema 3 with current/preceding stack
+high-water and a checksummed retained Cortex exception record. Encoder schema
+3 retains the status, transport result, response length/raw register bytes,
+and timestamp of the most recent failed acquisition outside the compact 4 kHz
+progress publication. These are observer-only changes; control and shutdown
+semantics are unchanged.
 The deterministic rotor path is bench-proven during a 606 mA,
 five-second aligned-torque run with zero encoder, DMA, estimator, backend,
 control, reset, or panic faults. Earlier automatic-alignment, generic-STOP, and
@@ -210,7 +220,12 @@ expanded-current hardware gates remain pending.
 - Earlier characterization builds used Left to select A1/A2/B1/B2 and Center to apply edge-aligned 20 kHz, 50% hardware PWM. That local phase-selector path and its direct fixed-duty PWM helper are retired. RS-485 retains the bounded production motor diagnostic through the drive supervisor and current backend: it can configure 1-495 counts and 0.001-1,000 electrical Hz, then request an optional frequency ramp followed by a 0.003-2,147,483.647 second hold, with ramp plus hold constrained to the same signed-deadline maximum; timeout, physical Right-button stop, transport failure, or STOP returns it to `ZERO`.
 - DMA completion advances the latest timestamped electrical phase from filtered mechanical velocity, runs fixed-point rotating d/q PI for aligned motion or stationary A/B PI for static operation, and stages low-zero sign-magnitude TIM3 preloads. Controllers reject feedback timestamp intervals over 2 ms; the fast predictor permits age through 3 ms to cover bounded PendSV dispatch, never beyond the independent encoder-production deadline, and includes the measured 55 us lead to the following PWM application boundary. Stale or invalid prediction joins raw overcurrent, invalid reference/output, DMA/PWM failure, and missed-output faults on the common all-low path. Positive A voltage drives A2 and positive B voltage drives B1, matching the board's asymmetric shunt placement; the opposite signs drive A1/B2.
 - Firmware 0.18.2 established `Kp=2`, `Ki=1/64` per 20 kHz step, and the first 256-sample tuning trace. Matched firmware 0.30.1-0.30.3 +8 rev/s bursts subsequently staged Kp through 2, 3, and 4; Kp=4 is the compiled 0.31.0 default while the current product configuration permits bounded inactive trials from Kp 0-16 and Ki 0-4. Active control consumes one immutable copied configuration; only explicit safe-state save persists volatile gains.
-- The tied HIN/LIN topology has no defined all-FET-off command. `board_bridge_force_low_zero()` is the common deterministic software-fault state, not electrical disconnect.
+- The tied HIN/LIN topology has no verified all-FET-off command. The explicit
+  bootstrap probe tests a finite all-high vector through the same backend and
+  supervisor; it is not normal idle release. See the
+  [unloaded procedure](../docs/BRINGUP.md#bootstrap-release-characterization).
+  `board_bridge_force_low_zero()` remains the common deterministic
+  software-fault state, not electrical disconnect.
 - Core exceptions and every unclaimed interrupt record a panic code and halt.
 - The firmware sets and verifies four NVIC preemption bits with no subpriorities; SysTick runs at priority 15.
 - Sticky reset flags are captured and cleared at boot for debugger-visible reset-cause diagnostics.

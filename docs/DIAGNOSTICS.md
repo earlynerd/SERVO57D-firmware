@@ -32,14 +32,14 @@ and 184-byte schema-4 prefixes are unchanged; current-loop fields are appended.
 | 4 | `schema_version` | Record schema, currently `5` |
 | 8 | `record_size` | Total bytes available, currently `240` |
 | 12 | `sequence` | Odd while the foreground writer is updating, even when stable |
-| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; current source is `0.38.6` |
+| 16 | `firmware_version` | Major in bits 31:24, minor in 23:16, patch in 15:0; compare with the matching ELF and the [current operating snapshot](../README.md#current-operating-snapshot) |
 | 20 | `capabilities` | Product-image, status-LED, IWDG, reset-cause, NVIC-policy, encoder-SPI, RS-485-DMA, native-protocol, display-I2C, passive-ADC, user-input-monitor, rotating-current diagnostic, current-loop, automatic-alignment, persistent-configuration, aligned-torque, velocity-control, position-control, and fault-recovery capability bits |
 | 24 | `app_state` | Numeric `app_state_t` value |
 | 28 | `uptime_millis` | Latest published 1 kHz timebase value |
 | 32 | `heartbeat_count` | Number of 250 ms foreground software-liveness epochs completed; firmware 0.38.1 no longer couples this field to PD0 |
 | 36 | `watchdog_status` | Numeric `watchdog_status_t` value from the foreground supervisor |
 | 40 | `platform_boot_status` | Numeric `platform_boot_status_t` value |
-| 44 | `reset_flags` | RCC reset flags captured before they were cleared |
+| 44 | `reset_flags` | Legacy masked `RCC_CTRLSTS` reset bits captured before clear; use `GET_BOOT_STATUS` schema 3 for raw reset registers plus retained crash/stack evidence |
 | 48 | `retained_panic` | Valid preceding panic retained across an IWDG reset, or `PANIC_NONE` |
 | 52 | `self_test_required` | Boot gates required by this image, currently `0x7F` |
 | 56 | `self_test_passed` | Gates completed without a latched failure |
@@ -120,7 +120,12 @@ already-stable record.
 
 ## Panic retention
 
-`g_last_panic` remains in `.noinit`. Startup accepts it as preceding-boot history only when RCC reports an IWDG reset and the numeric code is in range. `diagnostics_init()` copies that value into `retained_panic`, then clears `g_last_panic` so a later watchdog-only stall cannot inherit an older software panic.
+`g_last_panic` and a checksummed fault record remain in `.noinit`. Startup
+accepts the record once when its magic, schema, panic range, and checksum are
+valid, regardless of which RCC reset flag accompanied the reboot.
+`diagnostics_init()` copies the panic code into `retained_panic`; boot-status
+schema 3 exposes the matching exception and Cortex fault fields. A later reset
+without a new panic cannot inherit the consumed record.
 
 If firmware is currently stopped inside `platform_panic()`, inspect `g_last_panic` directly. After IWDG resets the MCU, the next boot publishes the same code into `g_diagnostics.retained_panic`.
 
@@ -129,14 +134,16 @@ If firmware is currently stopped inside `platform_panic()`, inspect `g_last_pani
 For a new board or diagnostic-schema validation:
 
 - load the matching ELF symbols and inspect `g_diagnostics` before and after software-liveness changes;
-- confirm a source-candidate flash reports `0.38.6` (`0.38.4` is currently
-  flashed for OLED testing), schema is 5, and record size is 240;
+- confirm a source-candidate flash reports its matching ELF version, schema is
+  5, and record size is 240;
 - independently scope PD0: firmware 0.38.1 leaves it low on complete 4 kHz
   releases and drives it high only from the next 250 us boundary until the
   newest overdue acquisition-through-PendSV job completes;
 - confirm `sequence` is even when the core is halted;
 - confirm required and passed self-test masks are `0x7F` with a zero failed mask;
-- compare `reset_flags` against power-on, NRST, and induced IWDG resets;
+- compare debugger `reset_flags` and `boot` schema-3 raw registers across
+  power-on, software, and induced IWDG resets; do not infer an external NRST
+  assertion from `PINRSTF` alone;
 - confirm a watchdog-related panic appears as `retained_panic` after reboot;
 - rotate the encoder magnet and verify angle, counts, status, and timestamp;
 - remove the magnet and confirm flag bit 0 without a boot panic;
