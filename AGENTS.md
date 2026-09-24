@@ -19,14 +19,6 @@ The newest applicable decision is authoritative when historical documents
 conflict. Steady-state facts belong in the canonical document listed below,
 not in repeated session summaries.
 
-## Parallel work
-
-For tasks with two or more independent workstreams, use subagents when parallel
-execution materially improves speed or review coverage. Give each editing agent
-exclusive ownership of named files or modules, and keep shared integration
-files with the root agent. The root agent synthesizes the results, resolves
-conflicts, and runs end-to-end validation. Prefer one agent for small or
-sequential tasks and work dominated by shared mutable state.
 
 ## Documentation ownership
 
